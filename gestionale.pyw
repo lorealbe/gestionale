@@ -1,5 +1,5 @@
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import ttk, messagebox, filedialog
 import sqlite3
 import calendar
 import re
@@ -321,7 +321,11 @@ class AppGestionaleGUI:
         self.crea_campo(self.tab_movimenti, "Descrizione:", self.var_desc)
         self.crea_campo(self.tab_movimenti, "Importo (€):", self.var_imp)
 
-        ttk.Button(self.tab_movimenti, text="Salva nel DB", command=self.salva_movimento).pack(pady=20)
+        frame_actions = ttk.Frame(self.tab_movimenti)
+        frame_actions.pack(pady=20)
+
+        ttk.Button(frame_actions, text="Salva nel DB", command=self.salva_movimento).pack(side="left", padx=6)
+        ttk.Button(frame_actions, text="Importa fattura PDF", command=self.importa_fattura_pdf).pack(side="left", padx=6)
 
     def salva_movimento(self):
         if is_blank(self.var_data.get()):
@@ -367,6 +371,125 @@ class AppGestionaleGUI:
         except sqlite3.Error as e:
             messagebox.showerror("Errore DB", f"Errore database: {e}")
 
+    def importa_fattura_pdf(self):
+        file_path = filedialog.askopenfilename(
+            title="Seleziona fattura PDF",
+            filetypes=[("PDF", "*.pdf")]
+        )
+        if not file_path:
+            return
+
+        try:
+            testo = self.estrai_testo_pdf(file_path)
+            dati = self.analizza_testo_fattura(testo, file_path)
+        except Exception as e:
+            messagebox.showerror("Importazione fallita", str(e))
+            return
+
+        if dati.get("data"):
+            self.var_data.set(dati["data"])
+        if dati.get("tipo"):
+            self.var_tipo.set(dati["tipo"])
+        if dati.get("categoria"):
+            self.var_cat.set(dati["categoria"])
+        if dati.get("descrizione"):
+            self.var_desc.set(dati["descrizione"])
+        if dati.get("importo"):
+            self.var_imp.set(dati["importo"])
+
+        if is_blank(self.var_imp.get()):
+            messagebox.showwarning("Attenzione", "Importo non trovato automaticamente. Verificalo manualmente.")
+            return
+
+        if messagebox.askyesno("Conferma", "Fattura analizzata. Vuoi salvare subito il movimento nel DB?"):
+            self.salva_movimento()
+
+    def estrai_testo_pdf(self, file_path):
+        try:
+            from pypdf import PdfReader
+        except ImportError:
+            raise RuntimeError("Manca la libreria pypdf. Installa con: pip install pypdf")
+
+        reader = PdfReader(file_path)
+        chunks = []
+        for page in reader.pages:
+            chunks.append(page.extract_text() or "")
+
+        testo = "\n".join(chunks).strip()
+        if not testo:
+            raise RuntimeError("Il PDF non contiene testo estraibile (probabile scansione).")
+        return testo
+
+    def analizza_testo_fattura(self, testo, file_path):
+        t = testo.lower()
+
+        # Data (dd/mm/yyyy o dd-mm-yyyy)
+        data_match = re.search(r"\b(\d{2}[/-]\d{2}[/-]\d{4})\b", testo)
+        data_out = ""
+        if data_match:
+            raw = data_match.group(1).replace("-", "/")
+            try:
+                data_out = datetime.strptime(raw, "%d/%m/%Y").strftime("%d/%m/%Y")
+            except ValueError:
+                data_out = ""
+
+        # Importo: prima cerca vicino a parole chiave
+        patterns = [
+            r"(?:totale\s+da\s+pagare|importo\s+totale|totale\s+fattura|totale)\D{0,25}([€\s]*\d{1,3}(?:[.\s]\d{3})*(?:,\d{2})|[€\s]*\d+(?:[.,]\d{2}))",
+            r"(?:da\s+pagare)\D{0,25}([€\s]*\d{1,3}(?:[.\s]\d{3})*(?:,\d{2})|[€\s]*\d+(?:[.,]\d{2}))",
+        ]
+
+        importo = None
+        for p in patterns:
+            m = re.search(p, t, flags=re.IGNORECASE)
+            if m:
+                importo = self._normalizza_importo(m.group(1))
+                if importo is not None:
+                    break
+
+        # Fallback: prende il massimo importo trovato
+        if importo is None:
+            candidati = re.findall(r"[€\s]*\d{1,3}(?:[.\s]\d{3})*(?:,\d{2})|[€\s]*\d+(?:[.,]\d{2})", testo)
+            valori = [self._normalizza_importo(c) for c in candidati]
+            valori = [v for v in valori if v is not None]
+            if valori:
+                importo = max(valori)
+
+        tipo = "USCITA"
+        if "nota di credito" in t or "rimborso" in t:
+            tipo = "ENTRATA"
+
+        return {
+            "data": data_out or datetime.now().strftime("%d/%m/%Y"),
+            "tipo": tipo,
+            "categoria": "Fattura",
+            "descrizione": f"Fattura importata: {Path(file_path).name}",
+            "importo": f"{importo:.2f}" if importo is not None else "",
+        }
+
+    def _normalizza_importo(self, raw):
+        if not raw:
+            return None
+        s = raw.strip()
+        s = s.replace("€", "").replace(" ", "")
+
+        # Gestione separatori IT/EN
+        if "," in s and "." in s:
+            if s.rfind(",") > s.rfind("."):
+                s = s.replace(".", "").replace(",", ".")
+            else:
+                s = s.replace(",", "")
+        elif "," in s:
+            s = s.replace(".", "").replace(",", ".")
+        else:
+            s = s.replace(",", "")
+
+        try:
+            val = float(s)
+            return val if val > 0 else None
+        except ValueError:
+            return None
+
     # --- SCHEDA REPORT ---
     def setup_tab_report(self):
         ttk.Label(self.tab_report, text="Genera Report tramite DB", font=("Arial", 14, "bold")).pack(pady=10)
@@ -379,7 +502,6 @@ class AppGestionaleGUI:
 
         ttk.Button(self.tab_report, text="Interroga DB e Calcola", command=self.genera_report).pack(pady=15)
 
-        # Area report con scrollbar (A)
         frame_report = ttk.Frame(self.tab_report)
         frame_report.pack(padx=20, pady=10, fill="both", expand=True)
 
@@ -407,7 +529,7 @@ class AppGestionaleGUI:
             return
 
         if inizio > fine:
-            messagebox.showerror("Errore", "La data INIZIO non può essere successiva alla data FINE.")
+            messagebox.showerror("Errore", "La data INIZIO non puo essere successiva alla data FINE.")
             return
 
         inizio_db = inizio.strftime("%Y-%m-%d")
@@ -417,7 +539,6 @@ class AppGestionaleGUI:
             with get_conn() as conn:
                 c = conn.cursor()
 
-                # Totali per tipo
                 c.execute('''
                     SELECT tipo, COALESCE(SUM(importo), 0) AS totale, COUNT(id) AS qta
                     FROM movimenti
@@ -426,7 +547,6 @@ class AppGestionaleGUI:
                 ''', (self.user_id, inizio_db, fine_db))
                 risultati = c.fetchall()
 
-                # Dettaglio per categoria
                 c.execute('''
                     SELECT tipo,
                            COALESCE(NULLIF(TRIM(categoria), ''), '(Senza categoria)') AS cat,
@@ -458,10 +578,10 @@ class AppGestionaleGUI:
 
         report_text = f"Movimenti estratti dal DB: {conteggio}\n"
         report_text += "-" * 30 + "\n"
-        report_text += f"Totale Entrate: € {tot_entrate:.2f}\n"
-        report_text += f"Totale Uscite:  € {tot_uscite:.2f}\n"
+        report_text += f"Totale Entrate: EUR {tot_entrate:.2f}\n"
+        report_text += f"Totale Uscite:  EUR {tot_uscite:.2f}\n"
         report_text += "-" * 30 + "\n"
-        report_text += f"SALDO NETTO:   € {saldo:.2f}\n\n"
+        report_text += f"SALDO NETTO:   EUR {saldo:.2f}\n\n"
 
         report_text += "DETTAGLIO PER CATEGORIA\n"
         report_text += "-" * 30 + "\n"
@@ -471,7 +591,7 @@ class AppGestionaleGUI:
             if tipo != tipo_corrente:
                 tipo_corrente = tipo
                 report_text += f"\n[{tipo}]\n"
-            report_text += f"- {cat}: € {float(totale):.2f} ({qta} mov.)\n"
+            report_text += f"- {cat}: EUR {float(totale):.2f} ({qta} mov.)\n"
 
         self.txt_risultato.config(state="normal")
         self.txt_risultato.delete(1.0, tk.END)
@@ -494,7 +614,6 @@ class AppGestionaleGUI:
 
         def apri_calendario():
             date_text = text_var.get().strip()
-            initial_date = None
             if date_text:
                 try:
                     initial_date = datetime.strptime(date_text, "%d/%m/%Y").date()
@@ -507,9 +626,8 @@ class AppGestionaleGUI:
             if scelta is not None:
                 text_var.set(scelta.strftime("%d/%m/%Y"))
 
-        ttk.Button(frame, text="📅", width=3, command=apri_calendario).pack(side="left", padx=(5, 0))
-
-
+        ttk.Button(frame, text="...", width=3, command=apri_calendario).pack(side="left", padx=(5, 0))
+        entry.bind("<Button-1>", lambda _event: apri_calendario())
 # --- AVVIO DEL PROGRAMMA ---
 if __name__ == "__main__":
     init_db()
