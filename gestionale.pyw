@@ -59,6 +59,28 @@ def init_db():
         c.execute('''CREATE INDEX IF NOT EXISTS idx_mov_user_date
                      ON movimenti(user_id, data_op)''')
 
+        # Tabella Produzione Latte (litri prodotti e prezzo al litro)
+        c.execute('''CREATE TABLE IF NOT EXISTS produzione_latte
+                     (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                      user_id INTEGER NOT NULL,
+                      data_op TEXT NOT NULL, -- ISO: YYYY-MM-DD
+                      litri REAL NOT NULL CHECK(litri > 0),
+                      prezzo_litro REAL NOT NULL DEFAULT 0,
+                      movimento_id INTEGER,
+                      FOREIGN KEY(movimento_id) REFERENCES movimenti(id) ON DELETE SET NULL,
+                      FOREIGN KEY(user_id) REFERENCES utenti(id) ON DELETE CASCADE)''')
+
+        # Migrazione per database gia esistenti: aggiunge prezzo_litro se manca.
+        c.execute("PRAGMA table_info(produzione_latte)")
+        colonne_produzione = {row[1] for row in c.fetchall()}
+        if colonne_produzione and "prezzo_litro" not in colonne_produzione:
+            c.execute("ALTER TABLE produzione_latte ADD COLUMN prezzo_litro REAL NOT NULL DEFAULT 0")
+        if colonne_produzione and "movimento_id" not in colonne_produzione:
+            c.execute("ALTER TABLE produzione_latte ADD COLUMN movimento_id INTEGER")
+
+        c.execute('''CREATE INDEX IF NOT EXISTS idx_prod_user_date
+                     ON produzione_latte(user_id, data_op)''')
+
 def is_blank(s: str) -> bool:
     return s is None or s.strip() == ""
 
@@ -208,14 +230,14 @@ class FinestraLogin:
         try:
             with get_conn() as conn:
                 c = conn.cursor()
-                c.execute("SELECT username, password_hash FROM utenti WHERE username=?", (user,))
+                c.execute("SELECT id, password_hash FROM utenti WHERE username=?", (user,))
                 row = c.fetchone()
 
             if not row:
                 messagebox.showerror("Accesso Negato", "Username o Password errati.")
                 return
 
-            username, stored_hash = row[0], row[1]
+            user_id, stored_hash = row[0], row[1]
             try:
                 ph.verify(stored_hash, pwd)
             except VerifyMismatchError:
@@ -225,7 +247,7 @@ class FinestraLogin:
             # Svuota la finestra attuale e carica l'app principale
             for widget in self.root.winfo_children():
                 widget.destroy()
-            AppGestionaleGUI(self.root, username)
+            AppGestionaleGUI(self.root, user_id)
 
         except sqlite3.Error as e:
             messagebox.showerror("Errore DB", f"Errore database: {e}")
@@ -243,70 +265,79 @@ class AppGestionaleGUI:
         self.notebook = ttk.Notebook(self.root)
         self.notebook.pack(pady=10, expand=True, fill="both")
 
-        self.tab_profilo = ttk.Frame(self.notebook)
+        self.tab_situazione = ttk.Frame(self.notebook)
         self.tab_movimenti = ttk.Frame(self.notebook)
+        self.tab_latte = ttk.Frame(self.notebook)
         self.tab_report = ttk.Frame(self.notebook)
         self.tab_storico = ttk.Frame(self.notebook)
 
-        self.notebook.add(self.tab_profilo, text="Profilo Utente")
+        self.notebook.add(self.tab_situazione, text="Situazione Attuale")
         self.notebook.add(self.tab_movimenti, text="Nuovo Movimento")
+        self.notebook.add(self.tab_latte, text="Produzione Latte")
         self.notebook.add(self.tab_report, text="Report Periodo")
         self.notebook.add(self.tab_storico, text="Storico Movimenti")
 
-        self.setup_tab_profilo()
+        self.setup_tab_situazione()
         self.setup_tab_movimenti()
+        self.setup_tab_latte()
         self.setup_tab_report()
         self.setup_tab_storico()
 
-        self.carica_profilo()
         self.carica_movimenti()
+        self.carica_produzioni_latte(mostra_errori=False)
+        self.aggiorna_situazione_attuale(mostra_errori=False)
 
-    # --- SCHEDA PROFILO ---
-    def setup_tab_profilo(self):
-        ttk.Label(self.tab_profilo, text="I tuoi dati (Salvati nel DB):", font=("Arial", 14, "bold")).pack(pady=10)
+    # --- SCHEDA SITUAZIONE ---
+    def setup_tab_situazione(self):
+        ttk.Label(self.tab_situazione, text="Situazione Attuale", font=("Arial", 14, "bold")).pack(pady=12)
 
-        self.var_nome = tk.StringVar()
-        self.var_piva = tk.StringVar()
-        self.var_prof = tk.StringVar()
+        frame_stats = ttk.Frame(self.tab_situazione, padding=12)
+        frame_stats.pack(fill="x", padx=20, pady=10)
 
-        self.crea_campo(self.tab_profilo, "Nome Completo:", self.var_nome)
-        self.crea_campo(self.tab_profilo, "Partita IVA / CF:", self.var_piva)
-        self.crea_campo(self.tab_profilo, "Professione:", self.var_prof)
+        self.var_tot_movimenti = tk.StringVar(value="0")
+        self.var_tot_entrate = tk.StringVar(value="EUR 0.00")
+        self.var_tot_uscite = tk.StringVar(value="EUR 0.00")
+        self.var_tot_utile = tk.StringVar(value="EUR 0.00")
 
-        ttk.Button(self.tab_profilo, text="Salva/Aggiorna Profilo", command=self.salva_profilo).pack(pady=20)
+        righe = [
+            ("Numero di movimenti:", self.var_tot_movimenti),
+            ("Entrate:", self.var_tot_entrate),
+            ("Uscite:", self.var_tot_uscite),
+            ("Utile:", self.var_tot_utile),
+        ]
 
-    def carica_profilo(self):
-        try:
-            with get_conn() as conn:
-                c = conn.cursor()
-                c.execute("SELECT nome, piva, professione FROM profili WHERE user_id=?", (self.user_id,))
-                row = c.fetchone()
+        for idx, (testo, valore) in enumerate(righe):
+            ttk.Label(frame_stats, text=testo, width=22).grid(row=idx, column=0, sticky="w", pady=4)
+            ttk.Label(frame_stats, textvariable=valore, font=("Arial", 11, "bold")).grid(row=idx, column=1, sticky="w", pady=4)
 
-            if row:
-                self.var_nome.set(row[0] or "")
-                self.var_piva.set(row[1] or "")
-                self.var_prof.set(row[2] or "")
-        except sqlite3.Error as e:
-            messagebox.showerror("Errore DB", f"Errore database: {e}")
+        ttk.Button(self.tab_situazione, text="Aggiorna situazione", command=self.aggiorna_situazione_attuale).pack(pady=8)
 
-    def salva_profilo(self):
+    def aggiorna_situazione_attuale(self, mostra_errori=True):
         try:
             with get_conn() as conn:
                 c = conn.cursor()
                 c.execute('''
-                    INSERT INTO profili (user_id, nome, piva, professione)
-                    VALUES (?, ?, ?, ?)
-                    ON CONFLICT(user_id) DO UPDATE SET
-                        nome=excluded.nome,
-                        piva=excluded.piva,
-                        professione=excluded.professione
-                ''', (self.user_id,
-                      self.var_nome.get().strip(),
-                      self.var_piva.get().strip(),
-                      self.var_prof.get().strip()))
-            messagebox.showinfo("Successo", "Dati del profilo aggiornati nel database!")
+                    SELECT COUNT(id),
+                           COALESCE(SUM(CASE WHEN tipo='ENTRATA' THEN importo ELSE 0 END), 0),
+                           COALESCE(SUM(CASE WHEN tipo='USCITA' THEN importo ELSE 0 END), 0)
+                    FROM movimenti
+                    WHERE user_id=?
+                ''', (self.user_id,))
+                row = c.fetchone()
         except sqlite3.Error as e:
-            messagebox.showerror("Errore DB", f"Errore database: {e}")
+            if mostra_errori:
+                messagebox.showerror("Errore DB", f"Errore database: {e}")
+            return
+
+        num_movimenti = int((row[0] if row else 0) or 0)
+        tot_entrate = float((row[1] if row else 0) or 0)
+        tot_uscite = float((row[2] if row else 0) or 0)
+        utile = tot_entrate - tot_uscite
+
+        self.var_tot_movimenti.set(str(num_movimenti))
+        self.var_tot_entrate.set(f"EUR {tot_entrate:.2f}")
+        self.var_tot_uscite.set(f"EUR {tot_uscite:.2f}")
+        self.var_tot_utile.set(f"EUR {utile:.2f}")
 
     # --- SCHEDA MOVIMENTI ---
     def setup_tab_movimenti(self):
@@ -565,6 +596,195 @@ class AppGestionaleGUI:
         except ValueError:
             return None
 
+    # --- SCHEDA LATTE ---
+    def setup_tab_latte(self):
+        ttk.Label(self.tab_latte, text="Produzione Latte", font=("Arial", 14, "bold")).pack(pady=10)
+
+        self.var_latte_data = tk.StringVar(value=datetime.now().strftime("%d/%m/%Y"))
+        self.var_latte_litri = tk.StringVar()
+        self.var_latte_prezzo = tk.StringVar(value="0.00")
+
+        self.crea_campo_data(self.tab_latte, "Data produzione:", self.var_latte_data)
+        self.crea_campo(self.tab_latte, "Litri prodotti:", self.var_latte_litri)
+        self.crea_campo(self.tab_latte, "Prezzo al litro (EUR):", self.var_latte_prezzo)
+
+        frame_actions = ttk.Frame(self.tab_latte)
+        frame_actions.pack(pady=10)
+
+        ttk.Button(frame_actions, text="Salva Produzione", command=self.salva_produzione_latte).pack(side="left", padx=6)
+        ttk.Button(frame_actions, text="Ricarica Storico", command=self.carica_produzioni_latte).pack(side="left", padx=6)
+        ttk.Button(frame_actions, text="Elimina selezionata", command=self.elimina_produzione_latte_selezionata).pack(side="left", padx=6)
+
+        frame_table = ttk.Frame(self.tab_latte)
+        frame_table.pack(fill="both", expand=True, padx=12, pady=8)
+
+        cols = ("id", "data", "litri", "prezzo")
+        self.tree_produzione = ttk.Treeview(frame_table, columns=cols, show="headings", height=10)
+
+        self.tree_produzione.heading("id", text="ID")
+        self.tree_produzione.heading("data", text="Data")
+        self.tree_produzione.heading("litri", text="Litri")
+        self.tree_produzione.heading("prezzo", text="Prezzo / L")
+
+        self.tree_produzione.column("id", width=60, anchor="center")
+        self.tree_produzione.column("data", width=120, anchor="center")
+        self.tree_produzione.column("litri", width=140, anchor="e")
+        self.tree_produzione.column("prezzo", width=140, anchor="e")
+
+        scroll = ttk.Scrollbar(frame_table, orient="vertical", command=self.tree_produzione.yview)
+        self.tree_produzione.configure(yscrollcommand=scroll.set)
+
+        self.tree_produzione.pack(side="left", fill="both", expand=True)
+        scroll.pack(side="right", fill="y")
+
+        self.tree_produzione.bind("<Delete>", lambda _event: self.elimina_produzione_latte_selezionata())
+
+    def salva_produzione_latte(self):
+        if is_blank(self.var_latte_data.get()):
+            messagebox.showerror("Errore", "Inserisci la data di produzione.")
+            return
+        if is_blank(self.var_latte_litri.get()):
+            messagebox.showerror("Errore", "Inserisci i litri prodotti.")
+            return
+
+        try:
+            data_obj = datetime.strptime(self.var_latte_data.get().strip(), "%d/%m/%Y")
+            data_db = data_obj.strftime("%Y-%m-%d")
+        except ValueError:
+            messagebox.showerror("Errore", "Formato data non valido (Usa GG/MM/AAAA)")
+            return
+
+        litri_val = self._normalizza_importo(self.var_latte_litri.get(), allow_zero=False)
+        if litri_val is None:
+            messagebox.showerror("Errore", "Litri non validi.")
+            return
+
+        prezzo_text = self.var_latte_prezzo.get().strip()
+        if is_blank(prezzo_text):
+            prezzo_val = 0.0
+        else:
+            prezzo_val = self._normalizza_importo(prezzo_text, allow_zero=True)
+            if prezzo_val is None:
+                messagebox.showerror("Errore", "Prezzo al litro non valido.")
+                return
+
+        importo_entrata = litri_val * prezzo_val
+        descrizione_mov = f"Produzione latte: {litri_val:.2f} L x EUR {prezzo_val:.4f}/L"
+
+        try:
+            with get_conn() as conn:
+                c = conn.cursor()
+
+                c.execute('''
+                    INSERT INTO movimenti (user_id, data_op, tipo, categoria, descrizione, importo, iva_importo)
+                    VALUES (?, ?, 'ENTRATA', ?, ?, ?, 0)
+                ''', (
+                    self.user_id,
+                    data_db,
+                    "Latte",
+                    descrizione_mov,
+                    importo_entrata,
+                ))
+                movimento_id = c.lastrowid
+
+                c.execute('''
+                    INSERT INTO produzione_latte (user_id, data_op, litri, prezzo_litro, movimento_id)
+                    VALUES (?, ?, ?, ?, ?)
+                ''', (self.user_id, data_db, litri_val, prezzo_val, movimento_id))
+        except sqlite3.Error as e:
+            messagebox.showerror("Errore DB", f"Errore database: {e}")
+            return
+
+        self.var_latte_litri.set("")
+        self.carica_produzioni_latte(mostra_errori=False)
+        self.carica_movimenti()
+        messagebox.showinfo("Successo", f"Produzione latte salvata! Entrata automatica: EUR {importo_entrata:.2f}")
+
+    def carica_produzioni_latte(self, mostra_errori=True):
+        if not hasattr(self, "tree_produzione"):
+            return
+
+        for item in self.tree_produzione.get_children():
+            self.tree_produzione.delete(item)
+
+        try:
+            with get_conn() as conn:
+                c = conn.cursor()
+                c.execute('''
+                    SELECT id, data_op, litri, prezzo_litro, movimento_id
+                    FROM produzione_latte
+                    WHERE user_id=?
+                    ORDER BY data_op DESC, id DESC
+                ''', (self.user_id,))
+                rows = c.fetchall()
+        except sqlite3.Error as e:
+            if mostra_errori:
+                messagebox.showerror("Errore DB", f"Errore database: {e}")
+            return
+
+        for prod_id, data_op, litri, prezzo_litro, _movimento_id in rows:
+            try:
+                data_view = datetime.strptime(data_op, "%Y-%m-%d").strftime("%d/%m/%Y")
+            except ValueError:
+                data_view = data_op
+
+            self.tree_produzione.insert(
+                "",
+                "end",
+                values=(
+                    prod_id,
+                    data_view,
+                    f"{float(litri):.2f}",
+                    f"{float(prezzo_litro):.4f}"
+                )
+            )
+
+    def elimina_produzione_latte_selezionata(self):
+        selezione = self.tree_produzione.selection()
+        if not selezione:
+            messagebox.showwarning("Attenzione", "Seleziona prima una riga di produzione da eliminare.")
+            return
+
+        valori = self.tree_produzione.item(selezione[0], "values")
+        if not valori:
+            messagebox.showerror("Errore", "Impossibile leggere la produzione selezionata.")
+            return
+
+        prod_id = int(valori[0])
+        conferma = messagebox.askyesno(
+            "Conferma eliminazione",
+            f"Vuoi eliminare la produzione selezionata?\n\nData: {valori[1]} - Litri: {valori[2]}"
+        )
+        if not conferma:
+            return
+
+        try:
+            with get_conn() as conn:
+                c = conn.cursor()
+
+                c.execute("SELECT movimento_id FROM produzione_latte WHERE id=? AND user_id=?", (prod_id, self.user_id))
+                row = c.fetchone()
+                if not row:
+                    messagebox.showerror("Errore", "Produzione non trovata o non eliminabile.")
+                    return
+
+                movimento_id = row[0]
+
+                c.execute("DELETE FROM produzione_latte WHERE id=? AND user_id=?", (prod_id, self.user_id))
+                if c.rowcount == 0:
+                    messagebox.showerror("Errore", "Produzione non trovata o non eliminabile.")
+                    return
+
+                if movimento_id is not None:
+                    c.execute("DELETE FROM movimenti WHERE id=? AND user_id=?", (movimento_id, self.user_id))
+        except sqlite3.Error as e:
+            messagebox.showerror("Errore DB", f"Errore database: {e}")
+            return
+
+        self.carica_produzioni_latte(mostra_errori=False)
+        self.carica_movimenti()
+        messagebox.showinfo("Successo", "Produzione eliminata dal database!")
+
     # --- SCHEDA STORICO ---
     def setup_tab_storico(self):
         ttk.Label(self.tab_storico, text="Movimenti inseriti", font=("Arial", 14, "bold")).pack(pady=10)
@@ -649,6 +869,7 @@ class AppGestionaleGUI:
             )
 
         self.carica_categorie_salvate(mostra_errori=False)
+        self.aggiorna_situazione_attuale(mostra_errori=False)
 
     def carica_categorie_salvate(self, mostra_errori=True):
         if not hasattr(self, "combo_categoria"):
@@ -813,6 +1034,18 @@ class AppGestionaleGUI:
                 totale_iva = float(row_iva[0] or 0)
 
                 c.execute('''
+                    SELECT COALESCE(SUM(litri), 0),
+                           COUNT(id),
+                           COALESCE(SUM(litri * prezzo_litro), 0)
+                    FROM produzione_latte
+                    WHERE user_id=? AND data_op BETWEEN ? AND ?
+                ''', (self.user_id, inizio_db, fine_db))
+                row_latte = c.fetchone()
+                tot_litri = float(row_latte[0] or 0)
+                qta_produzioni = int(row_latte[1] or 0)
+                totale_valore_latte = float(row_latte[2] or 0)
+
+                c.execute('''
                     SELECT tipo,
                            COALESCE(NULLIF(TRIM(categoria), ''), '(Senza categoria)') AS cat,
                            COALESCE(SUM(importo), 0) AS totale,
@@ -840,12 +1073,23 @@ class AppGestionaleGUI:
                 tot_uscite = float(totale or 0)
 
         saldo = tot_entrate - tot_uscite
+        giorni_periodo = (fine - inizio).days + 1
+        media_litri_giorno = (tot_litri / giorni_periodo) if giorni_periodo > 0 else 0.0
+        media_litri_registrazione = (tot_litri / qta_produzioni) if qta_produzioni > 0 else 0.0
+        prezzo_medio_litro = (totale_valore_latte / tot_litri) if tot_litri > 0 else 0.0
+        costo_produzione_litro = (tot_uscite / tot_litri) if tot_litri > 0 else 0.0
 
         report_text = f"Movimenti estratti dal DB: {conteggio}\n"
+        report_text += f"Produzioni latte nel periodo: {qta_produzioni}\n"
         report_text += "-" * 30 + "\n"
         report_text += f"Totale Entrate: EUR {tot_entrate:.2f}\n"
         report_text += f"Totale Uscite:  EUR {tot_uscite:.2f}\n"
         report_text += f"Totale IVA:     EUR {totale_iva:.2f}\n"
+        report_text += f"Totale Litri:   {tot_litri:.2f} L\n"
+        report_text += f"Media Litri/Giorno: {media_litri_giorno:.2f} L\n"
+        report_text += f"Media Litri/Registrazione: {media_litri_registrazione:.2f} L\n"
+        report_text += f"Prezzo Medio/Litro: EUR {prezzo_medio_litro:.4f}\n"
+        report_text += f"Costo Produzione/Litro: EUR {costo_produzione_litro:.4f}\n"
         report_text += "-" * 30 + "\n"
         report_text += f"SALDO NETTO:   EUR {saldo:.2f}\n\n"
 
