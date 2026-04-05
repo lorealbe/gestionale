@@ -46,7 +46,14 @@ def init_db():
                       categoria TEXT,
                       descrizione TEXT,
                       importo REAL NOT NULL,
+                      iva_importo REAL NOT NULL DEFAULT 0,
                       FOREIGN KEY(user_id) REFERENCES utenti(id) ON DELETE CASCADE)''')
+
+        # Migrazione per database gia esistenti: aggiunge colonna IVA se manca.
+        c.execute("PRAGMA table_info(movimenti)")
+        colonne_movimenti = {row[1] for row in c.fetchall()}
+        if "iva_importo" not in colonne_movimenti:
+            c.execute("ALTER TABLE movimenti ADD COLUMN iva_importo REAL NOT NULL DEFAULT 0")
 
         # Indice utile per velocizzare i report per periodo
         c.execute('''CREATE INDEX IF NOT EXISTS idx_mov_user_date
@@ -201,14 +208,14 @@ class FinestraLogin:
         try:
             with get_conn() as conn:
                 c = conn.cursor()
-                c.execute("SELECT id, password_hash FROM utenti WHERE username=?", (user,))
+                c.execute("SELECT username, password_hash FROM utenti WHERE username=?", (user,))
                 row = c.fetchone()
 
             if not row:
                 messagebox.showerror("Accesso Negato", "Username o Password errati.")
                 return
 
-            user_id, stored_hash = row[0], row[1]
+            username, stored_hash = row[0], row[1]
             try:
                 ph.verify(stored_hash, pwd)
             except VerifyMismatchError:
@@ -218,7 +225,7 @@ class FinestraLogin:
             # Svuota la finestra attuale e carica l'app principale
             for widget in self.root.winfo_children():
                 widget.destroy()
-            AppGestionaleGUI(self.root, user_id)
+            AppGestionaleGUI(self.root, username)
 
         except sqlite3.Error as e:
             messagebox.showerror("Errore DB", f"Errore database: {e}")
@@ -230,7 +237,7 @@ class AppGestionaleGUI:
         self.root = root
         self.user_id = user_id
         self.movimento_in_modifica_id = None
-        self.root.title(f"Gestione Fatture - Utente ID: {self.user_id}")
+        self.root.title(f"Gestione Fatture - Utente: {self.user_id}")
         self.root.geometry("700x520")
 
         self.notebook = ttk.Notebook(self.root)
@@ -310,6 +317,7 @@ class AppGestionaleGUI:
         self.var_cat = tk.StringVar()
         self.var_desc = tk.StringVar()
         self.var_imp = tk.StringVar()
+        self.var_iva = tk.StringVar(value="0.00")
 
         self.crea_campo_data(self.tab_movimenti, "Data:", self.var_data)
 
@@ -322,9 +330,10 @@ class AppGestionaleGUI:
         ttk.Radiobutton(frame_radio, text="Entrata", value="ENTRATA", variable=self.var_tipo).pack(side="left", padx=(0, 15))
         ttk.Radiobutton(frame_radio, text="Uscita", value="USCITA", variable=self.var_tipo).pack(side="left")
 
-        self.crea_campo(self.tab_movimenti, "Categoria:", self.var_cat)
+        self.crea_campo_categoria(self.tab_movimenti, "Categoria:", self.var_cat)
         self.crea_campo(self.tab_movimenti, "Descrizione:", self.var_desc)
         self.crea_campo(self.tab_movimenti, "Importo (€):", self.var_imp)
+        self.crea_campo(self.tab_movimenti, "IVA (€):", self.var_iva)
 
         frame_actions = ttk.Frame(self.tab_movimenti)
         frame_actions.pack(pady=20)
@@ -357,15 +366,19 @@ class AppGestionaleGUI:
             messagebox.showerror("Errore", "Formato data non valido (Usa GG/MM/AAAA)")
             return
 
-        try:
-            importo_val = float(self.var_imp.get().replace(",", "."))
-        except ValueError:
+        importo_val = self._normalizza_importo(self.var_imp.get(), allow_zero=False)
+        if importo_val is None:
             messagebox.showerror("Errore", "Importo non valido.")
             return
 
-        if importo_val <= 0:
-            messagebox.showerror("Errore", "L'importo deve essere maggiore di 0.")
-            return
+        iva_text = self.var_iva.get().strip()
+        if is_blank(iva_text):
+            iva_val = 0.0
+        else:
+            iva_val = self._normalizza_importo(iva_text, allow_zero=True)
+            if iva_val is None:
+                messagebox.showerror("Errore", "Valore IVA non valido.")
+                return
 
         try:
             with get_conn() as conn:
@@ -373,25 +386,27 @@ class AppGestionaleGUI:
 
                 if self.movimento_in_modifica_id is None:
                     c.execute('''
-                        INSERT INTO movimenti (user_id, data_op, tipo, categoria, descrizione, importo)
-                        VALUES (?, ?, ?, ?, ?, ?)
+                        INSERT INTO movimenti (user_id, data_op, tipo, categoria, descrizione, importo, iva_importo)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
                     ''', (self.user_id,
                           data_db,
                           self.var_tipo.get(),
                           self.var_cat.get().strip(),
                           self.var_desc.get().strip(),
-                          importo_val))
+                          importo_val,
+                          iva_val))
                     msg_ok = "Movimento salvato nel database!"
                 else:
                     c.execute('''
                         UPDATE movimenti
-                        SET data_op=?, tipo=?, categoria=?, descrizione=?, importo=?
+                        SET data_op=?, tipo=?, categoria=?, descrizione=?, importo=?, iva_importo=?
                         WHERE id=? AND user_id=?
                     ''', (data_db,
                           self.var_tipo.get(),
                           self.var_cat.get().strip(),
                           self.var_desc.get().strip(),
                           importo_val,
+                          iva_val,
                           self.movimento_in_modifica_id,
                           self.user_id))
 
@@ -434,6 +449,8 @@ class AppGestionaleGUI:
             self.var_desc.set(dati["descrizione"])
         if dati.get("importo"):
             self.var_imp.set(dati["importo"])
+        if dati.get("iva"):
+            self.var_iva.set(dati["iva"])
 
         if is_blank(self.var_imp.get()):
             messagebox.showwarning("Attenzione", "Importo non trovato automaticamente. Verificalo manualmente.")
@@ -485,6 +502,18 @@ class AppGestionaleGUI:
                 if importo is not None:
                     break
 
+        iva = None
+        iva_patterns = [
+            r"(?:imposta\s*iva|iva(?:\s*imposta)?)\D{0,20}([€\s]*\d{1,3}(?:[.\s]\d{3})*(?:,\d{2})|[€\s]*\d+(?:[.,]\d{2}))",
+        ]
+
+        for p in iva_patterns:
+            m = re.search(p, t, flags=re.IGNORECASE)
+            if m:
+                iva = self._normalizza_importo(m.group(1), allow_zero=True)
+                if iva is not None:
+                    break
+
         # Fallback: prende il massimo importo trovato
         if importo is None:
             candidati = re.findall(r"[€\s]*\d{1,3}(?:[.\s]\d{3})*(?:,\d{2})|[€\s]*\d+(?:[.,]\d{2})", testo)
@@ -492,6 +521,9 @@ class AppGestionaleGUI:
             valori = [v for v in valori if v is not None]
             if valori:
                 importo = max(valori)
+
+        if iva is None:
+            iva = 0.0
 
         tipo = "USCITA"
         if "nota di credito" in t or "rimborso" in t:
@@ -503,9 +535,10 @@ class AppGestionaleGUI:
             "categoria": "Fattura",
             "descrizione": f"Fattura importata: {Path(file_path).name}",
             "importo": f"{importo:.2f}" if importo is not None else "",
+            "iva": f"{iva:.2f}",
         }
 
-    def _normalizza_importo(self, raw):
+    def _normalizza_importo(self, raw, allow_zero=False):
         if not raw:
             return None
         s = raw.strip()
@@ -524,7 +557,11 @@ class AppGestionaleGUI:
 
         try:
             val = float(s)
-            return val if val > 0 else None
+            if val < 0:
+                return None
+            if not allow_zero and val <= 0:
+                return None
+            return val
         except ValueError:
             return None
 
@@ -535,7 +572,7 @@ class AppGestionaleGUI:
         frame_table = ttk.Frame(self.tab_storico)
         frame_table.pack(fill="both", expand=True, padx=12, pady=6)
 
-        cols = ("id", "data", "tipo", "categoria", "descrizione", "importo")
+        cols = ("id", "data", "tipo", "categoria", "descrizione", "importo", "iva")
         self.tree_movimenti = ttk.Treeview(frame_table, columns=cols, show="headings", height=14)
 
         self.tree_movimenti.heading("id", text="ID")
@@ -544,13 +581,15 @@ class AppGestionaleGUI:
         self.tree_movimenti.heading("categoria", text="Categoria")
         self.tree_movimenti.heading("descrizione", text="Descrizione")
         self.tree_movimenti.heading("importo", text="Importo")
+        self.tree_movimenti.heading("iva", text="IVA")
 
         self.tree_movimenti.column("id", width=60, anchor="center")
         self.tree_movimenti.column("data", width=100, anchor="center")
         self.tree_movimenti.column("tipo", width=90, anchor="center")
         self.tree_movimenti.column("categoria", width=130, anchor="w")
-        self.tree_movimenti.column("descrizione", width=220, anchor="w")
-        self.tree_movimenti.column("importo", width=100, anchor="e")
+        self.tree_movimenti.column("descrizione", width=180, anchor="w")
+        self.tree_movimenti.column("importo", width=90, anchor="e")
+        self.tree_movimenti.column("iva", width=90, anchor="e")
 
         scroll = ttk.Scrollbar(frame_table, orient="vertical", command=self.tree_movimenti.yview)
         self.tree_movimenti.configure(yscrollcommand=scroll.set)
@@ -579,7 +618,7 @@ class AppGestionaleGUI:
             with get_conn() as conn:
                 c = conn.cursor()
                 c.execute('''
-                    SELECT id, data_op, tipo, categoria, descrizione, importo
+                    SELECT id, data_op, tipo, categoria, descrizione, importo, iva_importo
                     FROM movimenti
                     WHERE user_id=?
                     ORDER BY data_op DESC, id DESC
@@ -589,7 +628,7 @@ class AppGestionaleGUI:
             messagebox.showerror("Errore DB", f"Errore database: {e}")
             return
 
-        for mov_id, data_op, tipo, categoria, descrizione, importo in rows:
+        for mov_id, data_op, tipo, categoria, descrizione, importo, iva_importo in rows:
             try:
                 data_view = datetime.strptime(data_op, "%Y-%m-%d").strftime("%d/%m/%Y")
             except ValueError:
@@ -604,9 +643,36 @@ class AppGestionaleGUI:
                     tipo,
                     categoria or "",
                     descrizione or "",
-                    f"{float(importo):.2f}"
+                    f"{float(importo):.2f}",
+                    f"{float(iva_importo):.2f}"
                 )
             )
+
+        self.carica_categorie_salvate(mostra_errori=False)
+
+    def carica_categorie_salvate(self, mostra_errori=True):
+        if not hasattr(self, "combo_categoria"):
+            return
+
+        try:
+            with get_conn() as conn:
+                c = conn.cursor()
+                c.execute('''
+                    SELECT DISTINCT TRIM(categoria) AS cat
+                    FROM movimenti
+                    WHERE user_id=?
+                      AND categoria IS NOT NULL
+                      AND TRIM(categoria) <> ''
+                    ORDER BY cat COLLATE NOCASE
+                ''', (self.user_id,))
+                rows = c.fetchall()
+        except sqlite3.Error as e:
+            if mostra_errori:
+                messagebox.showerror("Errore DB", f"Errore database: {e}")
+            return
+
+        categorie = [row[0] for row in rows if row[0]]
+        self.combo_categoria["values"] = categorie
 
     def prepara_modifica_movimento(self):
         selezione = self.tree_movimenti.selection()
@@ -625,6 +691,7 @@ class AppGestionaleGUI:
         self.var_cat.set(valori[3] or "")
         self.var_desc.set(valori[4] or "")
         self.var_imp.set((valori[5] or "").replace(",", "."))
+        self.var_iva.set((valori[6] or "0.00").replace(",", "."))
 
         self.btn_salva_movimento.config(text="Aggiorna nel DB")
         self.btn_annulla_modifica.config(state="normal")
@@ -678,6 +745,7 @@ class AppGestionaleGUI:
         self.var_cat.set("")
         self.var_desc.set("")
         self.var_imp.set("")
+        self.var_iva.set("0.00")
 
     # --- SCHEDA REPORT ---
     def setup_tab_report(self):
@@ -737,6 +805,14 @@ class AppGestionaleGUI:
                 risultati = c.fetchall()
 
                 c.execute('''
+                    SELECT COALESCE(SUM(iva_importo), 0)
+                    FROM movimenti
+                    WHERE user_id=? AND data_op BETWEEN ? AND ?
+                ''', (self.user_id, inizio_db, fine_db))
+                row_iva = c.fetchone()
+                totale_iva = float(row_iva[0] or 0)
+
+                c.execute('''
                     SELECT tipo,
                            COALESCE(NULLIF(TRIM(categoria), ''), '(Senza categoria)') AS cat,
                            COALESCE(SUM(importo), 0) AS totale,
@@ -769,6 +845,7 @@ class AppGestionaleGUI:
         report_text += "-" * 30 + "\n"
         report_text += f"Totale Entrate: EUR {tot_entrate:.2f}\n"
         report_text += f"Totale Uscite:  EUR {tot_uscite:.2f}\n"
+        report_text += f"Totale IVA:     EUR {totale_iva:.2f}\n"
         report_text += "-" * 30 + "\n"
         report_text += f"SALDO NETTO:   EUR {saldo:.2f}\n\n"
 
@@ -792,6 +869,21 @@ class AppGestionaleGUI:
         frame.pack(fill="x", padx=20, pady=5)
         ttk.Label(frame, text=label_text, width=20).pack(side="left")
         ttk.Entry(frame, textvariable=text_var).pack(side="left", fill="x", expand=True)
+
+    def crea_campo_categoria(self, parent, label_text, text_var):
+        frame = ttk.Frame(parent)
+        frame.pack(fill="x", padx=20, pady=5)
+        ttk.Label(frame, text=label_text, width=20).pack(side="left")
+
+        self.combo_categoria = ttk.Combobox(
+            frame,
+            textvariable=text_var,
+            state="normal",
+            postcommand=self.carica_categorie_salvate
+        )
+        self.combo_categoria.pack(side="left", fill="x", expand=True)
+
+        ttk.Button(frame, text="Aggiorna", command=self.carica_categorie_salvate).pack(side="left", padx=(5, 0))
 
     def crea_campo_data(self, parent, label_text, text_var):
         frame = ttk.Frame(parent)
