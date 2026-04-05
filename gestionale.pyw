@@ -12,6 +12,7 @@ from argon2.exceptions import VerifyMismatchError
 # --- GESTIONE DATABASE ---
 DB_NAME = "gestionale.db"
 ph = PasswordHasher()  # Argon2 (consigliato)
+LITRI_PER_QUINTALE = 100.0
 
 def get_conn():
     conn = sqlite3.connect(DB_NAME)
@@ -59,7 +60,7 @@ def init_db():
         c.execute('''CREATE INDEX IF NOT EXISTS idx_mov_user_date
                      ON movimenti(user_id, data_op)''')
 
-        # Tabella Produzione Latte (litri prodotti e prezzo al litro)
+        # Tabella Produzione Latte (quantita salvata in litri, input in quintali)
         c.execute('''CREATE TABLE IF NOT EXISTS produzione_latte
                      (id INTEGER PRIMARY KEY AUTOINCREMENT,
                       user_id INTEGER NOT NULL,
@@ -286,6 +287,8 @@ class AppGestionaleGUI:
         self.carica_movimenti()
         self.carica_produzioni_latte(mostra_errori=False)
         self.aggiorna_situazione_attuale(mostra_errori=False)
+        self.imposta_periodo_report_default(mostra_errori=False)
+        self.genera_report()
 
     # --- SCHEDA SITUAZIONE ---
     def setup_tab_situazione(self):
@@ -601,12 +604,14 @@ class AppGestionaleGUI:
         ttk.Label(self.tab_latte, text="Produzione Latte", font=("Arial", 14, "bold")).pack(pady=10)
 
         self.var_latte_data = tk.StringVar(value=datetime.now().strftime("%d/%m/%Y"))
-        self.var_latte_litri = tk.StringVar()
+        self.var_latte_quintali = tk.StringVar()
         self.var_latte_prezzo = tk.StringVar(value="0.00")
 
         self.crea_campo_data(self.tab_latte, "Data produzione:", self.var_latte_data)
-        self.crea_campo(self.tab_latte, "Litri prodotti:", self.var_latte_litri)
+        self.crea_campo(self.tab_latte, "Quintali prodotti:", self.var_latte_quintali)
         self.crea_campo(self.tab_latte, "Prezzo al litro (EUR):", self.var_latte_prezzo)
+
+        ttk.Label(self.tab_latte, text="Conversione automatica: 1 quintale = 100 litri").pack(pady=(0, 6))
 
         frame_actions = ttk.Frame(self.tab_latte)
         frame_actions.pack(pady=10)
@@ -618,17 +623,17 @@ class AppGestionaleGUI:
         frame_table = ttk.Frame(self.tab_latte)
         frame_table.pack(fill="both", expand=True, padx=12, pady=8)
 
-        cols = ("id", "data", "litri", "prezzo")
+        cols = ("id", "data", "quintali", "prezzo")
         self.tree_produzione = ttk.Treeview(frame_table, columns=cols, show="headings", height=10)
 
         self.tree_produzione.heading("id", text="ID")
         self.tree_produzione.heading("data", text="Data")
-        self.tree_produzione.heading("litri", text="Litri")
+        self.tree_produzione.heading("quintali", text="Quintali")
         self.tree_produzione.heading("prezzo", text="Prezzo / L")
 
         self.tree_produzione.column("id", width=60, anchor="center")
         self.tree_produzione.column("data", width=120, anchor="center")
-        self.tree_produzione.column("litri", width=140, anchor="e")
+        self.tree_produzione.column("quintali", width=140, anchor="e")
         self.tree_produzione.column("prezzo", width=140, anchor="e")
 
         scroll = ttk.Scrollbar(frame_table, orient="vertical", command=self.tree_produzione.yview)
@@ -643,8 +648,8 @@ class AppGestionaleGUI:
         if is_blank(self.var_latte_data.get()):
             messagebox.showerror("Errore", "Inserisci la data di produzione.")
             return
-        if is_blank(self.var_latte_litri.get()):
-            messagebox.showerror("Errore", "Inserisci i litri prodotti.")
+        if is_blank(self.var_latte_quintali.get()):
+            messagebox.showerror("Errore", "Inserisci i quintali prodotti.")
             return
 
         try:
@@ -654,10 +659,12 @@ class AppGestionaleGUI:
             messagebox.showerror("Errore", "Formato data non valido (Usa GG/MM/AAAA)")
             return
 
-        litri_val = self._normalizza_importo(self.var_latte_litri.get(), allow_zero=False)
-        if litri_val is None:
-            messagebox.showerror("Errore", "Litri non validi.")
+        quintali_val = self._normalizza_importo(self.var_latte_quintali.get(), allow_zero=False)
+        if quintali_val is None:
+            messagebox.showerror("Errore", "Quintali non validi.")
             return
+
+        litri_val = quintali_val * LITRI_PER_QUINTALE
 
         prezzo_text = self.var_latte_prezzo.get().strip()
         if is_blank(prezzo_text):
@@ -669,7 +676,7 @@ class AppGestionaleGUI:
                 return
 
         importo_entrata = litri_val * prezzo_val
-        descrizione_mov = f"Produzione latte: {litri_val:.2f} L x EUR {prezzo_val:.4f}/L"
+        descrizione_mov = f"Produzione latte: {quintali_val:.2f} q ({litri_val:.2f} L) x EUR {prezzo_val:.4f}/L"
 
         try:
             with get_conn() as conn:
@@ -695,10 +702,10 @@ class AppGestionaleGUI:
             messagebox.showerror("Errore DB", f"Errore database: {e}")
             return
 
-        self.var_latte_litri.set("")
+        self.var_latte_quintali.set("")
         self.carica_produzioni_latte(mostra_errori=False)
         self.carica_movimenti()
-        messagebox.showinfo("Successo", f"Produzione latte salvata! Entrata automatica: EUR {importo_entrata:.2f}")
+        messagebox.showinfo("Successo", f"Produzione latte salvata ({quintali_val:.2f} q)! Entrata automatica: EUR {importo_entrata:.2f}")
 
     def carica_produzioni_latte(self, mostra_errori=True):
         if not hasattr(self, "tree_produzione"):
@@ -728,13 +735,15 @@ class AppGestionaleGUI:
             except ValueError:
                 data_view = data_op
 
+            quintali = float(litri) / LITRI_PER_QUINTALE
+
             self.tree_produzione.insert(
                 "",
                 "end",
                 values=(
                     prod_id,
                     data_view,
-                    f"{float(litri):.2f}",
+                    f"{quintali:.2f}",
                     f"{float(prezzo_litro):.4f}"
                 )
             )
@@ -753,7 +762,7 @@ class AppGestionaleGUI:
         prod_id = int(valori[0])
         conferma = messagebox.askyesno(
             "Conferma eliminazione",
-            f"Vuoi eliminare la produzione selezionata?\n\nData: {valori[1]} - Litri: {valori[2]}"
+            f"Vuoi eliminare la produzione selezionata?\n\nData: {valori[1]} - Quintali: {valori[2]}"
         )
         if not conferma:
             return
@@ -974,6 +983,7 @@ class AppGestionaleGUI:
 
         self.var_data_inizio = tk.StringVar()
         self.var_data_fine = tk.StringVar()
+        self.var_data_inizio.trace_add("write", self._auto_compila_data_fine)
 
         self.crea_campo_data(self.tab_report, "Data INIZIO:", self.var_data_inizio)
         self.crea_campo_data(self.tab_report, "Data FINE:", self.var_data_fine)
@@ -997,6 +1007,32 @@ class AppGestionaleGUI:
         self.txt_risultato.pack(side="left", fill="both", expand=True)
 
         scroll.config(command=self.txt_risultato.yview)
+
+    def _auto_compila_data_fine(self, *_args):
+        if is_blank(self.var_data_fine.get()) and not is_blank(self.var_data_inizio.get()):
+            self.var_data_fine.set(self.var_data_inizio.get())
+
+    def imposta_periodo_report_default(self, mostra_errori=True):
+        oggi = datetime.now().strftime("%d/%m/%Y")
+        data_inizio = oggi
+        data_fine = oggi
+
+        try:
+            with get_conn() as conn:
+                c = conn.cursor()
+                c.execute("SELECT MIN(data_op), MAX(data_op) FROM movimenti WHERE user_id=?", (self.user_id,))
+                row = c.fetchone()
+
+            if row and row[0]:
+                data_inizio = datetime.strptime(row[0], "%Y-%m-%d").strftime("%d/%m/%Y")
+                data_fine_iso = row[1] or row[0]
+                data_fine = datetime.strptime(data_fine_iso, "%Y-%m-%d").strftime("%d/%m/%Y")
+        except (sqlite3.Error, ValueError) as e:
+            if mostra_errori:
+                messagebox.showerror("Errore DB", f"Errore database: {e}")
+
+        self.var_data_inizio.set(data_inizio)
+        self.var_data_fine.set(data_fine)
 
     def genera_report(self):
         try:
@@ -1076,8 +1112,12 @@ class AppGestionaleGUI:
         giorni_periodo = (fine - inizio).days + 1
         media_litri_giorno = (tot_litri / giorni_periodo) if giorni_periodo > 0 else 0.0
         media_litri_registrazione = (tot_litri / qta_produzioni) if qta_produzioni > 0 else 0.0
+        tot_quintali = tot_litri / LITRI_PER_QUINTALE
+        media_quintali_giorno = media_litri_giorno / LITRI_PER_QUINTALE
+        media_quintali_registrazione = media_litri_registrazione / LITRI_PER_QUINTALE
         prezzo_medio_litro = (totale_valore_latte / tot_litri) if tot_litri > 0 else 0.0
         costo_produzione_litro = (tot_uscite / tot_litri) if tot_litri > 0 else 0.0
+        utile_litro = (saldo / tot_litri) if tot_litri > 0 else 0.0
 
         report_text = f"Movimenti estratti dal DB: {conteggio}\n"
         report_text += f"Produzioni latte nel periodo: {qta_produzioni}\n"
@@ -1085,11 +1125,12 @@ class AppGestionaleGUI:
         report_text += f"Totale Entrate: EUR {tot_entrate:.2f}\n"
         report_text += f"Totale Uscite:  EUR {tot_uscite:.2f}\n"
         report_text += f"Totale IVA:     EUR {totale_iva:.2f}\n"
-        report_text += f"Totale Litri:   {tot_litri:.2f} L\n"
-        report_text += f"Media Litri/Giorno: {media_litri_giorno:.2f} L\n"
-        report_text += f"Media Litri/Registrazione: {media_litri_registrazione:.2f} L\n"
+        report_text += f"Totale Quintali: {tot_quintali:.2f} q ({tot_litri:.2f} L)\n"
+        report_text += f"Media Quintali/Giorno: {media_quintali_giorno:.2f} q\n"
+        report_text += f"Media Quintali/Registrazione: {media_quintali_registrazione:.2f} q\n"
         report_text += f"Prezzo Medio/Litro: EUR {prezzo_medio_litro:.4f}\n"
         report_text += f"Costo Produzione/Litro: EUR {costo_produzione_litro:.4f}\n"
+        report_text += f"Utile/Litro: EUR {utile_litro:.4f}\n"
         report_text += "-" * 30 + "\n"
         report_text += f"SALDO NETTO:   EUR {saldo:.2f}\n\n"
 
