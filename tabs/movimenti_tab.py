@@ -7,8 +7,8 @@ from datetime import datetime
 from pathlib import Path
 from tkinter import ttk, messagebox, filedialog
 
-from app_utils import is_blank
-from database import get_conn
+from app_utils import format_number, is_blank
+from database import get_conn, get_fatture_user_dir, to_storage_fattura_path
 
 
 class MovimentiTabMixin:
@@ -20,7 +20,7 @@ class MovimentiTabMixin:
         self.var_cat = tk.StringVar()
         self.var_desc = tk.StringVar()
         self.var_imp = tk.StringVar()
-        self.var_iva = tk.StringVar(value="0.00")
+        self.var_iva = tk.StringVar(value="0,00")
 
         self.crea_campo_data(self.tab_movimenti, "Data:", self.var_data)
 
@@ -176,7 +176,7 @@ class MovimentiTabMixin:
 
         try:
             testo = self.estrai_testo_pdf(percorso_archiviato)
-            dati = self.analizza_testo_fattura(testo, percorso_archiviato)
+            dati = self.analizza_testo_fattura(testo, file_path)
         except Exception as e:
             messagebox.showwarning(
                 "Analisi non completata",
@@ -209,13 +209,13 @@ class MovimentiTabMixin:
         if not src.exists():
             raise RuntimeError("File fattura non trovato.")
 
-        archivio_dir = Path(__file__).resolve().parents[1] / "fatture_caricate" / f"user_{self.user_id}"
-        archivio_dir.mkdir(parents=True, exist_ok=True)
+        archivio_dir = get_fatture_user_dir(self.user_id)
 
         nome_pulito = re.sub(r"[^A-Za-z0-9._-]", "_", src.name)
         nome_dest = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}_{nome_pulito}"
         dest = archivio_dir / nome_dest
         shutil.copy2(src, dest)
+        percorso_db = to_storage_fattura_path(dest)
 
         with get_conn() as conn:
             c = conn.cursor()
@@ -228,7 +228,7 @@ class MovimentiTabMixin:
                     self.user_id,
                     origine,
                     src.name,
-                    str(dest),
+                    percorso_db,
                     datetime.now().isoformat(timespec="seconds"),
                 ),
             )
@@ -282,6 +282,7 @@ class MovimentiTabMixin:
 
     def analizza_testo_fattura(self, testo, file_path):
         t = testo.lower()
+        intestazione = self._estrai_intestazione_fattura(testo, file_path)
 
         data_match = re.search(r"\b(\d{2}[/-]\d{2}[/-]\d{4})\b", testo)
         data_out = ""
@@ -335,16 +336,62 @@ class MovimentiTabMixin:
             "data": data_out or datetime.now().strftime("%d/%m/%Y"),
             "tipo": tipo,
             "categoria": "Fattura",
-            "descrizione": f"Fattura importata: {Path(file_path).name}",
-            "importo": f"{importo:.2f}" if importo is not None else "",
-            "iva": f"{iva:.2f}",
+            "descrizione": intestazione,
+            "importo": format_number(importo, 2) if importo is not None else "",
+            "iva": format_number(iva, 2),
         }
+
+    def _estrai_intestazione_fattura(self, testo, file_path):
+        righe = []
+        for riga in testo.splitlines():
+            pulita = re.sub(r"\s+", " ", riga).strip()
+            if pulita:
+                righe.append(pulita)
+
+        if not righe:
+            return f"Fattura importata: {Path(file_path).name}"
+
+        parole_escluse = (
+            "fattura",
+            "invoice",
+            "numero",
+            "data",
+            "date",
+            "totale",
+            "iva",
+            "imponibile",
+            "pagamento",
+            "scadenza",
+            "iban",
+            "banca",
+            "documento",
+            "cliente",
+            "fornitore",
+        )
+
+        for riga in righe[:40]:
+            testo_riga = riga.lower()
+            if len(riga) < 3:
+                continue
+            if not re.search(r"[A-Za-z]", riga):
+                continue
+            if re.fullmatch(r"[0-9€.,/\\\-\s]+", riga):
+                continue
+            if any(parola in testo_riga for parola in parole_escluse):
+                continue
+            return riga[:120]
+
+        for riga in righe[:15]:
+            if re.search(r"[A-Za-z]", riga):
+                return riga[:120]
+
+        return f"Fattura importata: {Path(file_path).name}"
 
     def _normalizza_importo(self, raw, allow_zero=False):
         if not raw:
             return None
         s = raw.strip()
-        s = s.replace("€", "").replace(" ", "")
+        s = s.replace("€", "").replace(" ", "").replace("'", "").replace("’", "")
 
         if "," in s and "." in s:
             if s.rfind(",") > s.rfind("."):

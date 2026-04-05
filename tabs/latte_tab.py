@@ -3,7 +3,7 @@ import sqlite3
 from datetime import datetime
 from tkinter import ttk, messagebox
 
-from app_utils import is_blank
+from app_utils import format_eur, format_number, is_blank
 from database import get_conn, LITRI_PER_QUINTALE
 
 
@@ -13,7 +13,8 @@ class LatteTabMixin:
 
         self.var_latte_data = tk.StringVar(value=datetime.now().strftime("%d/%m/%Y"))
         self.var_latte_quintali = tk.StringVar()
-        self.var_latte_prezzo = tk.StringVar(value="0.00")
+        self.var_latte_prezzo = tk.StringVar(value="0,00")
+        self.produzione_in_modifica_id = None
 
         self.crea_campo_data(self.tab_latte, "Data produzione:", self.var_latte_data)
         self.crea_campo(self.tab_latte, "Quintali prodotti:", self.var_latte_quintali)
@@ -24,7 +25,8 @@ class LatteTabMixin:
         frame_actions = ttk.Frame(self.tab_latte)
         frame_actions.pack(pady=10)
 
-        ttk.Button(frame_actions, text="Salva Produzione", command=self.salva_produzione_latte).pack(side="left", padx=6)
+        self.btn_salva_produzione = ttk.Button(frame_actions, text="Salva Produzione", command=self.salva_produzione_latte)
+        self.btn_salva_produzione.pack(side="left", padx=6)
         ttk.Button(frame_actions, text="Ricarica Storico", command=self.carica_produzioni_latte).pack(side="left", padx=6)
         ttk.Button(frame_actions, text="Elimina selezionata", command=self.elimina_produzione_latte_selezionata).pack(side="left", padx=6)
 
@@ -59,6 +61,7 @@ class LatteTabMixin:
         self.tree_produzione.pack(side="left", fill="both", expand=True)
         scroll.pack(side="right", fill="y")
 
+        self.tree_produzione.bind("<<TreeviewSelect>>", self.prepara_modifica_produzione_latte)
         self.tree_produzione.bind("<Delete>", lambda _event: self.elimina_produzione_latte_selezionata())
 
     def salva_produzione_latte(self):
@@ -93,37 +96,109 @@ class LatteTabMixin:
                 return
 
         importo_entrata = litri_val * prezzo_val
-        descrizione_mov = f"Produzione latte: {quintali_val:.2f} q ({litri_val:.2f} L) x EUR {prezzo_val:.4f}/L"
+        descrizione_mov = (
+            f"Produzione latte: {format_number(quintali_val, 2)} q "
+            f"({format_number(litri_val, 2)} L) x {format_eur(prezzo_val, 4)}/L"
+        )
 
         try:
             with get_conn() as conn:
                 c = conn.cursor()
+                movimento_id = None
+                produzione_id = None
 
-                c.execute(
-                    '''
-                    INSERT INTO movimenti (user_id, data_op, tipo, categoria, descrizione, importo, iva_importo)
-                    VALUES (?, ?, 'ENTRATA', ?, ?, ?, 0)
-                ''',
-                    (
-                        self.user_id,
-                        data_db,
-                        "Latte",
-                        descrizione_mov,
-                        importo_entrata,
-                    ),
-                )
-                movimento_id = c.lastrowid
+                if self.produzione_in_modifica_id is None:
+                    c.execute(
+                        '''
+                        INSERT INTO movimenti (user_id, data_op, tipo, categoria, descrizione, importo, iva_importo)
+                        VALUES (?, ?, 'ENTRATA', ?, ?, ?, 0)
+                    ''',
+                        (
+                            self.user_id,
+                            data_db,
+                            "Latte",
+                            descrizione_mov,
+                            importo_entrata,
+                        ),
+                    )
+                    movimento_id = c.lastrowid
 
-                c.execute(
-                    '''
-                    INSERT INTO produzione_latte (user_id, data_op, litri, prezzo_litro, movimento_id)
-                    VALUES (?, ?, ?, ?, ?)
-                ''',
-                    (self.user_id, data_db, litri_val, prezzo_val, movimento_id),
-                )
-                produzione_id = c.lastrowid
+                    c.execute(
+                        '''
+                        INSERT INTO produzione_latte (user_id, data_op, litri, prezzo_litro, movimento_id)
+                        VALUES (?, ?, ?, ?, ?)
+                    ''',
+                        (self.user_id, data_db, litri_val, prezzo_val, movimento_id),
+                    )
+                    produzione_id = c.lastrowid
+                    msg_ok = "Produzione latte salvata"
+                else:
+                    produzione_id = self.produzione_in_modifica_id
 
-                if self.pending_fattura_latte_id is not None:
+                    c.execute(
+                        "SELECT movimento_id FROM produzione_latte WHERE id=? AND user_id=?",
+                        (produzione_id, self.user_id),
+                    )
+                    row = c.fetchone()
+                    if not row:
+                        messagebox.showerror("Errore", "Produzione non trovata o non modificabile.")
+                        return
+                    movimento_id = row[0]
+
+                    c.execute(
+                        '''
+                        UPDATE produzione_latte
+                        SET data_op=?, litri=?, prezzo_litro=?
+                        WHERE id=? AND user_id=?
+                    ''',
+                        (data_db, litri_val, prezzo_val, produzione_id, self.user_id),
+                    )
+                    if c.rowcount == 0:
+                        messagebox.showerror("Errore", "Produzione non trovata o non modificabile.")
+                        return
+
+                    if movimento_id is not None:
+                        c.execute(
+                            '''
+                            UPDATE movimenti
+                            SET data_op=?, tipo='ENTRATA', categoria=?, descrizione=?, importo=?, iva_importo=0
+                            WHERE id=? AND user_id=?
+                        ''',
+                            (
+                                data_db,
+                                "Latte",
+                                descrizione_mov,
+                                importo_entrata,
+                                movimento_id,
+                                self.user_id,
+                            ),
+                        )
+                        if c.rowcount == 0:
+                            movimento_id = None
+
+                    if movimento_id is None:
+                        c.execute(
+                            '''
+                            INSERT INTO movimenti (user_id, data_op, tipo, categoria, descrizione, importo, iva_importo)
+                            VALUES (?, ?, 'ENTRATA', ?, ?, ?, 0)
+                        ''',
+                            (
+                                self.user_id,
+                                data_db,
+                                "Latte",
+                                descrizione_mov,
+                                importo_entrata,
+                            ),
+                        )
+                        movimento_id = c.lastrowid
+                        c.execute(
+                            "UPDATE produzione_latte SET movimento_id=? WHERE id=? AND user_id=?",
+                            (movimento_id, produzione_id, self.user_id),
+                        )
+
+                    msg_ok = "Produzione latte aggiornata"
+
+                if self.pending_fattura_latte_id is not None and movimento_id is not None and produzione_id is not None:
                     c.execute(
                         '''
                         UPDATE fatture
@@ -136,13 +211,13 @@ class LatteTabMixin:
             messagebox.showerror("Errore DB", f"Errore database: {e}")
             return
 
-        self.var_latte_quintali.set("")
+        self.annulla_modifica_produzione_latte(reset_campi=True)
         self.rimuovi_fattura_latte()
         self.carica_produzioni_latte(mostra_errori=False)
         self.carica_movimenti()
         messagebox.showinfo(
             "Successo",
-            f"Produzione latte salvata ({quintali_val:.2f} q)! Entrata automatica: EUR {importo_entrata:.2f}",
+            f"{msg_ok} ({format_number(quintali_val, 2)} q)! Entrata automatica: {format_eur(importo_entrata)}",
         )
 
     def carica_produzioni_latte(self, mostra_errori=True):
@@ -184,10 +259,38 @@ class LatteTabMixin:
                 values=(
                     prod_id,
                     data_view,
-                    f"{quintali:.2f}",
-                    f"{float(prezzo_litro):.4f}",
+                    format_number(quintali, 2),
+                    format_number(float(prezzo_litro), 4),
                 ),
             )
+
+    def prepara_modifica_produzione_latte(self, _event=None):
+        selezione = self.tree_produzione.selection()
+        if not selezione:
+            return
+
+        valori = self.tree_produzione.item(selezione[0], "values")
+        if not valori:
+            return
+
+        self.produzione_in_modifica_id = int(valori[0])
+        self.var_latte_data.set(valori[1] or datetime.now().strftime("%d/%m/%Y"))
+        self.var_latte_quintali.set(valori[2] or "")
+        self.var_latte_prezzo.set(valori[3] or "0,00")
+        if hasattr(self, "btn_salva_produzione"):
+            self.btn_salva_produzione.config(text="Aggiorna Produzione")
+
+    def annulla_modifica_produzione_latte(self, reset_campi=False):
+        self.produzione_in_modifica_id = None
+        if hasattr(self, "btn_salva_produzione"):
+            self.btn_salva_produzione.config(text="Salva Produzione")
+        if hasattr(self, "tree_produzione"):
+            self.tree_produzione.selection_remove(*self.tree_produzione.selection())
+
+        if reset_campi:
+            self.var_latte_data.set(datetime.now().strftime("%d/%m/%Y"))
+            self.var_latte_quintali.set("")
+            self.var_latte_prezzo.set("0,00")
 
     def elimina_produzione_latte_selezionata(self):
         selezione = self.tree_produzione.selection()
@@ -201,6 +304,7 @@ class LatteTabMixin:
             return
 
         prod_id = int(valori[0])
+        era_in_modifica = self.produzione_in_modifica_id == prod_id
         conferma = messagebox.askyesno(
             "Conferma eliminazione",
             f"Vuoi eliminare la produzione selezionata?\n\nData: {valori[1]} - Quintali: {valori[2]}",
@@ -238,6 +342,8 @@ class LatteTabMixin:
 
         self.carica_produzioni_latte(mostra_errori=False)
         self.carica_movimenti()
+        if era_in_modifica:
+            self.annulla_modifica_produzione_latte(reset_campi=True)
 
         msg_ok = "Produzione eliminata dal database!"
         if fatture_eliminate > 0:

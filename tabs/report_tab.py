@@ -3,40 +3,94 @@ from datetime import datetime
 import tkinter as tk
 from tkinter import ttk, messagebox
 
-from app_utils import is_blank
+from app_utils import format_eur, format_number, is_blank
 from database import get_conn, LITRI_PER_QUINTALE
 
 
 class ReportTabMixin:
     def setup_tab_report(self):
-        ttk.Label(self.tab_report, text="Genera Report", font=("Arial", 14, "bold")).pack(pady=10)
+        container = ttk.Frame(self.tab_report)
+        container.pack(fill="both", expand=True)
+
+        self.report_canvas = tk.Canvas(container, highlightthickness=0)
+        self.report_scrollbar = ttk.Scrollbar(container, orient="vertical", command=self.report_canvas.yview)
+        self.report_canvas.configure(yscrollcommand=self.report_scrollbar.set)
+
+        self.report_scrollbar.pack(side="right", fill="y")
+        self.report_canvas.pack(side="left", fill="both", expand=True)
+
+        content = ttk.Frame(self.report_canvas)
+        self.report_canvas_window = self.report_canvas.create_window((0, 0), window=content, anchor="nw")
+
+        def _on_content_configure(_event):
+            self.report_canvas.configure(scrollregion=self.report_canvas.bbox("all"))
+
+        def _on_canvas_configure(event):
+            self.report_canvas.itemconfigure(self.report_canvas_window, width=event.width)
+
+        content.bind("<Configure>", _on_content_configure)
+        self.report_canvas.bind("<Configure>", _on_canvas_configure)
+
+        ttk.Label(content, text="Genera Report", font=("Arial", 14, "bold")).pack(pady=10)
 
         self.var_data_inizio = tk.StringVar()
         self.var_data_fine = tk.StringVar()
         self.var_data_inizio.trace_add("write", self._auto_compila_data_fine)
 
-        self.crea_campo_data(self.tab_report, "Data INIZIO:", self.var_data_inizio)
-        self.crea_campo_data(self.tab_report, "Data FINE:", self.var_data_fine)
+        self.crea_campo_data(content, "Data INIZIO:", self.var_data_inizio)
+        self.crea_campo_data(content, "Data FINE:", self.var_data_fine)
 
-        ttk.Button(self.tab_report, text="Interroga DB e Calcola", command=self.genera_report).pack(pady=15)
+        ttk.Button(content, text="Interroga DB e Calcola", command=self.genera_report).pack(pady=15)
 
-        frame_report = ttk.Frame(self.tab_report)
+        frame_report = ttk.Frame(content)
         frame_report.pack(padx=20, pady=10, fill="both", expand=True)
 
-        scroll = ttk.Scrollbar(frame_report, orient="vertical")
-        scroll.pack(side="right", fill="y")
+        frame_riepilogo = ttk.LabelFrame(frame_report, text="Riepilogo")
+        frame_riepilogo.pack(fill="x", expand=False, pady=(0, 8))
 
-        self.txt_risultato = tk.Text(
-            frame_report,
+        cols_riepilogo = ("metrica", "valore")
+        self.tree_report_riepilogo = ttk.Treeview(
+            frame_riepilogo,
+            columns=cols_riepilogo,
+            show="headings",
             height=12,
-            width=60,
-            state="disabled",
-            wrap="word",
-            yscrollcommand=scroll.set,
         )
-        self.txt_risultato.pack(side="left", fill="both", expand=True)
+        self.tree_report_riepilogo.heading("metrica", text="Metrica")
+        self.tree_report_riepilogo.heading("valore", text="Valore")
+        self.tree_report_riepilogo.column("metrica", width=260, anchor="w")
+        self.tree_report_riepilogo.column("valore", width=220, anchor="e")
 
-        scroll.config(command=self.txt_risultato.yview)
+        scroll_riepilogo = ttk.Scrollbar(frame_riepilogo, orient="vertical", command=self.tree_report_riepilogo.yview)
+        self.tree_report_riepilogo.configure(yscrollcommand=scroll_riepilogo.set)
+
+        self.tree_report_riepilogo.pack(side="left", fill="both", expand=True)
+        scroll_riepilogo.pack(side="right", fill="y")
+
+        frame_categorie = ttk.LabelFrame(frame_report, text="Dettaglio per categoria")
+        frame_categorie.pack(fill="both", expand=True)
+
+        cols_categorie = ("tipo", "categoria", "totale", "movimenti")
+        self.tree_report_categorie = ttk.Treeview(
+            frame_categorie,
+            columns=cols_categorie,
+            show="headings",
+            height=10,
+        )
+        self.tree_report_categorie.heading("tipo", text="Tipo")
+        self.tree_report_categorie.heading("categoria", text="Categoria")
+        self.tree_report_categorie.heading("totale", text="Totale")
+        self.tree_report_categorie.heading("movimenti", text="N. Movimenti")
+
+        self.tree_report_categorie.column("tipo", width=100, anchor="center")
+        self.tree_report_categorie.column("categoria", width=240, anchor="w")
+        self.tree_report_categorie.column("totale", width=140, anchor="e")
+        self.tree_report_categorie.column("movimenti", width=120, anchor="e")
+
+        scroll_categorie = ttk.Scrollbar(frame_categorie, orient="vertical", command=self.tree_report_categorie.yview)
+        self.tree_report_categorie.configure(yscrollcommand=scroll_categorie.set)
+
+        self.tree_report_categorie.pack(side="left", fill="both", expand=True)
+        scroll_categorie.pack(side="right", fill="y")
 
     def _auto_compila_data_fine(self, *_args):
         if is_blank(self.var_data_fine.get()) and not is_blank(self.var_data_inizio.get()):
@@ -161,32 +215,40 @@ class ReportTabMixin:
         costo_produzione_litro = (tot_uscite / tot_litri) if tot_litri > 0 else 0.0
         utile_litro = (saldo / tot_litri) if tot_litri > 0 else 0.0
 
-        report_text = f"Movimenti estratti dal DB: {conteggio}\n"
-        report_text += f"Produzioni latte nel periodo: {qta_produzioni}\n"
-        report_text += "-" * 30 + "\n"
-        report_text += f"Totale Entrate: EUR {tot_entrate:.2f}\n"
-        report_text += f"Totale Uscite:  EUR {tot_uscite:.2f}\n"
-        report_text += f"Totale IVA:     EUR {totale_iva:.2f}\n"
-        report_text += f"Totale Quintali: {tot_quintali:.2f} q ({tot_litri:.2f} L)\n"
-        report_text += f"Media Quintali/Giorno: {media_quintali_giorno:.2f} q\n"
-        report_text += f"Media Quintali/Registrazione: {media_quintali_registrazione:.2f} q\n"
-        report_text += f"Prezzo Medio/Litro: EUR {prezzo_medio_litro:.4f}\n"
-        report_text += f"Costo Produzione/Litro: EUR {costo_produzione_litro:.4f}\n"
-        report_text += f"Utile/Litro: EUR {utile_litro:.4f}\n"
-        report_text += "-" * 30 + "\n"
-        report_text += f"SALDO NETTO:   EUR {saldo:.2f}\n\n"
+        if not hasattr(self, "tree_report_riepilogo") or not hasattr(self, "tree_report_categorie"):
+            return
 
-        report_text += "DETTAGLIO PER CATEGORIA\n"
-        report_text += "-" * 30 + "\n"
+        for item in self.tree_report_riepilogo.get_children():
+            self.tree_report_riepilogo.delete(item)
+        for item in self.tree_report_categorie.get_children():
+            self.tree_report_categorie.delete(item)
 
-        tipo_corrente = None
+        righe_riepilogo = [
+            ("Movimenti estratti dal DB", str(conteggio)),
+            ("Produzioni latte nel periodo", str(qta_produzioni)),
+            ("Totale Entrate", format_eur(tot_entrate)),
+            ("Totale Uscite", format_eur(tot_uscite)),
+            ("Totale IVA", format_eur(totale_iva)),
+            ("Totale Quintali", f"{format_number(tot_quintali, 2)} q ({format_number(tot_litri, 2)} L)"),
+            ("Media Quintali/Giorno", f"{format_number(media_quintali_giorno, 2)} q"),
+            ("Media Quintali/Registrazione", f"{format_number(media_quintali_registrazione, 2)} q"),
+            ("Prezzo Medio/Litro", format_eur(prezzo_medio_litro, 4)),
+            ("Costo Produzione/Litro", format_eur(costo_produzione_litro, 4)),
+            ("Utile/Litro", format_eur(utile_litro, 4)),
+            ("Saldo Netto", format_eur(saldo)),
+        ]
+
+        for metrica, valore in righe_riepilogo:
+            self.tree_report_riepilogo.insert("", "end", values=(metrica, valore))
+
         for tipo, cat, totale, qta in righe_cat:
-            if tipo != tipo_corrente:
-                tipo_corrente = tipo
-                report_text += f"\n[{tipo}]\n"
-            report_text += f"- {cat}: EUR {float(totale):.2f} ({qta} mov.)\n"
-
-        self.txt_risultato.config(state="normal")
-        self.txt_risultato.delete(1.0, tk.END)
-        self.txt_risultato.insert(tk.END, report_text)
-        self.txt_risultato.config(state="disabled")
+            self.tree_report_categorie.insert(
+                "",
+                "end",
+                values=(
+                    tipo,
+                    cat,
+                    format_eur(float(totale)),
+                    qta,
+                ),
+            )

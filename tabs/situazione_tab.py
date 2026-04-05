@@ -2,6 +2,7 @@ import tkinter as tk
 import sqlite3
 from tkinter import ttk, messagebox
 
+from app_utils import format_eur
 from database import get_conn
 
 
@@ -13,9 +14,9 @@ class SituazioneTabMixin:
         frame_stats.pack(fill="x", padx=20, pady=10)
 
         self.var_tot_movimenti = tk.StringVar(value="0")
-        self.var_tot_entrate = tk.StringVar(value="EUR 0.00")
-        self.var_tot_uscite = tk.StringVar(value="EUR 0.00")
-        self.var_tot_utile = tk.StringVar(value="EUR 0.00")
+        self.var_tot_entrate = tk.StringVar(value=format_eur(0))
+        self.var_tot_uscite = tk.StringVar(value=format_eur(0))
+        self.var_tot_utile = tk.StringVar(value=format_eur(0))
 
         righe = [
             ("Numero di movimenti:", self.var_tot_movimenti),
@@ -56,6 +57,6 @@ class SituazioneTabMixin:
         utile = tot_entrate - tot_uscite
 
         self.var_tot_movimenti.set(str(num_movimenti))
-        self.var_tot_entrate.set(f"EUR {tot_entrate:.2f}")
-        self.var_tot_uscite.set(f"EUR {tot_uscite:.2f}")
-        self.var_tot_utile.set(f"EUR {utile:.2f}")
+        self.var_tot_entrate.set(format_eur(tot_entrate))
+        self.var_tot_uscite.set(format_eur(tot_uscite))
+        self.var_tot_utile.set(format_eur(utile))

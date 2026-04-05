@@ -2,16 +2,74 @@ import os
 import sqlite3
 import subprocess
 import sys
+import tkinter as tk
 from datetime import datetime
 from pathlib import Path
 from tkinter import ttk, messagebox
 
-from database import get_conn
+from app_utils import format_number
+from database import get_conn, resolve_fattura_path
 
 
 class StoricoTabMixin:
     def setup_tab_storico(self):
         ttk.Label(self.tab_storico, text="Movimenti inseriti", font=("Arial", 14, "bold")).pack(pady=10)
+
+        self.var_filtro_categoria = tk.StringVar(value="Tutte")
+        self.var_filtro_descrizione = tk.StringVar()
+        self.var_filtro_data_da = tk.StringVar()
+        self.var_filtro_data_a = tk.StringVar()
+
+        frame_filtri = ttk.LabelFrame(self.tab_storico, text="Filtri")
+        frame_filtri.pack(fill="x", padx=12, pady=(0, 6))
+
+        riga_filtri_1 = ttk.Frame(frame_filtri)
+        riga_filtri_1.pack(fill="x", padx=8, pady=(8, 4))
+
+        ttk.Label(riga_filtri_1, text="Categoria:").pack(side="left")
+        self.combo_filtro_categoria = ttk.Combobox(
+            riga_filtri_1,
+            textvariable=self.var_filtro_categoria,
+            state="readonly",
+            width=24,
+        )
+        self.combo_filtro_categoria.pack(side="left", padx=(6, 14))
+        self.combo_filtro_categoria["values"] = ["Tutte"]
+        self.combo_filtro_categoria.current(0)
+        self.combo_filtro_categoria.bind("<<ComboboxSelected>>", lambda _event: self.carica_movimenti())
+
+        ttk.Label(riga_filtri_1, text="Descrizione:").pack(side="left")
+        entry_filtro_descrizione = ttk.Entry(riga_filtri_1, textvariable=self.var_filtro_descrizione)
+        entry_filtro_descrizione.pack(side="left", fill="x", expand=True, padx=(6, 0))
+        entry_filtro_descrizione.bind("<Return>", lambda _event: self.carica_movimenti())
+
+        riga_filtri_2 = ttk.Frame(frame_filtri)
+        riga_filtri_2.pack(fill="x", padx=8, pady=(0, 8))
+
+        ttk.Label(riga_filtri_2, text="Data da:").pack(side="left")
+        entry_data_da = ttk.Entry(riga_filtri_2, textvariable=self.var_filtro_data_da, width=12, state="readonly")
+        entry_data_da.pack(side="left", padx=(6, 0))
+        ttk.Button(
+            riga_filtri_2,
+            text="...",
+            width=3,
+            command=lambda: self._apri_calendario_filtro(self.var_filtro_data_da),
+        ).pack(side="left", padx=(4, 14))
+        entry_data_da.bind("<Button-1>", lambda _event: self._apri_calendario_filtro(self.var_filtro_data_da))
+
+        ttk.Label(riga_filtri_2, text="Data a:").pack(side="left")
+        entry_data_a = ttk.Entry(riga_filtri_2, textvariable=self.var_filtro_data_a, width=12, state="readonly")
+        entry_data_a.pack(side="left", padx=(6, 0))
+        ttk.Button(
+            riga_filtri_2,
+            text="...",
+            width=3,
+            command=lambda: self._apri_calendario_filtro(self.var_filtro_data_a),
+        ).pack(side="left", padx=(4, 14))
+        entry_data_a.bind("<Button-1>", lambda _event: self._apri_calendario_filtro(self.var_filtro_data_a))
+
+        ttk.Button(riga_filtri_2, text="Applica filtri", command=self.carica_movimenti).pack(side="left", padx=(0, 6))
+        ttk.Button(riga_filtri_2, text="Pulisci", command=self.pulisci_filtri_movimenti).pack(side="left")
 
         frame_table = ttk.Frame(self.tab_storico)
         frame_table.pack(fill="both", expand=True, padx=12, pady=6)
@@ -59,18 +117,63 @@ class StoricoTabMixin:
         for item in self.tree_movimenti.get_children():
             self.tree_movimenti.delete(item)
 
-        try:
-            with get_conn() as conn:
-                c = conn.cursor()
-                c.execute(
-                    '''
+        filtro_categoria = self.var_filtro_categoria.get().strip() if hasattr(self, "var_filtro_categoria") else ""
+        filtro_descrizione = self.var_filtro_descrizione.get().strip() if hasattr(self, "var_filtro_descrizione") else ""
+        filtro_data_da = self.var_filtro_data_da.get().strip() if hasattr(self, "var_filtro_data_da") else ""
+        filtro_data_a = self.var_filtro_data_a.get().strip() if hasattr(self, "var_filtro_data_a") else ""
+
+        data_da_iso = None
+        data_a_iso = None
+
+        if filtro_data_da:
+            try:
+                data_da_iso = datetime.strptime(filtro_data_da, "%d/%m/%Y").strftime("%Y-%m-%d")
+            except ValueError:
+                messagebox.showerror("Errore", "Data DA non valida (usa GG/MM/AAAA).")
+                return
+
+        if filtro_data_a:
+            try:
+                data_a_iso = datetime.strptime(filtro_data_a, "%d/%m/%Y").strftime("%Y-%m-%d")
+            except ValueError:
+                messagebox.showerror("Errore", "Data A non valida (usa GG/MM/AAAA).")
+                return
+
+        if data_da_iso and data_a_iso and data_da_iso > data_a_iso:
+            messagebox.showerror("Errore", "La Data DA non puo essere successiva alla Data A.")
+            return
+
+        query = (
+            '''
                     SELECT id, data_op, tipo, categoria, descrizione, importo, iva_importo
                     FROM movimenti
                     WHERE user_id=?
-                    ORDER BY data_op DESC, id DESC
-                ''',
-                    (self.user_id,),
-                )
+                '''
+        )
+        params = [self.user_id]
+
+        if filtro_categoria and filtro_categoria != "Tutte":
+            query += " AND TRIM(COALESCE(categoria, '')) = ?"
+            params.append(filtro_categoria)
+
+        if filtro_descrizione:
+            query += " AND LOWER(COALESCE(descrizione, '')) LIKE ?"
+            params.append(f"%{filtro_descrizione.lower()}%")
+
+        if data_da_iso:
+            query += " AND data_op >= ?"
+            params.append(data_da_iso)
+
+        if data_a_iso:
+            query += " AND data_op <= ?"
+            params.append(data_a_iso)
+
+        query += " ORDER BY data_op DESC, id DESC"
+
+        try:
+            with get_conn() as conn:
+                c = conn.cursor()
+                c.execute(query, tuple(params))
                 rows = c.fetchall()
         except sqlite3.Error as e:
             messagebox.showerror("Errore DB", f"Errore database: {e}")
@@ -91,8 +194,8 @@ class StoricoTabMixin:
                     tipo,
                     categoria or "",
                     descrizione or "",
-                    f"{float(importo):.2f}",
-                    f"{float(iva_importo):.2f}",
+                    format_number(importo, 2),
+                    format_number(iva_importo, 2),
                 ),
             )
 
@@ -100,7 +203,7 @@ class StoricoTabMixin:
         self.aggiorna_situazione_attuale(mostra_errori=False)
 
     def carica_categorie_salvate(self, mostra_errori=True):
-        if not hasattr(self, "combo_categoria"):
+        if not hasattr(self, "combo_categoria") and not hasattr(self, "combo_filtro_categoria"):
             return
 
         try:
@@ -124,7 +227,43 @@ class StoricoTabMixin:
             return
 
         categorie = [row[0] for row in rows if row[0]]
-        self.combo_categoria["values"] = categorie
+        if hasattr(self, "combo_categoria"):
+            self.combo_categoria["values"] = categorie
+
+        if hasattr(self, "combo_filtro_categoria"):
+            valori_filtri = ["Tutte", *categorie]
+            filtro_corrente = self.var_filtro_categoria.get().strip() if hasattr(self, "var_filtro_categoria") else ""
+            self.combo_filtro_categoria["values"] = valori_filtri
+            if filtro_corrente and filtro_corrente in valori_filtri:
+                self.var_filtro_categoria.set(filtro_corrente)
+            else:
+                self.var_filtro_categoria.set("Tutte")
+
+    def _apri_calendario_filtro(self, text_var):
+        date_text = text_var.get().strip()
+        if date_text:
+            try:
+                initial_date = datetime.strptime(date_text, "%d/%m/%Y").date()
+            except ValueError:
+                initial_date = datetime.now().date()
+        else:
+            initial_date = datetime.now().date()
+
+        scelta = self.calendar_dialog_cls(self.root, initial_date).show()
+        if scelta is not None:
+            text_var.set(scelta.strftime("%d/%m/%Y"))
+            self.carica_movimenti()
+
+    def pulisci_filtri_movimenti(self):
+        if hasattr(self, "var_filtro_categoria"):
+            self.var_filtro_categoria.set("Tutte")
+        if hasattr(self, "var_filtro_descrizione"):
+            self.var_filtro_descrizione.set("")
+        if hasattr(self, "var_filtro_data_da"):
+            self.var_filtro_data_da.set("")
+        if hasattr(self, "var_filtro_data_a"):
+            self.var_filtro_data_a.set("")
+        self.carica_movimenti()
 
     def prepara_modifica_movimento(self):
         selezione = self.tree_movimenti.selection()
@@ -142,8 +281,8 @@ class StoricoTabMixin:
         self.var_tipo.set(valori[2] or "ENTRATA")
         self.var_cat.set(valori[3] or "")
         self.var_desc.set(valori[4] or "")
-        self.var_imp.set((valori[5] or "").replace(",", "."))
-        self.var_iva.set((valori[6] or "0.00").replace(",", "."))
+        self.var_imp.set(valori[5] or "")
+        self.var_iva.set(valori[6] or "0,00")
 
         self.btn_salva_movimento.config(text="Aggiorna nel DB")
         self.btn_annulla_modifica.config(state="normal")
@@ -184,7 +323,7 @@ class StoricoTabMixin:
             messagebox.showinfo("Nessuna fattura", "Questo movimento non ha una fattura collegata.")
             return
 
-        percorso_fattura = Path(row[0])
+        percorso_fattura = resolve_fattura_path(row[0])
         if not percorso_fattura.exists():
             messagebox.showerror("File non trovato", f"La fattura non esiste piu nel percorso salvato:\n{percorso_fattura}")
             return
@@ -219,7 +358,7 @@ class StoricoTabMixin:
         errori = []
 
         for percorso in sorted(set(p for p in percorsi if p)):
-            file_path = Path(percorso)
+            file_path = resolve_fattura_path(percorso)
             try:
                 if file_path.exists():
                     file_path.unlink()
@@ -249,6 +388,7 @@ class StoricoTabMixin:
             return
 
         fatture_eliminate = 0
+        produzioni_eliminate = 0
         percorsi_fatture = []
         try:
             with get_conn() as conn:
@@ -258,6 +398,13 @@ class StoricoTabMixin:
                 if not c.fetchone():
                     messagebox.showerror("Errore", "Movimento non trovato o non eliminabile.")
                     return
+
+                c.execute(
+                    "SELECT COUNT(id) FROM produzione_latte WHERE user_id=? AND movimento_id=?",
+                    (self.user_id, mov_id),
+                )
+                row_prod = c.fetchone()
+                produzioni_eliminate = int((row_prod[0] if row_prod else 0) or 0)
 
                 fatture_eliminate, percorsi_fatture = self.elimina_fatture_collegate_db(c, mov_id)
 
@@ -276,8 +423,12 @@ class StoricoTabMixin:
             self.annulla_modifica_movimento()
 
         self.carica_movimenti()
+        if hasattr(self, "carica_produzioni_latte"):
+            self.carica_produzioni_latte(mostra_errori=False)
 
         msg_ok = "Movimento eliminato dal database!"
+        if produzioni_eliminate > 0:
+            msg_ok += f" Produzioni latte collegate eliminate: {produzioni_eliminate}."
         if fatture_eliminate > 0:
             msg_ok += f" Fatture collegate eliminate: {fatture_eliminate}."
             msg_ok += f" File fattura eliminati: {file_eliminati}."
@@ -302,4 +453,4 @@ class StoricoTabMixin:
         self.var_cat.set("")
         self.var_desc.set("")
         self.var_imp.set("")
-        self.var_iva.set("0.00")
+        self.var_iva.set("0,00")
