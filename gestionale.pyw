@@ -229,6 +229,7 @@ class AppGestionaleGUI:
     def __init__(self, root, user_id):
         self.root = root
         self.user_id = user_id
+        self.movimento_in_modifica_id = None
         self.root.title(f"Gestione Fatture - Utente ID: {self.user_id}")
         self.root.geometry("700x520")
 
@@ -238,16 +239,20 @@ class AppGestionaleGUI:
         self.tab_profilo = ttk.Frame(self.notebook)
         self.tab_movimenti = ttk.Frame(self.notebook)
         self.tab_report = ttk.Frame(self.notebook)
+        self.tab_storico = ttk.Frame(self.notebook)
 
         self.notebook.add(self.tab_profilo, text="Profilo Utente")
         self.notebook.add(self.tab_movimenti, text="Nuovo Movimento")
         self.notebook.add(self.tab_report, text="Report Periodo")
+        self.notebook.add(self.tab_storico, text="Storico Movimenti")
 
         self.setup_tab_profilo()
         self.setup_tab_movimenti()
         self.setup_tab_report()
+        self.setup_tab_storico()
 
         self.carica_profilo()
+        self.carica_movimenti()
 
     # --- SCHEDA PROFILO ---
     def setup_tab_profilo(self):
@@ -324,7 +329,17 @@ class AppGestionaleGUI:
         frame_actions = ttk.Frame(self.tab_movimenti)
         frame_actions.pack(pady=20)
 
-        ttk.Button(frame_actions, text="Salva nel DB", command=self.salva_movimento).pack(side="left", padx=6)
+        self.btn_salva_movimento = ttk.Button(frame_actions, text="Salva nel DB", command=self.salva_movimento)
+        self.btn_salva_movimento.pack(side="left", padx=6)
+
+        self.btn_annulla_modifica = ttk.Button(
+            frame_actions,
+            text="Annulla modifica",
+            command=self.annulla_modifica_movimento,
+            state="disabled"
+        )
+        self.btn_annulla_modifica.pack(side="left", padx=6)
+
         ttk.Button(frame_actions, text="Importa fattura PDF", command=self.importa_fattura_pdf).pack(side="left", padx=6)
 
     def salva_movimento(self):
@@ -355,23 +370,46 @@ class AppGestionaleGUI:
         try:
             with get_conn() as conn:
                 c = conn.cursor()
-                c.execute('''
-                    INSERT INTO movimenti (user_id, data_op, tipo, categoria, descrizione, importo)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                ''', (self.user_id,
-                      data_db,
-                      self.var_tipo.get(),
-                      self.var_cat.get().strip(),
-                      self.var_desc.get().strip(),
-                      importo_val))
-            messagebox.showinfo("Successo", "Movimento salvato nel database!")
-            self.var_cat.set("")
-            self.var_desc.set("")
-            self.var_imp.set("")
+
+                if self.movimento_in_modifica_id is None:
+                    c.execute('''
+                        INSERT INTO movimenti (user_id, data_op, tipo, categoria, descrizione, importo)
+                        VALUES (?, ?, ?, ?, ?, ?)
+                    ''', (self.user_id,
+                          data_db,
+                          self.var_tipo.get(),
+                          self.var_cat.get().strip(),
+                          self.var_desc.get().strip(),
+                          importo_val))
+                    msg_ok = "Movimento salvato nel database!"
+                else:
+                    c.execute('''
+                        UPDATE movimenti
+                        SET data_op=?, tipo=?, categoria=?, descrizione=?, importo=?
+                        WHERE id=? AND user_id=?
+                    ''', (data_db,
+                          self.var_tipo.get(),
+                          self.var_cat.get().strip(),
+                          self.var_desc.get().strip(),
+                          importo_val,
+                          self.movimento_in_modifica_id,
+                          self.user_id))
+
+                    if c.rowcount == 0:
+                        messagebox.showerror("Errore", "Movimento non trovato o non modificabile.")
+                        return
+                    msg_ok = "Movimento aggiornato nel database!"
+
+            messagebox.showinfo("Successo", msg_ok)
+            self.annulla_modifica_movimento()
+            self.carica_movimenti()
         except sqlite3.Error as e:
             messagebox.showerror("Errore DB", f"Errore database: {e}")
 
     def importa_fattura_pdf(self):
+        if self.movimento_in_modifica_id is not None:
+            self.annulla_modifica_movimento()
+
         file_path = filedialog.askopenfilename(
             title="Seleziona fattura PDF",
             filetypes=[("PDF", "*.pdf")]
@@ -489,6 +527,157 @@ class AppGestionaleGUI:
             return val if val > 0 else None
         except ValueError:
             return None
+
+    # --- SCHEDA STORICO ---
+    def setup_tab_storico(self):
+        ttk.Label(self.tab_storico, text="Movimenti inseriti", font=("Arial", 14, "bold")).pack(pady=10)
+
+        frame_table = ttk.Frame(self.tab_storico)
+        frame_table.pack(fill="both", expand=True, padx=12, pady=6)
+
+        cols = ("id", "data", "tipo", "categoria", "descrizione", "importo")
+        self.tree_movimenti = ttk.Treeview(frame_table, columns=cols, show="headings", height=14)
+
+        self.tree_movimenti.heading("id", text="ID")
+        self.tree_movimenti.heading("data", text="Data")
+        self.tree_movimenti.heading("tipo", text="Tipo")
+        self.tree_movimenti.heading("categoria", text="Categoria")
+        self.tree_movimenti.heading("descrizione", text="Descrizione")
+        self.tree_movimenti.heading("importo", text="Importo")
+
+        self.tree_movimenti.column("id", width=60, anchor="center")
+        self.tree_movimenti.column("data", width=100, anchor="center")
+        self.tree_movimenti.column("tipo", width=90, anchor="center")
+        self.tree_movimenti.column("categoria", width=130, anchor="w")
+        self.tree_movimenti.column("descrizione", width=220, anchor="w")
+        self.tree_movimenti.column("importo", width=100, anchor="e")
+
+        scroll = ttk.Scrollbar(frame_table, orient="vertical", command=self.tree_movimenti.yview)
+        self.tree_movimenti.configure(yscrollcommand=scroll.set)
+
+        self.tree_movimenti.pack(side="left", fill="both", expand=True)
+        scroll.pack(side="right", fill="y")
+
+        self.tree_movimenti.bind("<Double-1>", lambda _event: self.prepara_modifica_movimento())
+        self.tree_movimenti.bind("<Delete>", lambda _event: self.elimina_movimento_selezionato())
+
+        frame_btn = ttk.Frame(self.tab_storico)
+        frame_btn.pack(pady=10)
+
+        ttk.Button(frame_btn, text="Ricarica", command=self.carica_movimenti).pack(side="left", padx=6)
+        ttk.Button(frame_btn, text="Modifica selezionato", command=self.prepara_modifica_movimento).pack(side="left", padx=6)
+        ttk.Button(frame_btn, text="Elimina selezionato", command=self.elimina_movimento_selezionato).pack(side="left", padx=6)
+
+    def carica_movimenti(self):
+        if not hasattr(self, "tree_movimenti"):
+            return
+
+        for item in self.tree_movimenti.get_children():
+            self.tree_movimenti.delete(item)
+
+        try:
+            with get_conn() as conn:
+                c = conn.cursor()
+                c.execute('''
+                    SELECT id, data_op, tipo, categoria, descrizione, importo
+                    FROM movimenti
+                    WHERE user_id=?
+                    ORDER BY data_op DESC, id DESC
+                ''', (self.user_id,))
+                rows = c.fetchall()
+        except sqlite3.Error as e:
+            messagebox.showerror("Errore DB", f"Errore database: {e}")
+            return
+
+        for mov_id, data_op, tipo, categoria, descrizione, importo in rows:
+            try:
+                data_view = datetime.strptime(data_op, "%Y-%m-%d").strftime("%d/%m/%Y")
+            except ValueError:
+                data_view = data_op
+
+            self.tree_movimenti.insert(
+                "",
+                "end",
+                values=(
+                    mov_id,
+                    data_view,
+                    tipo,
+                    categoria or "",
+                    descrizione or "",
+                    f"{float(importo):.2f}"
+                )
+            )
+
+    def prepara_modifica_movimento(self):
+        selezione = self.tree_movimenti.selection()
+        if not selezione:
+            messagebox.showwarning("Attenzione", "Seleziona prima un movimento da modificare.")
+            return
+
+        valori = self.tree_movimenti.item(selezione[0], "values")
+        if not valori:
+            messagebox.showerror("Errore", "Impossibile leggere il movimento selezionato.")
+            return
+
+        self.movimento_in_modifica_id = int(valori[0])
+        self.var_data.set(valori[1] or datetime.now().strftime("%d/%m/%Y"))
+        self.var_tipo.set(valori[2] or "ENTRATA")
+        self.var_cat.set(valori[3] or "")
+        self.var_desc.set(valori[4] or "")
+        self.var_imp.set((valori[5] or "").replace(",", "."))
+
+        self.btn_salva_movimento.config(text="Aggiorna nel DB")
+        self.btn_annulla_modifica.config(state="normal")
+        self.notebook.select(self.tab_movimenti)
+
+    def elimina_movimento_selezionato(self):
+        selezione = self.tree_movimenti.selection()
+        if not selezione:
+            messagebox.showwarning("Attenzione", "Seleziona prima un movimento da eliminare.")
+            return
+
+        valori = self.tree_movimenti.item(selezione[0], "values")
+        if not valori:
+            messagebox.showerror("Errore", "Impossibile leggere il movimento selezionato.")
+            return
+
+        mov_id = int(valori[0])
+        descrizione = valori[4] or f"ID {mov_id}"
+        conferma = messagebox.askyesno(
+            "Conferma eliminazione",
+            f"Vuoi eliminare il movimento selezionato?\n\n{descrizione}"
+        )
+        if not conferma:
+            return
+
+        try:
+            with get_conn() as conn:
+                c = conn.cursor()
+                c.execute("DELETE FROM movimenti WHERE id=? AND user_id=?", (mov_id, self.user_id))
+
+                if c.rowcount == 0:
+                    messagebox.showerror("Errore", "Movimento non trovato o non eliminabile.")
+                    return
+        except sqlite3.Error as e:
+            messagebox.showerror("Errore DB", f"Errore database: {e}")
+            return
+
+        if self.movimento_in_modifica_id == mov_id:
+            self.annulla_modifica_movimento()
+
+        self.carica_movimenti()
+        messagebox.showinfo("Successo", "Movimento eliminato dal database!")
+
+    def annulla_modifica_movimento(self):
+        self.movimento_in_modifica_id = None
+        self.btn_salva_movimento.config(text="Salva nel DB")
+        self.btn_annulla_modifica.config(state="disabled")
+
+        self.var_data.set(datetime.now().strftime("%d/%m/%Y"))
+        self.var_tipo.set("ENTRATA")
+        self.var_cat.set("")
+        self.var_desc.set("")
+        self.var_imp.set("")
 
     # --- SCHEDA REPORT ---
     def setup_tab_report(self):
