@@ -348,6 +348,8 @@ def init_db():
 
         c.execute('''CREATE INDEX IF NOT EXISTS idx_prod_user_date
                      ON produzione_latte(user_id, data_op)''')
+        c.execute('''CREATE INDEX IF NOT EXISTS idx_prod_user_movimento
+                 ON produzione_latte(user_id, movimento_id)''')
 
         # Se viene eliminato un movimento latte, elimina anche la produzione collegata.
         c.execute('''CREATE TRIGGER IF NOT EXISTS trg_movimenti_delete_produzione_latte
@@ -370,3 +372,10 @@ def init_db():
                   FOREIGN KEY(user_id) REFERENCES utenti(id) ON DELETE CASCADE,
                   FOREIGN KEY(movimento_id) REFERENCES movimenti(id) ON DELETE SET NULL,
                   FOREIGN KEY(produzione_id) REFERENCES produzione_latte(id) ON DELETE SET NULL)''')
+
+        c.execute('''CREATE INDEX IF NOT EXISTS idx_fatture_user_movimento
+                 ON fatture(user_id, movimento_id)''')
+        c.execute('''CREATE INDEX IF NOT EXISTS idx_fatture_user_produzione
+                 ON fatture(user_id, produzione_id)''')
+        c.execute('''CREATE INDEX IF NOT EXISTS idx_fatture_user_data
+                 ON fatture(user_id, data_caricamento DESC)''')

@@ -3,7 +3,7 @@ from datetime import datetime
 import tkinter as tk
 from tkinter import ttk, messagebox
 
-from app_utils import format_eur, format_number, is_blank
+from app_utils import clear_treeview, format_eur, format_number, is_blank
 from database import get_conn, LITRI_PER_QUINTALE
 
 
@@ -218,10 +218,8 @@ class ReportTabMixin:
         if not hasattr(self, "tree_report_riepilogo") or not hasattr(self, "tree_report_categorie"):
             return
 
-        for item in self.tree_report_riepilogo.get_children():
-            self.tree_report_riepilogo.delete(item)
-        for item in self.tree_report_categorie.get_children():
-            self.tree_report_categorie.delete(item)
+        clear_treeview(self.tree_report_riepilogo)
+        clear_treeview(self.tree_report_categorie)
 
         righe_riepilogo = [
             ("Movimenti estratti dal DB", str(conteggio)),

@@ -9,11 +9,28 @@ from datetime import datetime
 from pathlib import Path
 from tkinter import ttk, messagebox, filedialog
 
-from app_utils import format_number, is_blank
+from app_utils import format_number, is_blank, parse_decimal
 from database import get_conn, get_fatture_user_dir, to_storage_fattura_path
 
 
 class MovimentiTabMixin:
+    _PARSER_DB_FIELDS = (
+        "invoice_number",
+        "invoice_date",
+        "due_date",
+        "supplier_name",
+        "supplier_vat",
+        "customer_name",
+        "customer_vat",
+        "total_amount",
+        "taxable_total",
+        "vat_total",
+        "payment_terms",
+        "warnings",
+        "products",
+        "fields_view",
+    )
+
     def setup_tab_movimenti(self):
         ttk.Label(self.tab_movimenti, text="Registra Movimento", font=("Arial", 14, "bold")).pack(pady=10)
 
@@ -98,37 +115,7 @@ class MovimentiTabMixin:
                 c = conn.cursor()
                 movimento_salvato_id = None
                 parser_data = getattr(self, "pending_parser_movimento_data", None)
-
-                parser_invoice_number = None
-                parser_invoice_date = None
-                parser_due_date = None
-                parser_supplier_name = None
-                parser_supplier_vat = None
-                parser_customer_name = None
-                parser_customer_vat = None
-                parser_total_amount = None
-                parser_taxable_total = None
-                parser_vat_total = None
-                parser_payment_terms = None
-                parser_warnings = None
-                parser_products = None
-                parser_fields_view = None
-
-                if isinstance(parser_data, dict):
-                    parser_invoice_number = parser_data.get("invoice_number")
-                    parser_invoice_date = parser_data.get("invoice_date")
-                    parser_due_date = parser_data.get("due_date")
-                    parser_supplier_name = parser_data.get("supplier_name")
-                    parser_supplier_vat = parser_data.get("supplier_vat")
-                    parser_customer_name = parser_data.get("customer_name")
-                    parser_customer_vat = parser_data.get("customer_vat")
-                    parser_total_amount = parser_data.get("total_amount")
-                    parser_taxable_total = parser_data.get("taxable_total")
-                    parser_vat_total = parser_data.get("vat_total")
-                    parser_payment_terms = parser_data.get("payment_terms")
-                    parser_warnings = parser_data.get("warnings")
-                    parser_products = parser_data.get("products")
-                    parser_fields_view = parser_data.get("fields_view")
+                parser_values = self._estrai_valori_parser_db(parser_data)
 
                 if self.movimento_in_modifica_id is None:
                     c.execute(
@@ -151,20 +138,7 @@ class MovimentiTabMixin:
                             self.var_desc.get().strip(),
                             importo_val,
                             iva_val,
-                            parser_invoice_number,
-                            parser_invoice_date,
-                            parser_due_date,
-                            parser_supplier_name,
-                            parser_supplier_vat,
-                            parser_customer_name,
-                            parser_customer_vat,
-                            parser_total_amount,
-                            parser_taxable_total,
-                            parser_vat_total,
-                            parser_payment_terms,
-                            parser_warnings,
-                            parser_products,
-                            parser_fields_view,
+                            *parser_values,
                         ),
                     )
                     movimento_salvato_id = c.lastrowid
@@ -189,20 +163,7 @@ class MovimentiTabMixin:
                                 self.var_desc.get().strip(),
                                 importo_val,
                                 iva_val,
-                                parser_invoice_number,
-                                parser_invoice_date,
-                                parser_due_date,
-                                parser_supplier_name,
-                                parser_supplier_vat,
-                                parser_customer_name,
-                                parser_customer_vat,
-                                parser_total_amount,
-                                parser_taxable_total,
-                                parser_vat_total,
-                                parser_payment_terms,
-                                parser_warnings,
-                                parser_products,
-                                parser_fields_view,
+                                *parser_values,
                                 self.movimento_in_modifica_id,
                                 self.user_id,
                             ),
@@ -277,18 +238,7 @@ class MovimentiTabMixin:
             )
             return
 
-        if dati.get("data"):
-            self.var_data.set(dati["data"])
-        if dati.get("tipo"):
-            self.var_tipo.set(dati["tipo"])
-        if dati.get("categoria"):
-            self.var_cat.set(dati["categoria"])
-        if dati.get("descrizione"):
-            self.var_desc.set(dati["descrizione"])
-        if dati.get("importo"):
-            self.var_imp.set(dati["importo"])
-        if dati.get("iva"):
-            self.var_iva.set(dati["iva"])
+        self._applica_dati_parser_al_form(dati)
         self.pending_parser_movimento_data = dati.get("parser_data")
 
         if is_blank(self.var_imp.get()):
@@ -359,25 +309,24 @@ class MovimentiTabMixin:
         if hasattr(self, "var_nome_fattura_latte"):
             self.var_nome_fattura_latte.set("Nessuna fattura caricata")
 
-    def estrai_testo_pdf(self, file_path):
-        try:
-            from pypdf import PdfReader
-        except ImportError:
-            raise RuntimeError("Manca la libreria pypdf. Installa con: pip install pypdf")
+    def _applica_dati_parser_al_form(self, dati):
+        mapping = (
+            ("data", self.var_data),
+            ("tipo", self.var_tipo),
+            ("categoria", self.var_cat),
+            ("descrizione", self.var_desc),
+            ("importo", self.var_imp),
+            ("iva", self.var_iva),
+        )
+        for chiave, variabile in mapping:
+            valore = dati.get(chiave)
+            if valore:
+                variabile.set(valore)
 
-        reader = PdfReader(file_path)
-        chunks = []
-        for page in reader.pages:
-            chunks.append(page.extract_text() or "")
-
-        testo = "\n".join(chunks).strip()
-        if not testo:
-            raise RuntimeError("Il PDF non contiene testo estraibile (probabile scansione).")
-        return testo
-
-    def analizza_testo_fattura(self, testo, file_path):
-        # Manteniamo la firma per compatibilita con vecchi call site.
-        return self.analizza_fattura_con_parser_fatture(file_path, file_path)
+    def _estrai_valori_parser_db(self, parser_data):
+        if not isinstance(parser_data, dict):
+            return (None,) * len(self._PARSER_DB_FIELDS)
+        return tuple(parser_data.get(field_name) for field_name in self._PARSER_DB_FIELDS)
 
     def analizza_fattura_con_parser_fatture(self, pdf_path, file_path):
         parse_invoice_pdf = self._get_parser_fatture_function()
@@ -555,65 +504,6 @@ class MovimentiTabMixin:
             "fields_view": " | ".join(campi_riepilogo),
         }
 
-    def _estrai_data_emissione_fattura(self, testo):
-        pattern_data = r"\d{1,2}[./-]\d{1,2}[./-]\d{2,4}|\d{4}[./-]\d{1,2}[./-]\d{1,2}"
-        parole_chiave = (
-            "data emissione",
-            "data di emissione",
-            "emessa il",
-            "data fattura",
-            "data documento",
-            "invoice date",
-            "issue date",
-        )
-
-        # Formato richiesto: "n. <numero_fattura> del GG Mese YYYY".
-        match_fattura = re.search(
-            r"\bn\.?\s*[^\n]{0,60}?\bdel\b\s*(\d{1,2})\s+([A-Za-z]+)\s+(\d{4})\b",
-            testo,
-            flags=re.IGNORECASE,
-        )
-        if match_fattura:
-            giorno = int(match_fattura.group(1))
-            mese = self._mese_italiano_to_numero(match_fattura.group(2))
-            anno = int(match_fattura.group(3))
-            if mese is not None:
-                try:
-                    return datetime(anno, mese, giorno).strftime("%d/%m/%Y")
-                except ValueError:
-                    pass
-
-        # Priorita: date presenti su righe che contengono indicatori di emissione.
-        for riga in testo.splitlines():
-            riga_pulita = re.sub(r"\s+", " ", riga).strip()
-            if not riga_pulita:
-                continue
-            riga_lower = riga_pulita.lower()
-            if not any(k in riga_lower for k in parole_chiave):
-                continue
-
-            for candidato in re.findall(rf"\b({pattern_data})\b", riga_pulita):
-                data_norm = self._normalizza_data_fattura(candidato)
-                if data_norm:
-                    return data_norm
-
-        pattern_con_etichetta = [
-            rf"(?:data\s*(?:di\s*)?emissione|emessa\s*il|data\s*fattura|data\s*documento|invoice\s*date|issue\s*date)\D{{0,30}}({pattern_data})",
-        ]
-        for pattern in pattern_con_etichetta:
-            match = re.search(pattern, testo, flags=re.IGNORECASE)
-            if match:
-                data_norm = self._normalizza_data_fattura(match.group(1))
-                if data_norm:
-                    return data_norm
-
-        for candidato in re.findall(rf"\b({pattern_data})\b", testo):
-            data_norm = self._normalizza_data_fattura(candidato)
-            if data_norm:
-                return data_norm
-
-        return ""
-
     def _normalizza_data_fattura(self, raw_data):
         if not raw_data:
             return ""
@@ -634,39 +524,6 @@ class MovimentiTabMixin:
                 continue
 
         return ""
-
-    def _mese_italiano_to_numero(self, mese_raw):
-        if not mese_raw:
-            return None
-
-        mese = re.sub(r"[^A-Za-z]", "", mese_raw).lower()
-        mapping = {
-            "gennaio": 1,
-            "gen": 1,
-            "febbraio": 2,
-            "feb": 2,
-            "marzo": 3,
-            "mar": 3,
-            "aprile": 4,
-            "apr": 4,
-            "maggio": 5,
-            "mag": 5,
-            "giugno": 6,
-            "giu": 6,
-            "luglio": 7,
-            "lug": 7,
-            "agosto": 8,
-            "ago": 8,
-            "settembre": 9,
-            "set": 9,
-            "ottobre": 10,
-            "ott": 10,
-            "novembre": 11,
-            "nov": 11,
-            "dicembre": 12,
-            "dic": 12,
-        }
-        return mapping.get(mese)
 
     def _estrai_intestazione_fattura(self, testo, file_path):
         righe = []
@@ -715,27 +572,4 @@ class MovimentiTabMixin:
         return f"Fattura importata: {Path(file_path).name}"
 
     def _normalizza_importo(self, raw, allow_zero=False):
-        if not raw:
-            return None
-        s = raw.strip()
-        s = s.replace("€", "").replace(" ", "").replace("'", "").replace("’", "")
-
-        if "," in s and "." in s:
-            if s.rfind(",") > s.rfind("."):
-                s = s.replace(".", "").replace(",", ".")
-            else:
-                s = s.replace(",", "")
-        elif "," in s:
-            s = s.replace(".", "").replace(",", ".")
-        else:
-            s = s.replace(",", "")
-
-        try:
-            val = float(s)
-            if val < 0:
-                return None
-            if not allow_zero and val <= 0:
-                return None
-            return val
-        except ValueError:
-            return None
+        return parse_decimal(raw, allow_zero=allow_zero, allow_negative=False)

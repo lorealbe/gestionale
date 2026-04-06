@@ -7,7 +7,7 @@ from datetime import datetime
 from pathlib import Path
 from tkinter import ttk, messagebox
 
-from app_utils import format_number
+from app_utils import clear_treeview, format_number, parse_decimal
 from database import get_conn, resolve_fattura_path
 
 
@@ -74,30 +74,8 @@ class StoricoTabMixin:
         frame_table = ttk.Frame(self.tab_storico)
         frame_table.pack(fill="both", expand=True, padx=12, pady=6)
 
-        cols = (
-            "id",
-            "data",
-            "tipo",
-            "categoria",
-            "descrizione",
-            "importo",
-            "iva",
-            "fattura_numero",
-            "fattura_data",
-            "fattura_scadenza",
-            "fornitore",
-            "piva_fornitore",
-            "cliente",
-            "piva_cliente",
-            "totale_doc",
-            "totale_imponibile",
-            "totale_iva",
-            "condizioni_pagamento",
-            "warnings_parser",
-            "prodotti_parser",
-            "campi_parser",
-        )
-        self.tree_movimenti = ttk.Treeview(frame_table, columns=cols, show="headings", height=14)
+        cols = ("id", "data", "tipo", "categoria", "descrizione", "importo", "iva")
+        self.tree_movimenti = ttk.Treeview(frame_table, columns=cols, show="headings", height=9)
 
         self.tree_movimenti.heading("id", text="ID")
         self.tree_movimenti.heading("data", text="Data")
@@ -106,42 +84,14 @@ class StoricoTabMixin:
         self.tree_movimenti.heading("descrizione", text="Descrizione")
         self.tree_movimenti.heading("importo", text="Importo")
         self.tree_movimenti.heading("iva", text="IVA")
-        self.tree_movimenti.heading("fattura_numero", text="N. Fattura")
-        self.tree_movimenti.heading("fattura_data", text="Data Fattura")
-        self.tree_movimenti.heading("fattura_scadenza", text="Scadenza")
-        self.tree_movimenti.heading("fornitore", text="Fornitore")
-        self.tree_movimenti.heading("piva_fornitore", text="P.IVA Fornitore")
-        self.tree_movimenti.heading("cliente", text="Cliente")
-        self.tree_movimenti.heading("piva_cliente", text="P.IVA Cliente")
-        self.tree_movimenti.heading("totale_doc", text="Totale Doc")
-        self.tree_movimenti.heading("totale_imponibile", text="Totale Imponibile")
-        self.tree_movimenti.heading("totale_iva", text="Totale IVA")
-        self.tree_movimenti.heading("condizioni_pagamento", text="Pagamento")
-        self.tree_movimenti.heading("warnings_parser", text="Warnings Parser")
-        self.tree_movimenti.heading("prodotti_parser", text="Prodotti Parser")
-        self.tree_movimenti.heading("campi_parser", text="Campi Parser")
 
         self.tree_movimenti.column("id", width=60, anchor="center")
         self.tree_movimenti.column("data", width=100, anchor="center")
         self.tree_movimenti.column("tipo", width=90, anchor="center")
         self.tree_movimenti.column("categoria", width=130, anchor="w")
-        self.tree_movimenti.column("descrizione", width=180, anchor="w")
+        self.tree_movimenti.column("descrizione", width=260, anchor="w")
         self.tree_movimenti.column("importo", width=90, anchor="e")
         self.tree_movimenti.column("iva", width=90, anchor="e")
-        self.tree_movimenti.column("fattura_numero", width=130, anchor="w")
-        self.tree_movimenti.column("fattura_data", width=110, anchor="center")
-        self.tree_movimenti.column("fattura_scadenza", width=110, anchor="center")
-        self.tree_movimenti.column("fornitore", width=190, anchor="w")
-        self.tree_movimenti.column("piva_fornitore", width=130, anchor="w")
-        self.tree_movimenti.column("cliente", width=190, anchor="w")
-        self.tree_movimenti.column("piva_cliente", width=130, anchor="w")
-        self.tree_movimenti.column("totale_doc", width=110, anchor="e")
-        self.tree_movimenti.column("totale_imponibile", width=130, anchor="e")
-        self.tree_movimenti.column("totale_iva", width=110, anchor="e")
-        self.tree_movimenti.column("condizioni_pagamento", width=180, anchor="w")
-        self.tree_movimenti.column("warnings_parser", width=230, anchor="w")
-        self.tree_movimenti.column("prodotti_parser", width=260, anchor="w")
-        self.tree_movimenti.column("campi_parser", width=420, anchor="w")
 
         scroll_y = ttk.Scrollbar(frame_table, orient="vertical", command=self.tree_movimenti.yview)
         scroll_x = ttk.Scrollbar(frame_table, orient="horizontal", command=self.tree_movimenti.xview)
@@ -153,23 +103,48 @@ class StoricoTabMixin:
         frame_table.grid_rowconfigure(0, weight=1)
         frame_table.grid_columnconfigure(0, weight=1)
 
+        self.tree_movimenti.bind("<<TreeviewSelect>>", self._on_selezione_movimento_storico)
         self.tree_movimenti.bind("<Double-1>", lambda _event: self.prepara_modifica_movimento())
         self.tree_movimenti.bind("<Delete>", lambda _event: self.elimina_movimento_selezionato())
 
         frame_btn = ttk.Frame(self.tab_storico)
-        frame_btn.pack(pady=10)
+        frame_btn.pack(fill="x", padx=12, pady=(0, 6))
 
         ttk.Button(frame_btn, text="Ricarica", command=self.carica_movimenti).pack(side="left", padx=6)
         ttk.Button(frame_btn, text="Modifica selezionato", command=self.prepara_modifica_movimento).pack(side="left", padx=6)
         ttk.Button(frame_btn, text="Apri fattura", command=self.apri_fattura_movimento_selezionato).pack(side="left", padx=6)
         ttk.Button(frame_btn, text="Elimina selezionato", command=self.elimina_movimento_selezionato).pack(side="left", padx=6)
 
+        frame_dettagli = ttk.LabelFrame(self.tab_storico, text="Dati fattura del movimento selezionato")
+        frame_dettagli.pack(fill="both", expand=True, padx=12, pady=(0, 6))
+
+        self.tree_fattura_dettagli = ttk.Treeview(
+            frame_dettagli,
+            columns=("campo", "valore"),
+            show="headings",
+            height=9,
+        )
+        self.tree_fattura_dettagli.heading("campo", text="Campo")
+        self.tree_fattura_dettagli.heading("valore", text="Valore")
+        self.tree_fattura_dettagli.column("campo", width=220, anchor="w")
+        self.tree_fattura_dettagli.column("valore", width=620, anchor="w")
+
+        dettagli_scroll_y = ttk.Scrollbar(frame_dettagli, orient="vertical", command=self.tree_fattura_dettagli.yview)
+        self.tree_fattura_dettagli.configure(yscrollcommand=dettagli_scroll_y.set)
+
+        self.tree_fattura_dettagli.grid(row=0, column=0, sticky="nsew")
+        dettagli_scroll_y.grid(row=0, column=1, sticky="ns")
+        frame_dettagli.grid_rowconfigure(0, weight=1)
+        frame_dettagli.grid_columnconfigure(0, weight=1)
+
+        self._fattura_dettaglio_corrente = None
+        self._azzera_dettagli_fattura()
+
     def carica_movimenti(self):
         if not hasattr(self, "tree_movimenti"):
             return
 
-        for item in self.tree_movimenti.get_children():
-            self.tree_movimenti.delete(item)
+        clear_treeview(self.tree_movimenti)
 
         filtro_categoria = self.var_filtro_categoria.get().strip() if hasattr(self, "var_filtro_categoria") else ""
         filtro_descrizione = self.var_filtro_descrizione.get().strip() if hasattr(self, "var_filtro_descrizione") else ""
@@ -200,12 +175,7 @@ class StoricoTabMixin:
         query = (
             '''
                     SELECT
-                        id, data_op, tipo, categoria, descrizione, importo, iva_importo,
-                        parser_invoice_number, parser_invoice_date, parser_due_date,
-                        parser_supplier_name, parser_supplier_vat,
-                        parser_customer_name, parser_customer_vat,
-                        parser_total_amount, parser_taxable_total, parser_vat_total,
-                        parser_payment_terms, parser_warnings, parser_products, parser_fields_view
+                        id, data_op, tipo, categoria, descrizione, importo, iva_importo
                     FROM movimenti
                     WHERE user_id=?
                 '''
@@ -239,29 +209,7 @@ class StoricoTabMixin:
             messagebox.showerror("Errore DB", f"Errore database: {e}")
             return
 
-        for (
-            mov_id,
-            data_op,
-            tipo,
-            categoria,
-            descrizione,
-            importo,
-            iva_importo,
-            parser_invoice_number,
-            parser_invoice_date,
-            parser_due_date,
-            parser_supplier_name,
-            parser_supplier_vat,
-            parser_customer_name,
-            parser_customer_vat,
-            parser_total_amount,
-            parser_taxable_total,
-            parser_vat_total,
-            parser_payment_terms,
-            parser_warnings,
-            parser_products,
-            parser_fields_view,
-        ) in rows:
+        for mov_id, data_op, tipo, categoria, descrizione, importo, iva_importo in rows:
             try:
                 data_view = datetime.strptime(data_op, "%Y-%m-%d").strftime("%d/%m/%Y")
             except ValueError:
@@ -278,25 +226,175 @@ class StoricoTabMixin:
                     descrizione or "",
                     format_number(importo, 2),
                     format_number(iva_importo, 2),
-                    parser_invoice_number or "",
-                    self._format_data_parser(parser_invoice_date),
-                    self._format_data_parser(parser_due_date),
-                    parser_supplier_name or "",
-                    parser_supplier_vat or "",
-                    parser_customer_name or "",
-                    parser_customer_vat or "",
-                    self._format_importo_parser(parser_total_amount),
-                    self._format_importo_parser(parser_taxable_total),
-                    self._format_importo_parser(parser_vat_total),
-                    parser_payment_terms or "",
-                    parser_warnings or "",
-                    parser_products or "",
-                    parser_fields_view or "",
                 ),
             )
 
+        self._azzera_dettagli_fattura()
         self.carica_categorie_salvate(mostra_errori=False)
         self.aggiorna_situazione_attuale(mostra_errori=False)
+
+    def _azzera_dettagli_fattura(self, testo="Seleziona un movimento per vedere la fattura collegata."):
+        self._fattura_dettaglio_corrente = None
+        if not hasattr(self, "tree_fattura_dettagli"):
+            return
+
+        clear_treeview(self.tree_fattura_dettagli)
+        self.tree_fattura_dettagli.insert("", "end", values=("Info", testo))
+
+    def _on_selezione_movimento_storico(self, _event=None):
+        self.carica_dettagli_fattura_movimento_selezionato()
+
+    def carica_dettagli_fattura_movimento_selezionato(self):
+        if not hasattr(self, "tree_movimenti"):
+            return
+
+        selezione = self.tree_movimenti.selection()
+        if not selezione:
+            self._azzera_dettagli_fattura("Seleziona un movimento per vedere la fattura collegata.")
+            return
+
+        valori = self.tree_movimenti.item(selezione[0], "values")
+        if not valori:
+            self._azzera_dettagli_fattura("Movimento selezionato non valido.")
+            return
+
+        mov_id = int(valori[0])
+
+        try:
+            with get_conn() as conn:
+                c = conn.cursor()
+                c.execute(
+                    '''
+                    SELECT
+                        f.id,
+                        f.data_caricamento,
+                        f.origine,
+                        f.nome_originale,
+                        f.percorso_file,
+                        m.parser_invoice_number,
+                        m.parser_invoice_date,
+                        m.parser_due_date,
+                        m.parser_supplier_name,
+                        m.parser_supplier_vat,
+                        m.parser_customer_name,
+                        m.parser_customer_vat,
+                        m.parser_total_amount,
+                        m.parser_taxable_total,
+                        m.parser_vat_total,
+                        m.parser_payment_terms,
+                        m.parser_warnings,
+                        m.parser_products,
+                        m.parser_fields_view
+                    FROM fatture f
+                    LEFT JOIN movimenti m
+                      ON m.id = f.movimento_id
+                     AND m.user_id = f.user_id
+                    WHERE f.user_id=? AND f.movimento_id=?
+                    ORDER BY f.data_caricamento DESC, f.id DESC
+                    LIMIT 1
+                ''',
+                    (self.user_id, mov_id),
+                )
+                row = c.fetchone()
+        except sqlite3.Error as e:
+            messagebox.showerror("Errore DB", f"Errore database: {e}")
+            self._azzera_dettagli_fattura("Errore durante il caricamento della fattura collegata.")
+            return
+
+        if not row:
+            self._azzera_dettagli_fattura("Nessuna fattura collegata al movimento selezionato.")
+            return
+
+        (
+            fattura_id,
+            data_caricamento,
+            origine,
+            nome_originale,
+            percorso_file,
+            parser_invoice_number,
+            parser_invoice_date,
+            parser_due_date,
+            parser_supplier_name,
+            parser_supplier_vat,
+            parser_customer_name,
+            parser_customer_vat,
+            parser_total_amount,
+            parser_taxable_total,
+            parser_vat_total,
+            parser_payment_terms,
+            parser_warnings,
+            parser_products,
+            parser_fields_view,
+        ) = row
+
+        self._fattura_dettaglio_corrente = {
+            "id": fattura_id,
+            "data_caricamento": self._format_data_caricamento(data_caricamento),
+            "origine": origine or "",
+            "nome_originale": nome_originale or "",
+            "percorso_file": percorso_file or "",
+            "invoice_number": parser_invoice_number or "",
+            "invoice_date": self._format_data_parser(parser_invoice_date),
+            "due_date": self._format_data_parser(parser_due_date),
+            "supplier_name": parser_supplier_name or "",
+            "supplier_vat": parser_supplier_vat or "",
+            "customer_name": parser_customer_name or "",
+            "customer_vat": parser_customer_vat or "",
+            "total_amount": self._format_importo_parser(parser_total_amount),
+            "taxable_total": self._format_importo_parser(parser_taxable_total),
+            "vat_total": self._format_importo_parser(parser_vat_total),
+            "payment_terms": parser_payment_terms or "",
+            "warnings": parser_warnings or "",
+            "products": parser_products or "",
+            "fields_view": parser_fields_view or "",
+        }
+        self._mostra_dettagli_fattura(self._fattura_dettaglio_corrente)
+
+    def _mostra_dettagli_fattura(self, dettagli):
+        clear_treeview(self.tree_fattura_dettagli)
+        righe = [
+            ("ID Fattura", dettagli.get("id", "")),
+            ("Data caricamento", dettagli.get("data_caricamento", "")),
+            ("Origine", dettagli.get("origine", "")),
+            ("Nome file", dettagli.get("nome_originale", "")),
+            ("Numero fattura", dettagli.get("invoice_number", "")),
+            ("Data fattura", dettagli.get("invoice_date", "")),
+            ("Scadenza", dettagli.get("due_date", "")),
+            ("Fornitore", dettagli.get("supplier_name", "")),
+            ("P.IVA Fornitore", dettagli.get("supplier_vat", "")),
+            ("Cliente", dettagli.get("customer_name", "")),
+            ("P.IVA Cliente", dettagli.get("customer_vat", "")),
+            ("Totale documento", dettagli.get("total_amount", "")),
+            ("Totale imponibile", dettagli.get("taxable_total", "")),
+            ("Totale IVA", dettagli.get("vat_total", "")),
+            ("Condizioni pagamento", dettagli.get("payment_terms", "")),
+            ("Prodotti", dettagli.get("products", "")),
+        ]
+
+        for campo, valore in righe:
+            self.tree_fattura_dettagli.insert("", "end", values=(campo, valore or ""))
+
+    def _format_data_caricamento(self, raw_value):
+        testo = (raw_value or "").strip()
+        if not testo:
+            return ""
+
+        for fmt_in in (
+            "%Y-%m-%dT%H:%M:%S",
+            "%Y-%m-%d %H:%M:%S",
+            "%Y-%m-%dT%H:%M",
+            "%Y-%m-%d %H:%M",
+            "%Y-%m-%d",
+        ):
+            try:
+                data = datetime.strptime(testo, fmt_in)
+                if "%H" in fmt_in:
+                    return data.strftime("%d/%m/%Y %H:%M")
+                return data.strftime("%d/%m/%Y")
+            except ValueError:
+                continue
+
+        return testo.replace("T", " ")
 
     def carica_categorie_salvate(self, mostra_errori=True):
         if not hasattr(self, "combo_categoria") and not hasattr(self, "combo_filtro_categoria"):
@@ -385,41 +483,17 @@ class StoricoTabMixin:
         self.notebook.select(self.tab_movimenti)
 
     def apri_fattura_movimento_selezionato(self):
-        selezione = self.tree_movimenti.selection()
-        if not selezione:
-            messagebox.showwarning("Attenzione", "Seleziona prima un movimento.")
+        dettagli = getattr(self, "_fattura_dettaglio_corrente", None)
+        if not dettagli:
+            messagebox.showwarning("Attenzione", "Seleziona un movimento con fattura collegata.")
             return
 
-        valori = self.tree_movimenti.item(selezione[0], "values")
-        if not valori:
-            messagebox.showerror("Errore", "Impossibile leggere il movimento selezionato.")
+        percorso = dettagli.get("percorso_file", "")
+        if not percorso:
+            messagebox.showerror("Errore", "La fattura selezionata non ha un percorso file valido.")
             return
 
-        mov_id = int(valori[0])
-
-        try:
-            with get_conn() as conn:
-                c = conn.cursor()
-                c.execute(
-                    '''
-                    SELECT percorso_file
-                    FROM fatture
-                    WHERE user_id=? AND movimento_id=?
-                    ORDER BY data_caricamento DESC, id DESC
-                    LIMIT 1
-                ''',
-                    (self.user_id, mov_id),
-                )
-                row = c.fetchone()
-        except sqlite3.Error as e:
-            messagebox.showerror("Errore DB", f"Errore database: {e}")
-            return
-
-        if not row:
-            messagebox.showinfo("Nessuna fattura", "Questo movimento non ha una fattura collegata.")
-            return
-
-        percorso_fattura = resolve_fattura_path(row[0])
+        percorso_fattura = resolve_fattura_path(percorso)
         if not percorso_fattura.exists():
             messagebox.showerror("File non trovato", f"La fattura non esiste piu nel percorso salvato:\n{percorso_fattura}")
             return
@@ -444,19 +518,10 @@ class StoricoTabMixin:
         if not testo:
             return ""
 
-        s = testo.replace("€", "").replace(" ", "").replace("'", "").replace("’", "")
-        if "," in s and "." in s:
-            if s.rfind(",") > s.rfind("."):
-                s = s.replace(".", "").replace(",", ".")
-            else:
-                s = s.replace(",", "")
-        elif "," in s:
-            s = s.replace(".", "").replace(",", ".")
-
-        try:
-            return format_number(float(s), 2)
-        except ValueError:
+        numero = parse_decimal(testo, allow_zero=True, allow_negative=False)
+        if numero is None:
             return testo
+        return format_number(numero, 2)
 
     def apri_file_locale(self, file_path):
         try:

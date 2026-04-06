@@ -3,7 +3,7 @@ import sqlite3
 from datetime import datetime
 from tkinter import ttk, messagebox
 
-from app_utils import format_eur, format_number, is_blank
+from app_utils import clear_treeview, format_eur, format_number, is_blank
 from database import get_conn, LITRI_PER_QUINTALE
 
 
@@ -224,8 +224,7 @@ class LatteTabMixin:
         if not hasattr(self, "tree_produzione"):
             return
 
-        for item in self.tree_produzione.get_children():
-            self.tree_produzione.delete(item)
+        clear_treeview(self.tree_produzione)
 
         try:
             with get_conn() as conn:
