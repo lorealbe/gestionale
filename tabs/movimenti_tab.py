@@ -1,7 +1,9 @@
 import tkinter as tk
+import importlib
 import re
 import shutil
 import sqlite3
+import sys
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -95,12 +97,51 @@ class MovimentiTabMixin:
             with get_conn() as conn:
                 c = conn.cursor()
                 movimento_salvato_id = None
+                parser_data = getattr(self, "pending_parser_movimento_data", None)
+
+                parser_invoice_number = None
+                parser_invoice_date = None
+                parser_due_date = None
+                parser_supplier_name = None
+                parser_supplier_vat = None
+                parser_customer_name = None
+                parser_customer_vat = None
+                parser_total_amount = None
+                parser_taxable_total = None
+                parser_vat_total = None
+                parser_payment_terms = None
+                parser_warnings = None
+                parser_products = None
+                parser_fields_view = None
+
+                if isinstance(parser_data, dict):
+                    parser_invoice_number = parser_data.get("invoice_number")
+                    parser_invoice_date = parser_data.get("invoice_date")
+                    parser_due_date = parser_data.get("due_date")
+                    parser_supplier_name = parser_data.get("supplier_name")
+                    parser_supplier_vat = parser_data.get("supplier_vat")
+                    parser_customer_name = parser_data.get("customer_name")
+                    parser_customer_vat = parser_data.get("customer_vat")
+                    parser_total_amount = parser_data.get("total_amount")
+                    parser_taxable_total = parser_data.get("taxable_total")
+                    parser_vat_total = parser_data.get("vat_total")
+                    parser_payment_terms = parser_data.get("payment_terms")
+                    parser_warnings = parser_data.get("warnings")
+                    parser_products = parser_data.get("products")
+                    parser_fields_view = parser_data.get("fields_view")
 
                 if self.movimento_in_modifica_id is None:
                     c.execute(
                         '''
-                        INSERT INTO movimenti (user_id, data_op, tipo, categoria, descrizione, importo, iva_importo)
-                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                        INSERT INTO movimenti (
+                            user_id, data_op, tipo, categoria, descrizione, importo, iva_importo,
+                            parser_invoice_number, parser_invoice_date, parser_due_date,
+                            parser_supplier_name, parser_supplier_vat,
+                            parser_customer_name, parser_customer_vat,
+                            parser_total_amount, parser_taxable_total, parser_vat_total,
+                            parser_payment_terms, parser_warnings, parser_products, parser_fields_view
+                        )
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ''',
                         (
                             self.user_id,
@@ -110,28 +151,80 @@ class MovimentiTabMixin:
                             self.var_desc.get().strip(),
                             importo_val,
                             iva_val,
+                            parser_invoice_number,
+                            parser_invoice_date,
+                            parser_due_date,
+                            parser_supplier_name,
+                            parser_supplier_vat,
+                            parser_customer_name,
+                            parser_customer_vat,
+                            parser_total_amount,
+                            parser_taxable_total,
+                            parser_vat_total,
+                            parser_payment_terms,
+                            parser_warnings,
+                            parser_products,
+                            parser_fields_view,
                         ),
                     )
                     movimento_salvato_id = c.lastrowid
                     msg_ok = "Movimento salvato nel database!"
                 else:
-                    c.execute(
-                        '''
-                        UPDATE movimenti
-                        SET data_op=?, tipo=?, categoria=?, descrizione=?, importo=?, iva_importo=?
-                        WHERE id=? AND user_id=?
-                    ''',
-                        (
-                            data_db,
-                            self.var_tipo.get(),
-                            self.var_cat.get().strip(),
-                            self.var_desc.get().strip(),
-                            importo_val,
-                            iva_val,
-                            self.movimento_in_modifica_id,
-                            self.user_id,
-                        ),
-                    )
+                    if parser_data is not None:
+                        c.execute(
+                            '''
+                            UPDATE movimenti
+                            SET data_op=?, tipo=?, categoria=?, descrizione=?, importo=?, iva_importo=?,
+                                parser_invoice_number=?, parser_invoice_date=?, parser_due_date=?,
+                                parser_supplier_name=?, parser_supplier_vat=?,
+                                parser_customer_name=?, parser_customer_vat=?,
+                                parser_total_amount=?, parser_taxable_total=?, parser_vat_total=?,
+                                parser_payment_terms=?, parser_warnings=?, parser_products=?, parser_fields_view=?
+                            WHERE id=? AND user_id=?
+                        ''',
+                            (
+                                data_db,
+                                self.var_tipo.get(),
+                                self.var_cat.get().strip(),
+                                self.var_desc.get().strip(),
+                                importo_val,
+                                iva_val,
+                                parser_invoice_number,
+                                parser_invoice_date,
+                                parser_due_date,
+                                parser_supplier_name,
+                                parser_supplier_vat,
+                                parser_customer_name,
+                                parser_customer_vat,
+                                parser_total_amount,
+                                parser_taxable_total,
+                                parser_vat_total,
+                                parser_payment_terms,
+                                parser_warnings,
+                                parser_products,
+                                parser_fields_view,
+                                self.movimento_in_modifica_id,
+                                self.user_id,
+                            ),
+                        )
+                    else:
+                        c.execute(
+                            '''
+                            UPDATE movimenti
+                            SET data_op=?, tipo=?, categoria=?, descrizione=?, importo=?, iva_importo=?
+                            WHERE id=? AND user_id=?
+                        ''',
+                            (
+                                data_db,
+                                self.var_tipo.get(),
+                                self.var_cat.get().strip(),
+                                self.var_desc.get().strip(),
+                                importo_val,
+                                iva_val,
+                                self.movimento_in_modifica_id,
+                                self.user_id,
+                            ),
+                        )
 
                     if c.rowcount == 0:
                         messagebox.showerror("Errore", "Movimento non trovato o non modificabile.")
@@ -172,11 +265,11 @@ class MovimentiTabMixin:
 
         self.pending_fattura_movimento_id = fattura_id
         self.pending_fattura_movimento_path = percorso_archiviato
+        self.pending_parser_movimento_data = None
         self.var_nome_fattura_mov.set(Path(percorso_archiviato).name)
 
         try:
-            testo = self.estrai_testo_pdf(percorso_archiviato)
-            dati = self.analizza_testo_fattura(testo, file_path)
+            dati = self.analizza_fattura_con_parser_fatture(percorso_archiviato, file_path)
         except Exception as e:
             messagebox.showwarning(
                 "Analisi non completata",
@@ -196,6 +289,7 @@ class MovimentiTabMixin:
             self.var_imp.set(dati["importo"])
         if dati.get("iva"):
             self.var_iva.set(dati["iva"])
+        self.pending_parser_movimento_data = dati.get("parser_data")
 
         if is_blank(self.var_imp.get()):
             messagebox.showwarning("Attenzione", "Importo non trovato automaticamente. Verificalo manualmente.")
@@ -239,6 +333,7 @@ class MovimentiTabMixin:
     def rimuovi_fattura_movimento(self):
         self.pending_fattura_movimento_id = None
         self.pending_fattura_movimento_path = None
+        self.pending_parser_movimento_data = None
         if hasattr(self, "var_nome_fattura_mov"):
             self.var_nome_fattura_mov.set("Nessuna fattura caricata")
 
@@ -281,65 +376,297 @@ class MovimentiTabMixin:
         return testo
 
     def analizza_testo_fattura(self, testo, file_path):
-        t = testo.lower()
-        intestazione = self._estrai_intestazione_fattura(testo, file_path)
+        # Manteniamo la firma per compatibilita con vecchi call site.
+        return self.analizza_fattura_con_parser_fatture(file_path, file_path)
 
-        data_match = re.search(r"\b(\d{2}[/-]\d{2}[/-]\d{4})\b", testo)
-        data_out = ""
-        if data_match:
-            raw = data_match.group(1).replace("-", "/")
-            try:
-                data_out = datetime.strptime(raw, "%d/%m/%Y").strftime("%d/%m/%Y")
-            except ValueError:
-                data_out = ""
+    def analizza_fattura_con_parser_fatture(self, pdf_path, file_path):
+        parse_invoice_pdf = self._get_parser_fatture_function()
+        risultato = parse_invoice_pdf(str(pdf_path))
+        fields = getattr(risultato, "fields", {}) or {}
+        parser_data = self._costruisci_dati_parser_movimento(risultato, fields)
 
-        patterns = [
-            r"(?:totale\s+da\s+pagare|importo\s+totale|totale\s+fattura|totale)\D{0,25}([€\s]*\d{1,3}(?:[.\s]\d{3})*(?:,\d{2})|[€\s]*\d+(?:[.,]\d{2}))",
-            r"(?:da\s+pagare)\D{0,25}([€\s]*\d{1,3}(?:[.\s]\d{3})*(?:,\d{2})|[€\s]*\d+(?:[.,]\d{2}))",
-        ]
+        data_raw = self._estrai_valore_campo_parser(fields, "invoice_date")
+        data_out = self._normalizza_data_fattura(data_raw)
 
-        importo = None
-        for p in patterns:
-            m = re.search(p, t, flags=re.IGNORECASE)
-            if m:
-                importo = self._normalizza_importo(m.group(1))
-                if importo is not None:
-                    break
-
-        iva = None
-        iva_patterns = [
-            r"(?:imposta\s*iva|iva(?:\s*imposta)?)\D{0,20}([€\s]*\d{1,3}(?:[.\s]\d{3})*(?:,\d{2})|[€\s]*\d+(?:[.,]\d{2}))",
-        ]
-
-        for p in iva_patterns:
-            m = re.search(p, t, flags=re.IGNORECASE)
-            if m:
-                iva = self._normalizza_importo(m.group(1), allow_zero=True)
-                if iva is not None:
-                    break
+        importo = self._estrai_importo_parser(fields, "total_amount", allow_zero=False)
+        iva = self._estrai_importo_parser(fields, "vat_total", allow_zero=True)
 
         if importo is None:
-            candidati = re.findall(r"[€\s]*\d{1,3}(?:[.\s]\d{3})*(?:,\d{2})|[€\s]*\d+(?:[.,]\d{2})", testo)
-            valori = [self._normalizza_importo(c) for c in candidati]
-            valori = [v for v in valori if v is not None]
-            if valori:
-                importo = max(valori)
+            imponibile = self._estrai_importo_parser(fields, "taxable_total", allow_zero=True)
+            if imponibile is not None and iva is not None:
+                importo = imponibile + iva
+            elif imponibile is not None:
+                importo = imponibile
 
         if iva is None:
             iva = 0.0
 
+        testo_struttura = self._testo_da_struttura_parser(getattr(risultato, "structure", {}))
+        testo_struttura_lower = testo_struttura.lower()
+
         tipo = "USCITA"
-        if "nota di credito" in t or "rimborso" in t:
+        if "nota di credito" in testo_struttura_lower or "rimborso" in testo_struttura_lower:
             tipo = "ENTRATA"
+
+        descrizione = self._estrai_valore_campo_parser(fields, "supplier_name")
+        if not descrizione and testo_struttura:
+            descrizione = self._estrai_intestazione_fattura(testo_struttura, file_path)
+
+        if not descrizione:
+            numero_fattura = self._estrai_valore_campo_parser(fields, "invoice_number")
+            if numero_fattura:
+                descrizione = f"Fattura {numero_fattura}"
+            else:
+                descrizione = f"Fattura importata: {Path(file_path).name}"
 
         return {
             "data": data_out or datetime.now().strftime("%d/%m/%Y"),
             "tipo": tipo,
             "categoria": "Fattura",
-            "descrizione": intestazione,
+            "descrizione": descrizione,
             "importo": format_number(importo, 2) if importo is not None else "",
             "iva": format_number(iva, 2),
+            "parser_data": parser_data,
         }
+
+    def _get_parser_fatture_function(self):
+        parse_invoice_pdf = getattr(self, "_parser_fatture_parse_fn", None)
+        if parse_invoice_pdf is not None:
+            return parse_invoice_pdf
+
+        parser_src = Path(__file__).resolve().parents[1] / "parserFatture" / "src"
+        if parser_src.exists():
+            parser_src_str = str(parser_src)
+            if parser_src_str not in sys.path:
+                sys.path.insert(0, parser_src_str)
+
+        try:
+            parser_module = importlib.import_module("parser")
+            parse_invoice_pdf = getattr(parser_module, "parse_invoice_pdf")
+        except Exception as exc:
+            raise RuntimeError(
+                "parserFatture non disponibile. Installa dipendenze con: pip install -e parserFatture"
+            ) from exc
+
+        self._parser_fatture_parse_fn = parse_invoice_pdf
+        return parse_invoice_pdf
+
+    def _estrai_valore_campo_parser(self, fields, field_name):
+        field = fields.get(field_name)
+        if field is None:
+            return ""
+
+        valore = getattr(field, "normalized_value", None)
+        if valore in (None, ""):
+            valore = getattr(field, "raw_value", None)
+
+        return str(valore).strip() if valore is not None else ""
+
+    def _estrai_importo_parser(self, fields, field_name, allow_zero):
+        field = fields.get(field_name)
+        if field is None:
+            return None
+
+        valore = getattr(field, "normalized_value", None)
+        if valore in (None, ""):
+            valore = getattr(field, "raw_value", None)
+        if valore in (None, ""):
+            return None
+
+        if isinstance(valore, (int, float)):
+            numero = float(valore)
+            if numero < 0:
+                return None
+            if not allow_zero and numero <= 0:
+                return None
+            return numero
+
+        return self._normalizza_importo(str(valore), allow_zero=allow_zero)
+
+    def _testo_da_struttura_parser(self, struttura):
+        if not isinstance(struttura, dict):
+            return ""
+
+        righe = []
+        for blocco in struttura.values():
+            if not isinstance(blocco, list):
+                continue
+            for riga in blocco:
+                testo_riga = str(riga).strip()
+                if testo_riga:
+                    righe.append(testo_riga)
+
+        return "\n".join(righe)
+
+    def _costruisci_dati_parser_movimento(self, risultato, fields):
+        warnings = getattr(risultato, "warnings", []) or []
+        line_items = getattr(risultato, "line_items", []) or []
+
+        prodotti = []
+        for line in line_items:
+            descrizione = str(getattr(line, "description", "") or "").strip()
+            quantita = getattr(line, "quantity", None)
+            totale = getattr(line, "line_total", None)
+
+            if not descrizione or quantita is None or totale is None:
+                continue
+            if quantita <= 0 or totale <= 0:
+                continue
+
+            parti = [descrizione, f"qta {quantita}", f"tot {totale}"]
+            prodotti.append(" - ".join(parti))
+
+        campi_riepilogo = []
+        for field_name in sorted(fields):
+            field = fields.get(field_name)
+            if field is None:
+                continue
+
+            valore = getattr(field, "normalized_value", None)
+            if valore in (None, ""):
+                valore = getattr(field, "raw_value", None)
+
+            valore_text = str(valore).strip() if valore not in (None, "") else "-"
+            conf = getattr(field, "confidence", 0.0) or 0.0
+            try:
+                conf_pct = int(round(float(conf) * 100))
+            except (TypeError, ValueError):
+                conf_pct = 0
+
+            needs_review = bool(getattr(field, "requires_confirmation", False))
+            suffisso = " [Conferma]" if needs_review else ""
+            label = field_name.replace("_", " ").title()
+            campi_riepilogo.append(f"{label}: {valore_text} ({conf_pct}%){suffisso}")
+
+        return {
+            "invoice_number": self._estrai_valore_campo_parser(fields, "invoice_number"),
+            "invoice_date": self._estrai_valore_campo_parser(fields, "invoice_date"),
+            "due_date": self._estrai_valore_campo_parser(fields, "due_date"),
+            "supplier_name": self._estrai_valore_campo_parser(fields, "supplier_name"),
+            "supplier_vat": self._estrai_valore_campo_parser(fields, "supplier_vat"),
+            "customer_name": self._estrai_valore_campo_parser(fields, "customer_name"),
+            "customer_vat": self._estrai_valore_campo_parser(fields, "customer_vat"),
+            "total_amount": self._estrai_valore_campo_parser(fields, "total_amount"),
+            "taxable_total": self._estrai_valore_campo_parser(fields, "taxable_total"),
+            "vat_total": self._estrai_valore_campo_parser(fields, "vat_total"),
+            "payment_terms": self._estrai_valore_campo_parser(fields, "payment_terms"),
+            "warnings": " | ".join(str(w).strip() for w in warnings if str(w).strip()),
+            "products": " | ".join(prodotti),
+            "fields_view": " | ".join(campi_riepilogo),
+        }
+
+    def _estrai_data_emissione_fattura(self, testo):
+        pattern_data = r"\d{1,2}[./-]\d{1,2}[./-]\d{2,4}|\d{4}[./-]\d{1,2}[./-]\d{1,2}"
+        parole_chiave = (
+            "data emissione",
+            "data di emissione",
+            "emessa il",
+            "data fattura",
+            "data documento",
+            "invoice date",
+            "issue date",
+        )
+
+        # Formato richiesto: "n. <numero_fattura> del GG Mese YYYY".
+        match_fattura = re.search(
+            r"\bn\.?\s*[^\n]{0,60}?\bdel\b\s*(\d{1,2})\s+([A-Za-z]+)\s+(\d{4})\b",
+            testo,
+            flags=re.IGNORECASE,
+        )
+        if match_fattura:
+            giorno = int(match_fattura.group(1))
+            mese = self._mese_italiano_to_numero(match_fattura.group(2))
+            anno = int(match_fattura.group(3))
+            if mese is not None:
+                try:
+                    return datetime(anno, mese, giorno).strftime("%d/%m/%Y")
+                except ValueError:
+                    pass
+
+        # Priorita: date presenti su righe che contengono indicatori di emissione.
+        for riga in testo.splitlines():
+            riga_pulita = re.sub(r"\s+", " ", riga).strip()
+            if not riga_pulita:
+                continue
+            riga_lower = riga_pulita.lower()
+            if not any(k in riga_lower for k in parole_chiave):
+                continue
+
+            for candidato in re.findall(rf"\b({pattern_data})\b", riga_pulita):
+                data_norm = self._normalizza_data_fattura(candidato)
+                if data_norm:
+                    return data_norm
+
+        pattern_con_etichetta = [
+            rf"(?:data\s*(?:di\s*)?emissione|emessa\s*il|data\s*fattura|data\s*documento|invoice\s*date|issue\s*date)\D{{0,30}}({pattern_data})",
+        ]
+        for pattern in pattern_con_etichetta:
+            match = re.search(pattern, testo, flags=re.IGNORECASE)
+            if match:
+                data_norm = self._normalizza_data_fattura(match.group(1))
+                if data_norm:
+                    return data_norm
+
+        for candidato in re.findall(rf"\b({pattern_data})\b", testo):
+            data_norm = self._normalizza_data_fattura(candidato)
+            if data_norm:
+                return data_norm
+
+        return ""
+
+    def _normalizza_data_fattura(self, raw_data):
+        if not raw_data:
+            return ""
+
+        testo_data = raw_data.strip().replace(".", "/").replace("-", "/")
+        formati = []
+
+        if re.fullmatch(r"\d{4}/\d{1,2}/\d{1,2}", testo_data):
+            formati = ["%Y/%m/%d"]
+        elif re.fullmatch(r"\d{1,2}/\d{1,2}/\d{2,4}", testo_data):
+            formati = ["%d/%m/%Y", "%d/%m/%y"]
+
+        for formato in formati:
+            try:
+                data = datetime.strptime(testo_data, formato)
+                return data.strftime("%d/%m/%Y")
+            except ValueError:
+                continue
+
+        return ""
+
+    def _mese_italiano_to_numero(self, mese_raw):
+        if not mese_raw:
+            return None
+
+        mese = re.sub(r"[^A-Za-z]", "", mese_raw).lower()
+        mapping = {
+            "gennaio": 1,
+            "gen": 1,
+            "febbraio": 2,
+            "feb": 2,
+            "marzo": 3,
+            "mar": 3,
+            "aprile": 4,
+            "apr": 4,
+            "maggio": 5,
+            "mag": 5,
+            "giugno": 6,
+            "giu": 6,
+            "luglio": 7,
+            "lug": 7,
+            "agosto": 8,
+            "ago": 8,
+            "settembre": 9,
+            "set": 9,
+            "ottobre": 10,
+            "ott": 10,
+            "novembre": 11,
+            "nov": 11,
+            "dicembre": 12,
+            "dic": 12,
+        }
+        return mapping.get(mese)
 
     def _estrai_intestazione_fattura(self, testo, file_path):
         righe = []

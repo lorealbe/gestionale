@@ -74,7 +74,29 @@ class StoricoTabMixin:
         frame_table = ttk.Frame(self.tab_storico)
         frame_table.pack(fill="both", expand=True, padx=12, pady=6)
 
-        cols = ("id", "data", "tipo", "categoria", "descrizione", "importo", "iva")
+        cols = (
+            "id",
+            "data",
+            "tipo",
+            "categoria",
+            "descrizione",
+            "importo",
+            "iva",
+            "fattura_numero",
+            "fattura_data",
+            "fattura_scadenza",
+            "fornitore",
+            "piva_fornitore",
+            "cliente",
+            "piva_cliente",
+            "totale_doc",
+            "totale_imponibile",
+            "totale_iva",
+            "condizioni_pagamento",
+            "warnings_parser",
+            "prodotti_parser",
+            "campi_parser",
+        )
         self.tree_movimenti = ttk.Treeview(frame_table, columns=cols, show="headings", height=14)
 
         self.tree_movimenti.heading("id", text="ID")
@@ -84,6 +106,20 @@ class StoricoTabMixin:
         self.tree_movimenti.heading("descrizione", text="Descrizione")
         self.tree_movimenti.heading("importo", text="Importo")
         self.tree_movimenti.heading("iva", text="IVA")
+        self.tree_movimenti.heading("fattura_numero", text="N. Fattura")
+        self.tree_movimenti.heading("fattura_data", text="Data Fattura")
+        self.tree_movimenti.heading("fattura_scadenza", text="Scadenza")
+        self.tree_movimenti.heading("fornitore", text="Fornitore")
+        self.tree_movimenti.heading("piva_fornitore", text="P.IVA Fornitore")
+        self.tree_movimenti.heading("cliente", text="Cliente")
+        self.tree_movimenti.heading("piva_cliente", text="P.IVA Cliente")
+        self.tree_movimenti.heading("totale_doc", text="Totale Doc")
+        self.tree_movimenti.heading("totale_imponibile", text="Totale Imponibile")
+        self.tree_movimenti.heading("totale_iva", text="Totale IVA")
+        self.tree_movimenti.heading("condizioni_pagamento", text="Pagamento")
+        self.tree_movimenti.heading("warnings_parser", text="Warnings Parser")
+        self.tree_movimenti.heading("prodotti_parser", text="Prodotti Parser")
+        self.tree_movimenti.heading("campi_parser", text="Campi Parser")
 
         self.tree_movimenti.column("id", width=60, anchor="center")
         self.tree_movimenti.column("data", width=100, anchor="center")
@@ -92,12 +128,30 @@ class StoricoTabMixin:
         self.tree_movimenti.column("descrizione", width=180, anchor="w")
         self.tree_movimenti.column("importo", width=90, anchor="e")
         self.tree_movimenti.column("iva", width=90, anchor="e")
+        self.tree_movimenti.column("fattura_numero", width=130, anchor="w")
+        self.tree_movimenti.column("fattura_data", width=110, anchor="center")
+        self.tree_movimenti.column("fattura_scadenza", width=110, anchor="center")
+        self.tree_movimenti.column("fornitore", width=190, anchor="w")
+        self.tree_movimenti.column("piva_fornitore", width=130, anchor="w")
+        self.tree_movimenti.column("cliente", width=190, anchor="w")
+        self.tree_movimenti.column("piva_cliente", width=130, anchor="w")
+        self.tree_movimenti.column("totale_doc", width=110, anchor="e")
+        self.tree_movimenti.column("totale_imponibile", width=130, anchor="e")
+        self.tree_movimenti.column("totale_iva", width=110, anchor="e")
+        self.tree_movimenti.column("condizioni_pagamento", width=180, anchor="w")
+        self.tree_movimenti.column("warnings_parser", width=230, anchor="w")
+        self.tree_movimenti.column("prodotti_parser", width=260, anchor="w")
+        self.tree_movimenti.column("campi_parser", width=420, anchor="w")
 
-        scroll = ttk.Scrollbar(frame_table, orient="vertical", command=self.tree_movimenti.yview)
-        self.tree_movimenti.configure(yscrollcommand=scroll.set)
+        scroll_y = ttk.Scrollbar(frame_table, orient="vertical", command=self.tree_movimenti.yview)
+        scroll_x = ttk.Scrollbar(frame_table, orient="horizontal", command=self.tree_movimenti.xview)
+        self.tree_movimenti.configure(yscrollcommand=scroll_y.set, xscrollcommand=scroll_x.set)
 
-        self.tree_movimenti.pack(side="left", fill="both", expand=True)
-        scroll.pack(side="right", fill="y")
+        self.tree_movimenti.grid(row=0, column=0, sticky="nsew")
+        scroll_y.grid(row=0, column=1, sticky="ns")
+        scroll_x.grid(row=1, column=0, sticky="ew")
+        frame_table.grid_rowconfigure(0, weight=1)
+        frame_table.grid_columnconfigure(0, weight=1)
 
         self.tree_movimenti.bind("<Double-1>", lambda _event: self.prepara_modifica_movimento())
         self.tree_movimenti.bind("<Delete>", lambda _event: self.elimina_movimento_selezionato())
@@ -145,7 +199,13 @@ class StoricoTabMixin:
 
         query = (
             '''
-                    SELECT id, data_op, tipo, categoria, descrizione, importo, iva_importo
+                    SELECT
+                        id, data_op, tipo, categoria, descrizione, importo, iva_importo,
+                        parser_invoice_number, parser_invoice_date, parser_due_date,
+                        parser_supplier_name, parser_supplier_vat,
+                        parser_customer_name, parser_customer_vat,
+                        parser_total_amount, parser_taxable_total, parser_vat_total,
+                        parser_payment_terms, parser_warnings, parser_products, parser_fields_view
                     FROM movimenti
                     WHERE user_id=?
                 '''
@@ -179,7 +239,29 @@ class StoricoTabMixin:
             messagebox.showerror("Errore DB", f"Errore database: {e}")
             return
 
-        for mov_id, data_op, tipo, categoria, descrizione, importo, iva_importo in rows:
+        for (
+            mov_id,
+            data_op,
+            tipo,
+            categoria,
+            descrizione,
+            importo,
+            iva_importo,
+            parser_invoice_number,
+            parser_invoice_date,
+            parser_due_date,
+            parser_supplier_name,
+            parser_supplier_vat,
+            parser_customer_name,
+            parser_customer_vat,
+            parser_total_amount,
+            parser_taxable_total,
+            parser_vat_total,
+            parser_payment_terms,
+            parser_warnings,
+            parser_products,
+            parser_fields_view,
+        ) in rows:
             try:
                 data_view = datetime.strptime(data_op, "%Y-%m-%d").strftime("%d/%m/%Y")
             except ValueError:
@@ -196,6 +278,20 @@ class StoricoTabMixin:
                     descrizione or "",
                     format_number(importo, 2),
                     format_number(iva_importo, 2),
+                    parser_invoice_number or "",
+                    self._format_data_parser(parser_invoice_date),
+                    self._format_data_parser(parser_due_date),
+                    parser_supplier_name or "",
+                    parser_supplier_vat or "",
+                    parser_customer_name or "",
+                    parser_customer_vat or "",
+                    self._format_importo_parser(parser_total_amount),
+                    self._format_importo_parser(parser_taxable_total),
+                    self._format_importo_parser(parser_vat_total),
+                    parser_payment_terms or "",
+                    parser_warnings or "",
+                    parser_products or "",
+                    parser_fields_view or "",
                 ),
             )
 
@@ -329,6 +425,38 @@ class StoricoTabMixin:
             return
 
         self.apri_file_locale(percorso_fattura)
+
+    def _format_data_parser(self, raw_value):
+        testo = (raw_value or "").strip()
+        if not testo:
+            return ""
+
+        for fmt_in in ("%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y"):
+            try:
+                return datetime.strptime(testo, fmt_in).strftime("%d/%m/%Y")
+            except ValueError:
+                continue
+
+        return testo
+
+    def _format_importo_parser(self, raw_value):
+        testo = (raw_value or "").strip()
+        if not testo:
+            return ""
+
+        s = testo.replace("€", "").replace(" ", "").replace("'", "").replace("’", "")
+        if "," in s and "." in s:
+            if s.rfind(",") > s.rfind("."):
+                s = s.replace(".", "").replace(",", ".")
+            else:
+                s = s.replace(",", "")
+        elif "," in s:
+            s = s.replace(".", "").replace(",", ".")
+
+        try:
+            return format_number(float(s), 2)
+        except ValueError:
+            return testo
 
     def apri_file_locale(self, file_path):
         try:

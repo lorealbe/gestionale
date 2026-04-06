@@ -269,6 +269,7 @@ class AppGestionaleGUI(
         self.movimento_in_modifica_id = None
         self.pending_fattura_movimento_id = None
         self.pending_fattura_movimento_path = None
+        self.pending_parser_movimento_data = None
         self.pending_fattura_latte_id = None
         self.pending_fattura_latte_path = None
 
