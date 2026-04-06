@@ -8,19 +8,21 @@ from pathlib import Path
 from tkinter import ttk, messagebox
 
 from app_utils import clear_treeview, format_number, parse_decimal
-from database import get_conn, resolve_fattura_path
+from database import get_conn, get_movimento_animali_entry_ids, get_movimento_animali_group_labels, resolve_fattura_path
 
 
 class StoricoTabMixin:
     def setup_tab_storico(self):
-        ttk.Label(self.tab_storico, text="Movimenti inseriti", font=("Arial", 14, "bold")).pack(pady=10)
+        content = self.crea_container_scorribile(self.tab_storico)
+
+        ttk.Label(content, text="Movimenti inseriti", font=("Arial", 14, "bold")).pack(pady=10)
 
         self.var_filtro_categoria = tk.StringVar(value="Tutte")
         self.var_filtro_descrizione = tk.StringVar()
         self.var_filtro_data_da = tk.StringVar()
         self.var_filtro_data_a = tk.StringVar()
 
-        frame_filtri = ttk.LabelFrame(self.tab_storico, text="Filtri")
+        frame_filtri = ttk.LabelFrame(content, text="Filtri")
         frame_filtri.pack(fill="x", padx=12, pady=(0, 6))
 
         riga_filtri_1 = ttk.Frame(frame_filtri)
@@ -71,7 +73,7 @@ class StoricoTabMixin:
         ttk.Button(riga_filtri_2, text="Applica filtri", command=self.carica_movimenti).pack(side="left", padx=(0, 6))
         ttk.Button(riga_filtri_2, text="Pulisci", command=self.pulisci_filtri_movimenti).pack(side="left")
 
-        frame_table = ttk.Frame(self.tab_storico)
+        frame_table = ttk.Frame(content)
         frame_table.pack(fill="both", expand=True, padx=12, pady=6)
 
         cols = ("id", "data", "tipo", "categoria", "descrizione", "importo", "iva")
@@ -107,7 +109,7 @@ class StoricoTabMixin:
         self.tree_movimenti.bind("<Double-1>", lambda _event: self.prepara_modifica_movimento())
         self.tree_movimenti.bind("<Delete>", lambda _event: self.elimina_movimento_selezionato())
 
-        frame_btn = ttk.Frame(self.tab_storico)
+        frame_btn = ttk.Frame(content)
         frame_btn.pack(fill="x", padx=12, pady=(0, 6))
 
         ttk.Button(frame_btn, text="Ricarica", command=self.carica_movimenti).pack(side="left", padx=6)
@@ -115,7 +117,7 @@ class StoricoTabMixin:
         ttk.Button(frame_btn, text="Apri fattura", command=self.apri_fattura_movimento_selezionato).pack(side="left", padx=6)
         ttk.Button(frame_btn, text="Elimina selezionato", command=self.elimina_movimento_selezionato).pack(side="left", padx=6)
 
-        frame_dettagli = ttk.LabelFrame(self.tab_storico, text="Dati fattura del movimento selezionato")
+        frame_dettagli = ttk.LabelFrame(content, text="Dati fattura del movimento selezionato")
         frame_dettagli.pack(fill="both", expand=True, padx=12, pady=(0, 6))
 
         self.tree_fattura_dettagli = ttk.Treeview(
@@ -231,7 +233,6 @@ class StoricoTabMixin:
 
         self._azzera_dettagli_fattura()
         self.carica_categorie_salvate(mostra_errori=False)
-        self.aggiorna_situazione_attuale(mostra_errori=False)
 
     def _azzera_dettagli_fattura(self, testo="Seleziona un movimento per vedere la fattura collegata."):
         self._fattura_dettaglio_corrente = None
@@ -327,6 +328,13 @@ class StoricoTabMixin:
             parser_fields_view,
         ) = row
 
+        try:
+            gruppi_animali_collegati = get_movimento_animali_group_labels(self.user_id, mov_id)
+        except sqlite3.Error:
+            gruppi_animali_collegati = []
+
+        gruppi_animali_text = " | ".join(gruppi_animali_collegati) if gruppi_animali_collegati else "Nessun gruppo collegato"
+
         self._fattura_dettaglio_corrente = {
             "id": fattura_id,
             "data_caricamento": self._format_data_caricamento(data_caricamento),
@@ -347,6 +355,7 @@ class StoricoTabMixin:
             "warnings": parser_warnings or "",
             "products": parser_products or "",
             "fields_view": parser_fields_view or "",
+            "gruppi_animali": gruppi_animali_text,
         }
         self._mostra_dettagli_fattura(self._fattura_dettaglio_corrente)
 
@@ -368,6 +377,7 @@ class StoricoTabMixin:
             ("Totale imponibile", dettagli.get("taxable_total", "")),
             ("Totale IVA", dettagli.get("vat_total", "")),
             ("Condizioni pagamento", dettagli.get("payment_terms", "")),
+            ("Gruppi animali collegati", dettagli.get("gruppi_animali", "")),
             ("Prodotti", dettagli.get("products", "")),
         ]
 
@@ -478,9 +488,31 @@ class StoricoTabMixin:
         self.var_imp.set(valori[5] or "")
         self.var_iva.set(valori[6] or "0,00")
 
-        self.btn_salva_movimento.config(text="Aggiorna nel DB")
-        self.btn_annulla_modifica.config(state="normal")
-        self.notebook.select(self.tab_movimenti)
+        gruppi_collegati_ids = []
+        try:
+            gruppi_collegati_ids = get_movimento_animali_entry_ids(self.user_id, self.movimento_in_modifica_id)
+        except sqlite3.Error:
+            gruppi_collegati_ids = []
+        if hasattr(self, "imposta_gruppi_animali_movimento_selezionati"):
+            self.imposta_gruppi_animali_movimento_selezionati(gruppi_collegati_ids)
+
+        if hasattr(self, "btn_salva_movimento"):
+            self.btn_salva_movimento.config(text="Aggiorna nel DB")
+        if hasattr(self, "btn_annulla_modifica"):
+            self.btn_annulla_modifica.config(state="normal")
+        if hasattr(self, "btn_salva_movimento_azienda"):
+            self.btn_salva_movimento_azienda.config(text="Aggiorna nel DB")
+        if hasattr(self, "btn_annulla_modifica_azienda"):
+            self.btn_annulla_modifica_azienda.config(state="normal")
+
+        if hasattr(self, "mostra_categoria") and hasattr(self, "CATEGORIA_AZIENDA"):
+            self.mostra_categoria(self.CATEGORIA_AZIENDA)
+            if hasattr(self, "azienda_notebook") and hasattr(self, "tab_azienda_fatture"):
+                self.azienda_notebook.select(self.tab_azienda_fatture)
+            if hasattr(self, "azienda_fatture_notebook") and hasattr(self, "tab_azienda_fatture_inserimento"):
+                self.azienda_fatture_notebook.select(self.tab_azienda_fatture_inserimento)
+        elif hasattr(self, "notebook") and hasattr(self, "tab_movimenti"):
+            self.notebook.select(self.tab_movimenti)
 
     def apri_fattura_movimento_selezionato(self):
         dettagli = getattr(self, "_fattura_dettaglio_corrente", None)
@@ -616,6 +648,8 @@ class StoricoTabMixin:
             self.annulla_modifica_movimento()
 
         self.carica_movimenti()
+        if hasattr(self, "carica_movimenti_azienda_storico"):
+            self.carica_movimenti_azienda_storico(mostra_errori=False)
         if hasattr(self, "carica_produzioni_latte"):
             self.carica_produzioni_latte(mostra_errori=False)
 
@@ -638,8 +672,14 @@ class StoricoTabMixin:
 
     def annulla_modifica_movimento(self):
         self.movimento_in_modifica_id = None
-        self.btn_salva_movimento.config(text="Salva nel DB")
-        self.btn_annulla_modifica.config(state="disabled")
+        if hasattr(self, "btn_salva_movimento"):
+            self.btn_salva_movimento.config(text="Salva nel DB")
+        if hasattr(self, "btn_annulla_modifica"):
+            self.btn_annulla_modifica.config(state="disabled")
+        if hasattr(self, "btn_salva_movimento_azienda"):
+            self.btn_salva_movimento_azienda.config(text="Salva nel DB")
+        if hasattr(self, "btn_annulla_modifica_azienda"):
+            self.btn_annulla_modifica_azienda.config(state="disabled")
 
         self.var_data.set(datetime.now().strftime("%d/%m/%Y"))
         self.var_tipo.set("ENTRATA")
@@ -647,3 +687,6 @@ class StoricoTabMixin:
         self.var_desc.set("")
         self.var_imp.set("")
         self.var_iva.set("0,00")
+
+        if hasattr(self, "deseleziona_gruppi_animali_movimento"):
+            self.deseleziona_gruppi_animali_movimento()

@@ -10,7 +10,7 @@ from pathlib import Path
 from tkinter import ttk, messagebox, filedialog
 
 from app_utils import format_number, is_blank, parse_decimal
-from database import get_conn, get_fatture_user_dir, to_storage_fattura_path
+from database import get_conn, get_fatture_user_dir, set_movimento_animali_links, to_storage_fattura_path
 
 
 class MovimentiTabMixin:
@@ -32,7 +32,9 @@ class MovimentiTabMixin:
     )
 
     def setup_tab_movimenti(self):
-        ttk.Label(self.tab_movimenti, text="Registra Movimento", font=("Arial", 14, "bold")).pack(pady=10)
+        content = self.crea_container_scorribile(self.tab_movimenti)
+
+        ttk.Label(content, text="Registra Movimento", font=("Arial", 14, "bold")).pack(pady=10)
 
         self.var_data = tk.StringVar(value=datetime.now().strftime("%d/%m/%Y"))
         self.var_tipo = tk.StringVar(value="ENTRATA")
@@ -41,9 +43,9 @@ class MovimentiTabMixin:
         self.var_imp = tk.StringVar()
         self.var_iva = tk.StringVar(value="0,00")
 
-        self.crea_campo_data(self.tab_movimenti, "Data:", self.var_data)
+        self.crea_campo_data(content, "Data:", self.var_data)
 
-        frame_tipo = ttk.Frame(self.tab_movimenti)
+        frame_tipo = ttk.Frame(content)
         frame_tipo.pack(fill="x", padx=20, pady=5)
         ttk.Label(frame_tipo, text="Tipo:", width=20).pack(side="left")
         frame_radio = ttk.Frame(frame_tipo)
@@ -52,12 +54,12 @@ class MovimentiTabMixin:
         ttk.Radiobutton(frame_radio, text="Entrata", value="ENTRATA", variable=self.var_tipo).pack(side="left", padx=(0, 15))
         ttk.Radiobutton(frame_radio, text="Uscita", value="USCITA", variable=self.var_tipo).pack(side="left")
 
-        self.crea_campo_categoria(self.tab_movimenti, "Categoria:", self.var_cat)
-        self.crea_campo(self.tab_movimenti, "Descrizione:", self.var_desc)
-        self.crea_campo(self.tab_movimenti, "Importo (EUR):", self.var_imp)
-        self.crea_campo(self.tab_movimenti, "IVA (EUR):", self.var_iva)
+        self.crea_campo_categoria(content, "Categoria:", self.var_cat)
+        self.crea_campo(content, "Descrizione:", self.var_desc)
+        self.crea_campo(content, "Importo (EUR):", self.var_imp)
+        self.crea_campo(content, "IVA (EUR):", self.var_iva)
 
-        frame_actions = ttk.Frame(self.tab_movimenti)
+        frame_actions = ttk.Frame(content)
         frame_actions.pack(pady=20)
 
         self.btn_salva_movimento = ttk.Button(frame_actions, text="Salva nel DB", command=self.salva_movimento)
@@ -74,7 +76,7 @@ class MovimentiTabMixin:
         ttk.Button(frame_actions, text="Importa fattura PDF", command=self.importa_fattura_pdf).pack(side="left", padx=6)
 
         self.var_nome_fattura_mov = tk.StringVar(value="Nessuna fattura caricata")
-        frame_fattura = ttk.Frame(self.tab_movimenti)
+        frame_fattura = ttk.Frame(content)
         frame_fattura.pack(fill="x", padx=20, pady=(0, 6))
 
         ttk.Label(frame_fattura, text="Fattura caricata:", width=20).pack(side="left")
@@ -116,6 +118,9 @@ class MovimentiTabMixin:
                 movimento_salvato_id = None
                 parser_data = getattr(self, "pending_parser_movimento_data", None)
                 parser_values = self._estrai_valori_parser_db(parser_data)
+                selected_animali_entry_ids = None
+                if hasattr(self, "get_gruppi_animali_movimento_selezionati_ids"):
+                    selected_animali_entry_ids = self.get_gruppi_animali_movimento_selezionati_ids()
 
                 if self.movimento_in_modifica_id is None:
                     c.execute(
@@ -203,11 +208,21 @@ class MovimentiTabMixin:
                         (movimento_salvato_id, self.pending_fattura_movimento_id, self.user_id),
                     )
 
+                if selected_animali_entry_ids is not None and movimento_salvato_id is not None:
+                    set_movimento_animali_links(
+                        self.user_id,
+                        movimento_salvato_id,
+                        selected_animali_entry_ids,
+                        cursor=c,
+                    )
+
             messagebox.showinfo("Successo", msg_ok)
             self.annulla_modifica_movimento()
             self.rimuovi_fattura_movimento()
             self.carica_movimenti()
-        except sqlite3.Error as e:
+            if hasattr(self, "carica_movimenti_azienda_storico"):
+                self.carica_movimenti_azienda_storico(mostra_errori=False)
+        except (sqlite3.Error, ValueError) as e:
             messagebox.showerror("Errore DB", f"Errore database: {e}")
 
     def importa_fattura_pdf(self):

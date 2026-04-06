@@ -2,6 +2,7 @@ import os
 import json
 import shutil
 import sqlite3
+from datetime import datetime
 from pathlib import Path
 
 APP_NAME = "Gestionale"
@@ -17,6 +18,20 @@ LEGACY_DB_PATH = LEGACY_ROOT / DB_NAME
 LEGACY_FATTURE_ROOT = LEGACY_ROOT / "fatture_caricate"
 
 _DATA_READY = False
+
+DEFAULT_AZIENDA_ANIMALI = {
+    "bovini": False,
+    "bovini_capi": 0,
+    "ovini": False,
+    "ovini_capi": 0,
+    "caprini": False,
+    "caprini_capi": 0,
+    "altro_text": "",
+    "altro_capi": 0,
+}
+
+ANIMAL_TYPE_OPTIONS = ("BOVINI", "OVINI", "CAPRINI", "SUINI", "AVICOLI", "EQUINI", "ALTRO")
+ANIMAL_PURPOSE_OPTIONS = ("LATTE", "CARNE")
 
 
 def _as_relative_fattura_path(percorso_file: str) -> str:
@@ -264,6 +279,953 @@ def get_conn():
     return conn
 
 
+def get_azienda_animali(user_id: int) -> dict:
+    config = dict(DEFAULT_AZIENDA_ANIMALI)
+
+    try:
+        with get_conn() as conn:
+            c = conn.cursor()
+            c.execute(
+                '''
+                SELECT
+                    bovini,
+                    bovini_capi,
+                    ovini,
+                    ovini_capi,
+                    caprini,
+                    caprini_capi,
+                    altro_text,
+                    altro_capi
+                FROM azienda_animali
+                WHERE user_id=?
+            ''',
+                (user_id,),
+            )
+            row = c.fetchone()
+    except sqlite3.Error:
+        return config
+
+    if not row:
+        return config
+
+    config["bovini"] = bool(row[0])
+    config["bovini_capi"] = int(row[1] or 0)
+    config["ovini"] = bool(row[2])
+    config["ovini_capi"] = int(row[3] or 0)
+    config["caprini"] = bool(row[4])
+    config["caprini_capi"] = int(row[5] or 0)
+    config["altro_text"] = (row[6] or "").strip()
+    config["altro_capi"] = int(row[7] or 0)
+    return config
+
+
+def _to_non_negative_int(value) -> int:
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return 0
+    return number if number >= 0 else 0
+
+
+def _normalize_tipo_animale(raw_value: str) -> str:
+    return (raw_value or "").strip().upper()
+
+
+def _normalize_finalita_animale(raw_value: str) -> str:
+    return (raw_value or "").strip().upper()
+
+
+def _default_group_name(tipo_animale: str, finalita: str = "", altro_label: str = "") -> str:
+    tipo = _normalize_tipo_animale(tipo_animale)
+    finalita_norm = _normalize_finalita_animale(finalita)
+    altro_clean = (altro_label or "").strip()
+
+    if tipo == "ALTRO":
+        base = f"Altro ({altro_clean})" if altro_clean else "Altro"
+    else:
+        base = tipo.title() if tipo else "Gruppo"
+
+    if finalita_norm == "LATTE":
+        return f"{base} - Da Latte"
+    if finalita_norm == "CARNE":
+        return f"{base} - Da Carne"
+    return base
+
+
+def _migrate_legacy_azienda_animali_to_dettaglio(cursor):
+    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='azienda_animali'")
+    if not cursor.fetchone():
+        return
+
+    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='azienda_animali_dettaglio'")
+    if not cursor.fetchone():
+        return
+
+    cursor.execute(
+        '''
+        SELECT user_id, bovini, bovini_capi, ovini, ovini_capi, caprini, caprini_capi, altro_text, altro_capi
+        FROM azienda_animali
+    '''
+    )
+    rows = cursor.fetchall()
+    now_text = datetime.now().isoformat(timespec="seconds")
+
+    for user_id, bovini, bovini_capi, ovini, ovini_capi, caprini, caprini_capi, altro_text, altro_capi in rows:
+        cursor.execute("SELECT COUNT(1) FROM azienda_animali_dettaglio WHERE user_id=?", (user_id,))
+        count_row = cursor.fetchone()
+        if int((count_row[0] if count_row else 0) or 0) > 0:
+            continue
+
+        entries = []
+        bovini_num = _to_non_negative_int(bovini_capi)
+        ovini_num = _to_non_negative_int(ovini_capi)
+        caprini_num = _to_non_negative_int(caprini_capi)
+        altro_num = _to_non_negative_int(altro_capi)
+
+        if bool(bovini) and bovini_num > 0:
+            entries.append(("BOVINI", "", "", bovini_num))
+        if bool(ovini) and ovini_num > 0:
+            entries.append(("OVINI", "", "", ovini_num))
+        if bool(caprini) and caprini_num > 0:
+            entries.append(("CAPRINI", "", "", caprini_num))
+
+        altro_clean = (altro_text or "").strip()
+        if altro_clean and altro_num > 0:
+            entries.append(("ALTRO", "", altro_clean, altro_num))
+
+        for tipo, finalita, altro_label, capi in entries:
+            group_name = _default_group_name(tipo, finalita, altro_label)
+            cursor.execute(
+                '''
+                INSERT OR IGNORE INTO azienda_animali_dettaglio
+                    (user_id, tipo_animale, finalita, altro_label, group_name, capi, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ''',
+                (user_id, tipo, finalita, altro_label, group_name, capi, now_text, now_text),
+            )
+
+
+def _backfill_missing_group_names(cursor):
+    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='azienda_animali_dettaglio'")
+    if not cursor.fetchone():
+        return
+
+    cursor.execute("PRAGMA table_info(azienda_animali_dettaglio)")
+    colonne = {row[1] for row in cursor.fetchall()}
+    if "group_name" not in colonne:
+        return
+
+    cursor.execute(
+        '''
+        SELECT id, tipo_animale, finalita, altro_label
+        FROM azienda_animali_dettaglio
+        WHERE COALESCE(NULLIF(TRIM(group_name), ''), '') = ''
+    '''
+    )
+    rows = cursor.fetchall()
+
+    for row_id, tipo_animale, finalita, altro_label in rows:
+        group_name = _default_group_name(tipo_animale, finalita, altro_label)
+        cursor.execute(
+            "UPDATE azienda_animali_dettaglio SET group_name=? WHERE id=?",
+            (group_name, row_id),
+        )
+
+
+def _ensure_animali_dettaglio_unique_on_group_name(cursor):
+    cursor.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='azienda_animali_dettaglio'")
+    row = cursor.fetchone()
+    if not row:
+        return
+
+    table_sql = " ".join(((row[0] or "").upper()).split())
+    if "UNIQUE(USER_ID, TIPO_ANIMALE, FINALITA, ALTRO_LABEL, GROUP_NAME)" in table_sql:
+        return
+
+    cursor.execute(
+        '''
+        SELECT id, user_id, tipo_animale, finalita, altro_label, group_name, capi, created_at, updated_at
+        FROM azienda_animali_dettaglio
+        ORDER BY id
+    '''
+    )
+    rows = cursor.fetchall()
+
+    cursor.execute("DROP TABLE IF EXISTS azienda_animali_dettaglio_new")
+    cursor.execute(
+        '''
+        CREATE TABLE azienda_animali_dettaglio_new
+            (id INTEGER PRIMARY KEY AUTOINCREMENT,
+             user_id INTEGER NOT NULL,
+             tipo_animale TEXT NOT NULL,
+             finalita TEXT NOT NULL DEFAULT '',
+             altro_label TEXT NOT NULL DEFAULT '',
+             group_name TEXT NOT NULL DEFAULT '',
+             capi INTEGER NOT NULL DEFAULT 0 CHECK(capi >= 0),
+             created_at TEXT NOT NULL DEFAULT '',
+             updated_at TEXT NOT NULL DEFAULT '',
+             UNIQUE(user_id, tipo_animale, finalita, altro_label, group_name),
+             FOREIGN KEY(user_id) REFERENCES utenti(id) ON DELETE CASCADE)
+    '''
+    )
+
+    now_text = datetime.now().isoformat(timespec="seconds")
+    for row_id, user_id, tipo_animale, finalita, altro_label, group_name, capi, created_at, updated_at in rows:
+        tipo_norm = _normalize_tipo_animale(tipo_animale)
+        finalita_norm = _normalize_finalita_animale(finalita)
+        altro_clean = (altro_label or "").strip()
+        group_name_clean = (group_name or "").strip() or _default_group_name(tipo_norm, finalita_norm, altro_clean)
+        created_at_clean = (created_at or "").strip() or now_text
+        updated_at_clean = (updated_at or "").strip() or now_text
+
+        cursor.execute(
+            '''
+            INSERT INTO azienda_animali_dettaglio_new
+                (id, user_id, tipo_animale, finalita, altro_label, group_name, capi, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''',
+            (
+                int(row_id),
+                int(user_id),
+                tipo_norm,
+                finalita_norm,
+                altro_clean,
+                group_name_clean,
+                _to_non_negative_int(capi),
+                created_at_clean,
+                updated_at_clean,
+            ),
+        )
+
+    cursor.execute("DROP TABLE azienda_animali_dettaglio")
+    cursor.execute("ALTER TABLE azienda_animali_dettaglio_new RENAME TO azienda_animali_dettaglio")
+
+
+def list_azienda_animali_entries(user_id: int) -> list[dict]:
+    with get_conn() as conn:
+        c = conn.cursor()
+        c.execute(
+            '''
+            SELECT id, tipo_animale, finalita, altro_label, capi, group_name
+            FROM azienda_animali_dettaglio
+            WHERE user_id=?
+            ORDER BY
+                COALESCE(NULLIF(TRIM(group_name), ''), tipo_animale) COLLATE NOCASE,
+                tipo_animale,
+                finalita,
+                altro_label,
+                id
+        ''',
+            (user_id,),
+        )
+        rows = c.fetchall()
+
+    entries = []
+    for row_id, tipo_animale, finalita, altro_label, capi, group_name in rows:
+        group_name_clean = (group_name or "").strip()
+        if not group_name_clean:
+            group_name_clean = _default_group_name(tipo_animale, finalita, altro_label)
+
+        entries.append(
+            {
+                "id": int(row_id),
+                "tipo_animale": (tipo_animale or "").strip().upper(),
+                "finalita": (finalita or "").strip().upper(),
+                "altro_label": (altro_label or "").strip(),
+                "capi": _to_non_negative_int(capi),
+                "group_name": group_name_clean,
+            }
+        )
+    return entries
+
+
+def _normalize_entry_id_list(entry_ids) -> list[int]:
+    if not entry_ids:
+        return []
+
+    normalized = []
+    seen = set()
+    for raw in entry_ids:
+        entry_id = _to_non_negative_int(raw)
+        if entry_id <= 0 or entry_id in seen:
+            continue
+        seen.add(entry_id)
+        normalized.append(entry_id)
+    return normalized
+
+
+def set_movimento_animali_links(
+    user_id: int,
+    movimento_id: int,
+    animale_entry_ids,
+    cursor: sqlite3.Cursor | None = None,
+):
+    movimento_id_value = _to_non_negative_int(movimento_id)
+    if movimento_id_value <= 0:
+        raise ValueError("Movimento non valido.")
+
+    entry_ids = _normalize_entry_id_list(animale_entry_ids)
+
+    def _apply(target_cursor: sqlite3.Cursor):
+        target_cursor.execute(
+            "SELECT 1 FROM movimenti WHERE id=? AND user_id=?",
+            (movimento_id_value, user_id),
+        )
+        if not target_cursor.fetchone():
+            raise ValueError("Movimento non trovato.")
+
+        if entry_ids:
+            placeholders = ",".join(["?"] * len(entry_ids))
+            target_cursor.execute(
+                f"""
+                SELECT id
+                FROM azienda_animali_dettaglio
+                WHERE user_id=? AND id IN ({placeholders})
+            """,
+                (user_id, *entry_ids),
+            )
+            valid_ids = {int(row[0]) for row in target_cursor.fetchall()}
+            missing_ids = [entry_id for entry_id in entry_ids if entry_id not in valid_ids]
+            if missing_ids:
+                raise ValueError("Uno o piu gruppi animali selezionati non sono piu disponibili.")
+
+        target_cursor.execute(
+            "DELETE FROM movimenti_animali_link WHERE user_id=? AND movimento_id=?",
+            (user_id, movimento_id_value),
+        )
+
+        if not entry_ids:
+            return
+
+        now_text = datetime.now().isoformat(timespec="seconds")
+        target_cursor.executemany(
+            '''
+            INSERT INTO movimenti_animali_link (user_id, movimento_id, animale_entry_id, created_at)
+            VALUES (?, ?, ?, ?)
+        ''',
+            [(user_id, movimento_id_value, entry_id, now_text) for entry_id in entry_ids],
+        )
+
+    if cursor is not None:
+        _apply(cursor)
+        return
+
+    with get_conn() as conn:
+        c = conn.cursor()
+        _apply(c)
+
+
+def get_movimento_animali_entry_ids(user_id: int, movimento_id: int) -> list[int]:
+    movimento_id_value = _to_non_negative_int(movimento_id)
+    if movimento_id_value <= 0:
+        return []
+
+    with get_conn() as conn:
+        c = conn.cursor()
+        c.execute(
+            '''
+            SELECT animale_entry_id
+            FROM movimenti_animali_link
+            WHERE user_id=? AND movimento_id=?
+            ORDER BY id
+        ''',
+            (user_id, movimento_id_value),
+        )
+        rows = c.fetchall()
+
+    entry_ids = []
+    for row in rows:
+        entry_id = _to_non_negative_int(row[0] if row else 0)
+        if entry_id > 0:
+            entry_ids.append(entry_id)
+    return entry_ids
+
+
+def get_movimento_animali_group_labels(user_id: int, movimento_id: int) -> list[str]:
+    movimento_id_value = _to_non_negative_int(movimento_id)
+    if movimento_id_value <= 0:
+        return []
+
+    with get_conn() as conn:
+        c = conn.cursor()
+        c.execute(
+            '''
+            SELECT
+                a.id,
+                a.tipo_animale,
+                a.finalita,
+                a.altro_label,
+                a.group_name,
+                a.capi
+            FROM movimenti_animali_link l
+            JOIN azienda_animali_dettaglio a
+              ON a.id = l.animale_entry_id
+             AND a.user_id = l.user_id
+            WHERE l.user_id=? AND l.movimento_id=?
+            ORDER BY
+                COALESCE(NULLIF(TRIM(a.group_name), ''), a.tipo_animale) COLLATE NOCASE,
+                a.id
+        ''',
+            (user_id, movimento_id_value),
+        )
+        rows = c.fetchall()
+
+    labels = []
+    for entry_id, tipo_animale, finalita, altro_label, group_name, capi in rows:
+        tipo = (tipo_animale or "").strip().upper()
+        finalita_norm = (finalita or "").strip().upper()
+        altro_clean = (altro_label or "").strip()
+        group_name_clean = (group_name or "").strip() or _default_group_name(tipo, finalita_norm, altro_clean)
+
+        if tipo == "ALTRO":
+            tipo_label = f"Altro ({altro_clean})" if altro_clean else "Altro"
+        else:
+            tipo_label = tipo.title() if tipo else "Tipo"
+
+        if finalita_norm == "LATTE":
+            finalita_label = "Da Latte"
+        elif finalita_norm == "CARNE":
+            finalita_label = "Da Carne"
+        else:
+            finalita_label = "N/D"
+
+        capi_count = _to_non_negative_int(capi)
+        labels.append(f"{group_name_clean} ({tipo_label}, {finalita_label}, {capi_count} capi)")
+
+    return labels
+
+
+def add_azienda_animale_entry(
+    user_id: int,
+    tipo_animale: str,
+    capi: int,
+    finalita: str = "",
+    altro_label: str = "",
+    group_name: str = "",
+):
+    tipo = _normalize_tipo_animale(tipo_animale)
+    if tipo not in ANIMAL_TYPE_OPTIONS:
+        raise ValueError("Tipo animale non valido.")
+
+    capi_value = _to_non_negative_int(capi)
+    if capi_value <= 0:
+        raise ValueError("Il numero capi deve essere maggiore di zero.")
+
+    finalita_norm = _normalize_finalita_animale(finalita)
+    if tipo in ("BOVINI", "OVINI"):
+        if finalita_norm not in ANIMAL_PURPOSE_OPTIONS:
+            raise ValueError("Per bovini e ovini seleziona 'Da Latte' o 'Da Carne'.")
+    else:
+        finalita_norm = ""
+
+    altro_clean = (altro_label or "").strip()
+    if tipo == "ALTRO":
+        if not altro_clean:
+            raise ValueError("Specifica il tipo animale per la voce Altro.")
+    else:
+        altro_clean = ""
+
+    group_name_clean = (group_name or "").strip()
+    if not group_name_clean:
+        group_name_clean = _default_group_name(tipo, finalita_norm, altro_clean)
+
+    now_text = datetime.now().isoformat(timespec="seconds")
+    with get_conn() as conn:
+        c = conn.cursor()
+        c.execute(
+            '''
+            INSERT INTO azienda_animali_dettaglio
+                (user_id, tipo_animale, finalita, altro_label, group_name, capi, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(user_id, tipo_animale, finalita, altro_label, group_name) DO UPDATE SET
+                capi = azienda_animali_dettaglio.capi + excluded.capi,
+                updated_at = excluded.updated_at
+        ''',
+            (user_id, tipo, finalita_norm, altro_clean, group_name_clean, capi_value, now_text, now_text),
+        )
+
+
+def remove_azienda_animale_capi(user_id: int, entry_id: int, capi_da_rimuovere: int) -> bool:
+    entry_id_value = _to_non_negative_int(entry_id)
+    if entry_id_value <= 0:
+        raise ValueError("Categoria animale non valida.")
+
+    capi_value = _to_non_negative_int(capi_da_rimuovere)
+    if capi_value <= 0:
+        raise ValueError("Il numero capi da rimuovere deve essere maggiore di zero.")
+
+    now_text = datetime.now().isoformat(timespec="seconds")
+    with get_conn() as conn:
+        c = conn.cursor()
+        c.execute(
+            '''
+            SELECT capi
+            FROM azienda_animali_dettaglio
+            WHERE id=? AND user_id=?
+        ''',
+            (entry_id_value, user_id),
+        )
+        row = c.fetchone()
+
+        if not row:
+            raise ValueError("Categoria animale non trovata.")
+
+        capi_attuali = _to_non_negative_int(row[0])
+        if capi_value > capi_attuali:
+            raise ValueError("Non puoi rimuovere piu capi di quelli presenti nella categoria selezionata.")
+
+        if capi_value == capi_attuali:
+            c.execute(
+                "DELETE FROM azienda_animali_dettaglio WHERE id=? AND user_id=?",
+                (entry_id_value, user_id),
+            )
+            return True
+
+        c.execute(
+            '''
+            UPDATE azienda_animali_dettaglio
+            SET capi=?, updated_at=?
+            WHERE id=? AND user_id=?
+        ''',
+            (capi_attuali - capi_value, now_text, entry_id_value, user_id),
+        )
+    return False
+
+
+def set_azienda_animale_capi(user_id: int, entry_id: int, nuovo_capi: int) -> bool:
+    entry_id_value = _to_non_negative_int(entry_id)
+    if entry_id_value <= 0:
+        raise ValueError("Categoria animale non valida.")
+
+    nuovo_capi_value = _to_non_negative_int(nuovo_capi)
+
+    now_text = datetime.now().isoformat(timespec="seconds")
+    with get_conn() as conn:
+        c = conn.cursor()
+        c.execute(
+            '''
+            SELECT 1
+            FROM azienda_animali_dettaglio
+            WHERE id=? AND user_id=?
+        ''',
+            (entry_id_value, user_id),
+        )
+        if not c.fetchone():
+            raise ValueError("Categoria animale non trovata.")
+
+        if nuovo_capi_value == 0:
+            c.execute(
+                "DELETE FROM azienda_animali_dettaglio WHERE id=? AND user_id=?",
+                (entry_id_value, user_id),
+            )
+            return True
+
+        c.execute(
+            '''
+            UPDATE azienda_animali_dettaglio
+            SET capi=?, updated_at=?
+            WHERE id=? AND user_id=?
+        ''',
+            (nuovo_capi_value, now_text, entry_id_value, user_id),
+        )
+    return False
+
+
+def set_azienda_animale_finalita(user_id: int, entry_id: int, nuova_finalita: str) -> bool:
+    entry_id_value = _to_non_negative_int(entry_id)
+    if entry_id_value <= 0:
+        raise ValueError("Categoria animale non valida.")
+
+    finalita_norm = _normalize_finalita_animale(nuova_finalita)
+    if finalita_norm not in ANIMAL_PURPOSE_OPTIONS:
+        raise ValueError("Destinazione non valida. Seleziona 'Da Latte' o 'Da Carne'.")
+
+    now_text = datetime.now().isoformat(timespec="seconds")
+    with get_conn() as conn:
+        c = conn.cursor()
+        c.execute(
+            '''
+            SELECT id, tipo_animale, finalita, altro_label, capi, group_name
+            FROM azienda_animali_dettaglio
+            WHERE id=? AND user_id=?
+        ''',
+            (entry_id_value, user_id),
+        )
+        row = c.fetchone()
+
+        if not row:
+            raise ValueError("Categoria animale non trovata.")
+
+        current_id = int(row[0])
+        tipo_animale = (row[1] or "").strip().upper()
+        current_finalita = (row[2] or "").strip().upper()
+        altro_label = (row[3] or "").strip()
+        capi_value = _to_non_negative_int(row[4])
+        current_group_name = (row[5] or "").strip()
+        if not current_group_name:
+            current_group_name = _default_group_name(tipo_animale, current_finalita, altro_label)
+
+        if tipo_animale not in ("BOVINI", "OVINI"):
+            raise ValueError("La destinazione e modificabile solo per Bovini e Ovini.")
+
+        if current_finalita == finalita_norm:
+            return False
+
+        c.execute(
+            '''
+            SELECT id, capi, group_name
+            FROM azienda_animali_dettaglio
+            WHERE user_id=? AND tipo_animale=? AND finalita=? AND altro_label=? AND group_name=?
+        ''',
+            (user_id, tipo_animale, finalita_norm, altro_label, current_group_name),
+        )
+        conflict = c.fetchone()
+
+        if conflict and int(conflict[0]) != current_id:
+            conflict_id = int(conflict[0])
+            conflict_capi = _to_non_negative_int(conflict[1])
+            conflict_group_name = (conflict[2] or "").strip()
+            merged_group_name = conflict_group_name or current_group_name or _default_group_name(
+                tipo_animale,
+                finalita_norm,
+                altro_label,
+            )
+
+            c.execute(
+                '''
+                UPDATE azienda_animali_dettaglio
+                SET capi=?, group_name=?, updated_at=?
+                WHERE id=? AND user_id=?
+            ''',
+                (conflict_capi + capi_value, merged_group_name, now_text, conflict_id, user_id),
+            )
+            c.execute(
+                "DELETE FROM azienda_animali_dettaglio WHERE id=? AND user_id=?",
+                (current_id, user_id),
+            )
+            return True
+
+        c.execute(
+            '''
+            UPDATE azienda_animali_dettaglio
+            SET finalita=?, updated_at=?
+            WHERE id=? AND user_id=?
+        ''',
+            (finalita_norm, now_text, current_id, user_id),
+        )
+    return False
+
+
+def set_azienda_animale_group_name(user_id: int, entry_id: int, nuovo_group_name: str) -> bool:
+    entry_id_value = _to_non_negative_int(entry_id)
+    if entry_id_value <= 0:
+        raise ValueError("Categoria animale non valida.")
+
+    group_name_clean = (nuovo_group_name or "").strip()
+    if not group_name_clean:
+        raise ValueError("Inserisci un nome gruppo valido.")
+
+    now_text = datetime.now().isoformat(timespec="seconds")
+    with get_conn() as conn:
+        c = conn.cursor()
+        c.execute(
+            '''
+            SELECT group_name
+            FROM azienda_animali_dettaglio
+            WHERE id=? AND user_id=?
+        ''',
+            (entry_id_value, user_id),
+        )
+        row = c.fetchone()
+
+        if not row:
+            raise ValueError("Categoria animale non trovata.")
+
+        current_group_name = (row[0] or "").strip()
+        if current_group_name == group_name_clean:
+            return False
+
+        try:
+            c.execute(
+                '''
+                UPDATE azienda_animali_dettaglio
+                SET group_name=?, updated_at=?
+                WHERE id=? AND user_id=?
+            ''',
+                (group_name_clean, now_text, entry_id_value, user_id),
+            )
+        except sqlite3.IntegrityError:
+            raise ValueError("Esiste gia un gruppo con questo nome per la stessa categoria.")
+    return True
+
+
+def split_azienda_animale_group(user_id: int, entry_id: int, capi_nuovo_gruppo: int, nuovo_group_name: str) -> int:
+    entry_id_value = _to_non_negative_int(entry_id)
+    if entry_id_value <= 0:
+        raise ValueError("Categoria animale non valida.")
+
+    capi_nuovo_value = _to_non_negative_int(capi_nuovo_gruppo)
+    if capi_nuovo_value <= 0:
+        raise ValueError("Il nuovo gruppo deve avere almeno 1 capo.")
+
+    new_group_name_clean = (nuovo_group_name or "").strip()
+    if not new_group_name_clean:
+        raise ValueError("Inserisci un nome per il nuovo gruppo.")
+
+    now_text = datetime.now().isoformat(timespec="seconds")
+    with get_conn() as conn:
+        c = conn.cursor()
+        c.execute(
+            '''
+            SELECT tipo_animale, finalita, altro_label, group_name, capi
+            FROM azienda_animali_dettaglio
+            WHERE id=? AND user_id=?
+        ''',
+            (entry_id_value, user_id),
+        )
+        row = c.fetchone()
+
+        if not row:
+            raise ValueError("Categoria animale non trovata.")
+
+        tipo_animale = (row[0] or "").strip().upper()
+        finalita = (row[1] or "").strip().upper()
+        altro_label = (row[2] or "").strip()
+        current_group_name = (row[3] or "").strip()
+        capi_attuali = _to_non_negative_int(row[4])
+
+        if capi_attuali <= 1:
+            raise ValueError("Il gruppo selezionato non ha abbastanza capi per essere diviso.")
+
+        if capi_nuovo_value >= capi_attuali:
+            raise ValueError("Il nuovo gruppo deve avere meno capi del gruppo selezionato.")
+
+        if new_group_name_clean == current_group_name:
+            raise ValueError("Il nuovo gruppo deve avere un nome diverso dal gruppo selezionato.")
+
+        capi_restanti = capi_attuali - capi_nuovo_value
+
+        c.execute(
+            '''
+            UPDATE azienda_animali_dettaglio
+            SET capi=?, updated_at=?
+            WHERE id=? AND user_id=?
+        ''',
+            (capi_restanti, now_text, entry_id_value, user_id),
+        )
+
+        try:
+            c.execute(
+                '''
+                INSERT INTO azienda_animali_dettaglio
+                    (user_id, tipo_animale, finalita, altro_label, group_name, capi, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ''',
+                (
+                    user_id,
+                    tipo_animale,
+                    finalita,
+                    altro_label,
+                    new_group_name_clean,
+                    capi_nuovo_value,
+                    now_text,
+                    now_text,
+                ),
+            )
+            nuovo_entry_id = int(c.lastrowid or 0)
+        except sqlite3.IntegrityError:
+            raise ValueError("Esiste gia un gruppo con questo nome per la stessa categoria.")
+
+        # Tutti i movimenti/fatture collegati al gruppo origine vengono collegati anche al nuovo gruppo.
+        if nuovo_entry_id > 0:
+            c.execute(
+                '''
+                INSERT OR IGNORE INTO movimenti_animali_link (user_id, movimento_id, animale_entry_id, created_at)
+                SELECT user_id, movimento_id, ?, ?
+                FROM movimenti_animali_link
+                WHERE user_id=? AND animale_entry_id=?
+            ''',
+                (nuovo_entry_id, now_text, user_id, entry_id_value),
+            )
+
+    return capi_restanti
+
+
+def merge_azienda_animale_groups(
+    user_id: int,
+    entry_id_principale: int,
+    entry_id_secondario: int,
+    nuovo_group_name: str,
+) -> int:
+    entry_id_principale_value = _to_non_negative_int(entry_id_principale)
+    entry_id_secondario_value = _to_non_negative_int(entry_id_secondario)
+
+    if entry_id_principale_value <= 0 or entry_id_secondario_value <= 0:
+        raise ValueError("Gruppo animale non valido.")
+    if entry_id_principale_value == entry_id_secondario_value:
+        raise ValueError("Seleziona due gruppi diversi da unire.")
+
+    new_group_name_clean = (nuovo_group_name or "").strip()
+    if not new_group_name_clean:
+        raise ValueError("Inserisci un nome per il gruppo unificato.")
+
+    now_text = datetime.now().isoformat(timespec="seconds")
+    with get_conn() as conn:
+        c = conn.cursor()
+
+        c.execute(
+            '''
+            SELECT id, tipo_animale, finalita, altro_label, capi
+            FROM azienda_animali_dettaglio
+            WHERE id IN (?, ?) AND user_id=?
+        ''',
+            (entry_id_principale_value, entry_id_secondario_value, user_id),
+        )
+        rows = c.fetchall()
+        if len(rows) != 2:
+            raise ValueError("Uno o piu gruppi selezionati non sono disponibili.")
+
+        rows_by_id = {int(row[0]): row for row in rows}
+        principale = rows_by_id.get(entry_id_principale_value)
+        secondario = rows_by_id.get(entry_id_secondario_value)
+        if not principale or not secondario:
+            raise ValueError("Uno o piu gruppi selezionati non sono disponibili.")
+
+        tipo_principale = (principale[1] or "").strip().upper()
+        finalita_principale = (principale[2] or "").strip().upper()
+        altro_principale = (principale[3] or "").strip()
+        capi_principale = _to_non_negative_int(principale[4])
+
+        tipo_secondario = (secondario[1] or "").strip().upper()
+        finalita_secondario = (secondario[2] or "").strip().upper()
+        altro_secondario = (secondario[3] or "").strip()
+        capi_secondario = _to_non_negative_int(secondario[4])
+
+        if (
+            tipo_principale != tipo_secondario
+            or finalita_principale != finalita_secondario
+            or altro_principale != altro_secondario
+        ):
+            raise ValueError("Puoi unire solo gruppi compatibili dello stesso tipo animale.")
+
+        capi_totali = capi_principale + capi_secondario
+        if capi_totali <= 0:
+            raise ValueError("Impossibile unire gruppi senza capi.")
+
+        c.execute(
+            '''
+            UPDATE OR IGNORE movimenti_animali_link
+            SET animale_entry_id=?
+            WHERE user_id=? AND animale_entry_id=?
+        ''',
+            (entry_id_principale_value, user_id, entry_id_secondario_value),
+        )
+        c.execute(
+            "DELETE FROM movimenti_animali_link WHERE user_id=? AND animale_entry_id=?",
+            (user_id, entry_id_secondario_value),
+        )
+
+        c.execute(
+            "DELETE FROM azienda_animali_dettaglio WHERE id=? AND user_id=?",
+            (entry_id_secondario_value, user_id),
+        )
+
+        try:
+            c.execute(
+                '''
+                UPDATE azienda_animali_dettaglio
+                SET capi=?, group_name=?, updated_at=?
+                WHERE id=? AND user_id=?
+            ''',
+                (capi_totali, new_group_name_clean, now_text, entry_id_principale_value, user_id),
+            )
+        except sqlite3.IntegrityError:
+            raise ValueError("Esiste gia un gruppo con questo nome per la stessa categoria.")
+
+    return capi_totali
+
+
+def delete_azienda_animale_entry(user_id: int, entry_id: int):
+    entry_id_value = _to_non_negative_int(entry_id)
+    if entry_id_value <= 0:
+        raise ValueError("Categoria animale non valida.")
+
+    with get_conn() as conn:
+        c = conn.cursor()
+        c.execute(
+            "SELECT 1 FROM azienda_animali_dettaglio WHERE id=? AND user_id=?",
+            (entry_id_value, user_id),
+        )
+        if not c.fetchone():
+            raise ValueError("Categoria animale non trovata.")
+
+        c.execute(
+            "DELETE FROM azienda_animali_dettaglio WHERE id=? AND user_id=?",
+            (entry_id_value, user_id),
+        )
+
+
+def save_azienda_animali(
+    user_id: int,
+    bovini: bool,
+    bovini_capi: int,
+    ovini: bool,
+    ovini_capi: int,
+    caprini: bool,
+    caprini_capi: int,
+    altro_text: str,
+    altro_capi: int,
+):
+    altro_clean = (altro_text or "").strip()
+    updated_at = datetime.now().isoformat(timespec="seconds")
+    bovini_capi_clean = _to_non_negative_int(bovini_capi)
+    ovini_capi_clean = _to_non_negative_int(ovini_capi)
+    caprini_capi_clean = _to_non_negative_int(caprini_capi)
+    altro_capi_clean = _to_non_negative_int(altro_capi)
+
+    with get_conn() as conn:
+        c = conn.cursor()
+        c.execute(
+            '''
+            INSERT INTO azienda_animali (
+                user_id,
+                bovini,
+                bovini_capi,
+                ovini,
+                ovini_capi,
+                caprini,
+                caprini_capi,
+                altro_text,
+                altro_capi,
+                updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(user_id) DO UPDATE SET
+                bovini=excluded.bovini,
+                bovini_capi=excluded.bovini_capi,
+                ovini=excluded.ovini,
+                ovini_capi=excluded.ovini_capi,
+                caprini=excluded.caprini,
+                caprini_capi=excluded.caprini_capi,
+                altro_text=excluded.altro_text,
+                altro_capi=excluded.altro_capi,
+                updated_at=excluded.updated_at
+        ''',
+            (
+                user_id,
+                int(bool(bovini)),
+                bovini_capi_clean,
+                int(bool(ovini)),
+                ovini_capi_clean,
+                int(bool(caprini)),
+                caprini_capi_clean,
+                altro_clean,
+                altro_capi_clean,
+                updated_at,
+            ),
+        )
+
+
 def init_db():
     """Inizializza le tabelle del database se non esistono."""
     with get_conn() as conn:
@@ -282,6 +1244,86 @@ def init_db():
                       piva TEXT,
                       professione TEXT,
                       FOREIGN KEY(user_id) REFERENCES utenti(id) ON DELETE CASCADE)''')
+
+        # Configurazione azienda: tipi animali allevati.
+        c.execute('''CREATE TABLE IF NOT EXISTS azienda_animali
+                     (user_id INTEGER PRIMARY KEY,
+                      bovini INTEGER NOT NULL DEFAULT 0,
+                      bovini_capi INTEGER NOT NULL DEFAULT 0,
+                      ovini INTEGER NOT NULL DEFAULT 0,
+                      ovini_capi INTEGER NOT NULL DEFAULT 0,
+                      caprini INTEGER NOT NULL DEFAULT 0,
+                      caprini_capi INTEGER NOT NULL DEFAULT 0,
+                      altro_text TEXT NOT NULL DEFAULT '',
+                      altro_capi INTEGER NOT NULL DEFAULT 0,
+                      updated_at TEXT NOT NULL DEFAULT '',
+                      FOREIGN KEY(user_id) REFERENCES utenti(id) ON DELETE CASCADE)''')
+
+        c.execute("PRAGMA table_info(azienda_animali)")
+        colonne_animali = {row[1] for row in c.fetchall()}
+        if colonne_animali and "bovini" not in colonne_animali:
+            c.execute("ALTER TABLE azienda_animali ADD COLUMN bovini INTEGER NOT NULL DEFAULT 0")
+        if colonne_animali and "bovini_capi" not in colonne_animali:
+            c.execute("ALTER TABLE azienda_animali ADD COLUMN bovini_capi INTEGER NOT NULL DEFAULT 0")
+        if colonne_animali and "ovini" not in colonne_animali:
+            c.execute("ALTER TABLE azienda_animali ADD COLUMN ovini INTEGER NOT NULL DEFAULT 0")
+        if colonne_animali and "ovini_capi" not in colonne_animali:
+            c.execute("ALTER TABLE azienda_animali ADD COLUMN ovini_capi INTEGER NOT NULL DEFAULT 0")
+        if colonne_animali and "caprini" not in colonne_animali:
+            c.execute("ALTER TABLE azienda_animali ADD COLUMN caprini INTEGER NOT NULL DEFAULT 0")
+        if colonne_animali and "caprini_capi" not in colonne_animali:
+            c.execute("ALTER TABLE azienda_animali ADD COLUMN caprini_capi INTEGER NOT NULL DEFAULT 0")
+        if colonne_animali and "altro_text" not in colonne_animali:
+            c.execute("ALTER TABLE azienda_animali ADD COLUMN altro_text TEXT NOT NULL DEFAULT ''")
+        if colonne_animali and "altro_capi" not in colonne_animali:
+            c.execute("ALTER TABLE azienda_animali ADD COLUMN altro_capi INTEGER NOT NULL DEFAULT 0")
+        if colonne_animali and "updated_at" not in colonne_animali:
+            c.execute("ALTER TABLE azienda_animali ADD COLUMN updated_at TEXT NOT NULL DEFAULT ''")
+
+        # Dettaglio animali allevati: una riga per tipo/finalita.
+        c.execute(
+            '''
+            CREATE TABLE IF NOT EXISTS azienda_animali_dettaglio
+                (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                 user_id INTEGER NOT NULL,
+                 tipo_animale TEXT NOT NULL,
+                 finalita TEXT NOT NULL DEFAULT '',
+                 altro_label TEXT NOT NULL DEFAULT '',
+                 group_name TEXT NOT NULL DEFAULT '',
+                 capi INTEGER NOT NULL DEFAULT 0 CHECK(capi >= 0),
+                 created_at TEXT NOT NULL DEFAULT '',
+                 updated_at TEXT NOT NULL DEFAULT '',
+                 UNIQUE(user_id, tipo_animale, finalita, altro_label, group_name),
+                 FOREIGN KEY(user_id) REFERENCES utenti(id) ON DELETE CASCADE)
+        '''
+        )
+
+        c.execute("PRAGMA table_info(azienda_animali_dettaglio)")
+        colonne_animali_det = {row[1] for row in c.fetchall()}
+        if colonne_animali_det and "finalita" not in colonne_animali_det:
+            c.execute("ALTER TABLE azienda_animali_dettaglio ADD COLUMN finalita TEXT NOT NULL DEFAULT ''")
+        if colonne_animali_det and "altro_label" not in colonne_animali_det:
+            c.execute("ALTER TABLE azienda_animali_dettaglio ADD COLUMN altro_label TEXT NOT NULL DEFAULT ''")
+        if colonne_animali_det and "group_name" not in colonne_animali_det:
+            c.execute("ALTER TABLE azienda_animali_dettaglio ADD COLUMN group_name TEXT NOT NULL DEFAULT ''")
+        if colonne_animali_det and "capi" not in colonne_animali_det:
+            c.execute("ALTER TABLE azienda_animali_dettaglio ADD COLUMN capi INTEGER NOT NULL DEFAULT 0")
+        if colonne_animali_det and "created_at" not in colonne_animali_det:
+            c.execute("ALTER TABLE azienda_animali_dettaglio ADD COLUMN created_at TEXT NOT NULL DEFAULT ''")
+        if colonne_animali_det and "updated_at" not in colonne_animali_det:
+            c.execute("ALTER TABLE azienda_animali_dettaglio ADD COLUMN updated_at TEXT NOT NULL DEFAULT ''")
+
+        _ensure_animali_dettaglio_unique_on_group_name(c)
+
+        c.execute('''CREATE INDEX IF NOT EXISTS idx_animali_dettaglio_user
+                     ON azienda_animali_dettaglio(user_id)''')
+        c.execute('''CREATE INDEX IF NOT EXISTS idx_animali_dettaglio_tipo
+                     ON azienda_animali_dettaglio(user_id, tipo_animale, finalita)''')
+        c.execute('''CREATE INDEX IF NOT EXISTS idx_animali_dettaglio_nome
+                 ON azienda_animali_dettaglio(user_id, group_name)''')
+
+        _migrate_legacy_azienda_animali_to_dettaglio(c)
+        _backfill_missing_group_names(c)
 
         # Tabella Movimenti (entrate/uscite collegate all'utente)
         c.execute('''CREATE TABLE IF NOT EXISTS movimenti
@@ -326,6 +1368,27 @@ def init_db():
         # Indice utile per velocizzare i report per periodo
         c.execute('''CREATE INDEX IF NOT EXISTS idx_mov_user_date
                      ON movimenti(user_id, data_op)''')
+
+        # Collegamento movimenti <-> gruppi animali (molti-a-molti).
+        c.execute(
+            '''
+            CREATE TABLE IF NOT EXISTS movimenti_animali_link
+                (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                 user_id INTEGER NOT NULL,
+                 movimento_id INTEGER NOT NULL,
+                 animale_entry_id INTEGER NOT NULL,
+                 created_at TEXT NOT NULL DEFAULT '',
+                 UNIQUE(user_id, movimento_id, animale_entry_id),
+                 FOREIGN KEY(user_id) REFERENCES utenti(id) ON DELETE CASCADE,
+                 FOREIGN KEY(movimento_id) REFERENCES movimenti(id) ON DELETE CASCADE,
+                 FOREIGN KEY(animale_entry_id) REFERENCES azienda_animali_dettaglio(id) ON DELETE CASCADE)
+        '''
+        )
+
+        c.execute('''CREATE INDEX IF NOT EXISTS idx_mov_animali_link_movimento
+                 ON movimenti_animali_link(user_id, movimento_id)''')
+        c.execute('''CREATE INDEX IF NOT EXISTS idx_mov_animali_link_entry
+                 ON movimenti_animali_link(user_id, animale_entry_id)''')
 
         # Tabella Produzione Latte (quantita salvata in litri, input in quintali)
         c.execute('''CREATE TABLE IF NOT EXISTS produzione_latte

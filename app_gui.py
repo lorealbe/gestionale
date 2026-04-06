@@ -8,13 +8,13 @@ from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError
 
 from app_utils import is_blank
-from database import get_conn
+from database import get_conn, list_azienda_animali_entries
 from tabs import (
+    AziendaTabMixin,
     FormHelpersMixin,
     LatteTabMixin,
     MovimentiTabMixin,
     ReportTabMixin,
-    SituazioneTabMixin,
     StoricoTabMixin,
 )
 
@@ -251,12 +251,18 @@ class FinestraLogin:
 
 class AppGestionaleGUI(
     FormHelpersMixin,
-    SituazioneTabMixin,
+    AziendaTabMixin,
     MovimentiTabMixin,
     LatteTabMixin,
     ReportTabMixin,
     StoricoTabMixin,
 ):
+    CATEGORIA_OPERATIVA = "Operativa"
+    CATEGORIA_AZIENDA = "Azienda"
+    CATEGORIA_ATTREZZATURE = "Attrezzature"
+    CATEGORIA_MACCHINARI = "Macchinari"
+    CATEGORIA_ZOOTECNIA = "Zootecnia"
+
     def __init__(self, root, user_id):
         self.root = root
         self.user_id = user_id
@@ -273,49 +279,275 @@ class AppGestionaleGUI(
         self.pending_fattura_latte_id = None
         self.pending_fattura_latte_path = None
 
-        self.root.title(f"Gestione Fatture - Utente: {self.user_id}")
-        self.root.geometry("700x520")
+        self.root.title("Gestione Fatture")
+        self.root.geometry("980x700")
+        self._apri_a_schermo_intero()
 
-        frame_top = ttk.Frame(self.root)
-        frame_top.pack(fill="x", padx=10, pady=(8, 0))
+        self._setup_menu_bar()
 
-        ttk.Label(frame_top, text=f"Utente ID: {self.user_id}").pack(side="left")
-        ttk.Button(frame_top, text="Cambia utente", command=self.cambia_utente).pack(side="right")
+        self.main_container = ttk.Frame(self.root)
+        self.main_container.pack(pady=10, padx=10, expand=True, fill="both")
+        self.main_container.grid_rowconfigure(0, weight=1)
+        self.main_container.grid_columnconfigure(0, weight=1)
 
-        self.notebook = ttk.Notebook(self.root)
-        self.notebook.pack(pady=10, padx=10, expand=True, fill="both")
+        self.frame_operativa = ttk.Frame(self.main_container)
+        self.frame_azienda = ttk.Frame(self.main_container)
+        self.frame_attrezzature = ttk.Frame(self.main_container)
+        self.frame_macchinari = ttk.Frame(self.main_container)
+        self.frame_zootecnia = ttk.Frame(self.main_container)
 
-        self.tab_situazione = ttk.Frame(self.notebook)
-        self.tab_movimenti = ttk.Frame(self.notebook)
-        self.tab_latte = ttk.Frame(self.notebook)
-        self.tab_report = ttk.Frame(self.notebook)
-        self.tab_storico = ttk.Frame(self.notebook)
+        self._categoria_frames = {
+            self.CATEGORIA_OPERATIVA: self.frame_operativa,
+            self.CATEGORIA_AZIENDA: self.frame_azienda,
+            self.CATEGORIA_ATTREZZATURE: self.frame_attrezzature,
+            self.CATEGORIA_MACCHINARI: self.frame_macchinari,
+            self.CATEGORIA_ZOOTECNIA: self.frame_zootecnia,
+        }
+        for frame in self._categoria_frames.values():
+            frame.grid(row=0, column=0, sticky="nsew")
 
-        self.notebook.add(self.tab_situazione, text="Situazione Attuale")
-        self.notebook.add(self.tab_movimenti, text="Nuovo Movimento")
-        self.notebook.add(self.tab_latte, text="Produzione Latte")
-        self.notebook.add(self.tab_report, text="Report Periodo")
-        self.notebook.add(self.tab_storico, text="Storico Movimenti")
-
-        self.setup_tab_situazione()
-        self.setup_tab_movimenti()
-        self.setup_tab_latte()
-        self.setup_tab_report()
-        self.setup_tab_storico()
+        self._setup_area_operativa()
+        self.setup_categoria_azienda()
+        self._setup_categoria_attrezzature()
+        self._setup_categoria_macchinari()
+        self._setup_categoria_zootecnia()
 
         _enable_tab_focus_on_buttons(self.root)
 
         self.carica_movimenti()
         self.carica_produzioni_latte(mostra_errori=False)
-        self.aggiorna_situazione_attuale(mostra_errori=False)
         self.imposta_periodo_report_default(mostra_errori=False)
         self.genera_report()
+        self.aggiorna_categoria_zootecnia()
+        self.mostra_categoria(self.CATEGORIA_OPERATIVA)
+
+    def _apri_a_schermo_intero(self):
+        # Preferiamo una finestra massimizzata (non kiosk fullscreen) per mantenere la UI standard.
+        self.root.update_idletasks()
+
+        try:
+            self.root.state("zoomed")
+            return
+        except tk.TclError:
+            pass
+
+        try:
+            self.root.attributes("-zoomed", True)
+            return
+        except tk.TclError:
+            pass
+
+        larghezza = self.root.winfo_screenwidth()
+        altezza = self.root.winfo_screenheight()
+        self.root.geometry(f"{larghezza}x{altezza}+0+0")
+
+    def _setup_menu_bar(self):
+        menu_bar = tk.Menu(self.root)
+        menu_bar.add_command(
+            label=self.CATEGORIA_OPERATIVA,
+            command=lambda: self.mostra_categoria(self.CATEGORIA_OPERATIVA),
+        )
+        menu_bar.add_command(
+            label=self.CATEGORIA_AZIENDA,
+            command=lambda: self.mostra_categoria(self.CATEGORIA_AZIENDA),
+        )
+        menu_bar.add_command(
+            label=self.CATEGORIA_ATTREZZATURE,
+            command=lambda: self.mostra_categoria(self.CATEGORIA_ATTREZZATURE),
+        )
+        menu_bar.add_command(
+            label=self.CATEGORIA_MACCHINARI,
+            command=lambda: self.mostra_categoria(self.CATEGORIA_MACCHINARI),
+        )
+        menu_bar.add_command(
+            label=self.CATEGORIA_ZOOTECNIA,
+            command=lambda: self.mostra_categoria(self.CATEGORIA_ZOOTECNIA),
+        )
+
+        account_menu = tk.Menu(menu_bar, tearoff=False)
+        account_menu.add_command(label="Cambia utente", command=self.cambia_utente)
+        menu_bar.add_cascade(label="Account", menu=account_menu)
+
+        self.root.config(menu=menu_bar)
+        self.menu_bar = menu_bar
+
+    def _setup_area_operativa(self):
+        self.notebook = ttk.Notebook(self.frame_operativa)
+        self.notebook.pack(pady=4, padx=4, expand=True, fill="both")
+
+        self.tab_latte = ttk.Frame(self.notebook)
+        self.tab_report = ttk.Frame(self.notebook)
+
+        self.notebook.add(self.tab_latte, text="Produzione Latte")
+        self.notebook.add(self.tab_report, text="Report Periodo")
+
+        self.setup_tab_latte()
+        self.setup_tab_report()
+
+    def _setup_categoria_attrezzature(self):
+        self._setup_categoria_placeholder(
+            self.frame_attrezzature,
+            "Attrezzature",
+            "Sezione pronta per inventario, manutenzione e scadenze delle attrezzature.",
+        )
+
+    def _setup_categoria_macchinari(self):
+        self._setup_categoria_placeholder(
+            self.frame_macchinari,
+            "Macchinari",
+            "Sezione pronta per gestione macchinari, ore lavoro e manutenzioni.",
+        )
+
+    def _setup_categoria_zootecnia(self):
+        container = self.crea_container_scorribile(self.frame_zootecnia, padding=18)
+
+        ttk.Label(container, text="Zootecnia", font=("Arial", 14, "bold")).pack(anchor="w", pady=(0, 8))
+
+        self.var_zootecnia_stato = tk.StringVar(value="")
+
+        ttk.Label(container, textvariable=self.var_zootecnia_stato, wraplength=860, justify="left").pack(
+            anchor="w", pady=(0, 8)
+        )
+
+        frame_btn = ttk.Frame(container)
+        frame_btn.pack(anchor="w", pady=(0, 8))
+        ttk.Button(
+            frame_btn,
+            text="Configura tipi allevamento",
+            command=self.apri_configurazione_allevamento,
+        ).pack(side="left", padx=(0, 6))
+        ttk.Button(frame_btn, text="Aggiorna", command=self.aggiorna_categoria_zootecnia).pack(side="left")
+
+        self.frame_zootecnia_pagine = ttk.Frame(container)
+        self.frame_zootecnia_pagine.pack(fill="both", expand=True)
+
+        self.zootecnia_notebook = ttk.Notebook(self.frame_zootecnia_pagine)
+        self.zootecnia_notebook.pack(fill="both", expand=True)
+
+        self.lbl_zootecnia_vuoto = ttk.Label(
+            self.frame_zootecnia_pagine,
+            text="Nessun tipo allevamento impostato.",
+            justify="left",
+            wraplength=860,
+        )
+
+    def _zootecnia_label_tipo(self, entry):
+        tipo = (entry.get("tipo_animale") or "").strip().upper()
+        altro_label = (entry.get("altro_label") or "").strip()
+
+        if tipo == "ALTRO":
+            return f"Altro ({altro_label})" if altro_label else "Altro"
+        return tipo.title() if tipo else "Tipo sconosciuto"
+
+    def _zootecnia_label_destinazione(self, entry):
+        finalita = (entry.get("finalita") or "").strip().upper()
+        if finalita == "LATTE":
+            return "Da Latte"
+        if finalita == "CARNE":
+            return "Da Carne"
+        return "-"
+
+    def _setup_categoria_placeholder(self, frame, titolo, descrizione):
+        container = self.crea_container_scorribile(frame, padding=18)
+        ttk.Label(container, text=titolo, font=("Arial", 14, "bold")).pack(anchor="w", pady=(0, 8))
+        ttk.Label(container, text=descrizione, wraplength=860, justify="left").pack(anchor="w")
+
+    def mostra_categoria(self, nome_categoria):
+        frame = self._categoria_frames.get(nome_categoria)
+        if frame is None:
+            return
+
+        frame.tkraise()
+
+        if nome_categoria == self.CATEGORIA_AZIENDA and hasattr(self, "genera_report_azienda"):
+            self.genera_report_azienda(mostra_errori=False)
+
+        if nome_categoria == self.CATEGORIA_ZOOTECNIA:
+            self.aggiorna_categoria_zootecnia()
+
+    def apri_configurazione_allevamento(self):
+        self.mostra_categoria(self.CATEGORIA_AZIENDA)
+        if hasattr(self, "mostra_tab_azienda_animali"):
+            self.mostra_tab_azienda_animali()
+
+    def aggiorna_categoria_zootecnia(self):
+        try:
+            entries = list_azienda_animali_entries(self.user_id)
+        except sqlite3.Error:
+            entries = []
+
+        if not hasattr(self, "zootecnia_notebook"):
+            return
+
+        for tab_id in self.zootecnia_notebook.tabs():
+            self.zootecnia_notebook.forget(tab_id)
+
+        gruppi_attivi = []
+
+        for entry in entries:
+            capi = int(entry.get("capi") or 0)
+
+            if capi <= 0:
+                continue
+
+            group_name = (entry.get("group_name") or "").strip()
+            if not group_name:
+                group_name = self._zootecnia_label_tipo(entry)
+
+            gruppi_attivi.append(
+                {
+                    "nome": group_name,
+                    "tipo": self._zootecnia_label_tipo(entry),
+                    "destinazione": self._zootecnia_label_destinazione(entry),
+                    "capi": capi,
+                }
+            )
+
+        if gruppi_attivi:
+            if self.lbl_zootecnia_vuoto.winfo_manager() != "":
+                self.lbl_zootecnia_vuoto.pack_forget()
+            if self.zootecnia_notebook.winfo_manager() == "":
+                self.zootecnia_notebook.pack(fill="both", expand=True)
+
+            for gruppo in gruppi_attivi:
+                pagina = ttk.Frame(self.zootecnia_notebook, padding=12)
+
+                frame_info = ttk.LabelFrame(pagina, text=gruppo["nome"])
+                frame_info.pack(fill="x")
+
+                ttk.Label(frame_info, text=f"Tipo: {gruppo['tipo']}").pack(anchor="w", padx=12, pady=(10, 4))
+                ttk.Label(frame_info, text=f"Destinazione: {gruppo['destinazione']}").pack(anchor="w", padx=12, pady=4)
+                ttk.Label(frame_info, text=f"Capi registrati: {gruppo['capi']}").pack(anchor="w", padx=12, pady=(4, 10))
+
+                frame_azioni = ttk.Frame(pagina)
+                frame_azioni.pack(anchor="w", pady=(10, 0))
+                ttk.Button(
+                    frame_azioni,
+                    text="Apri configurazione gruppo",
+                    command=self.apri_configurazione_allevamento,
+                ).pack(side="left")
+
+                self.zootecnia_notebook.add(pagina, text=gruppo["nome"])
+
+            self.var_zootecnia_stato.set(
+                f"Sono disponibili {len(gruppi_attivi)} sottopagine: una per ogni gruppo animale attivo."
+            )
+        else:
+            if self.zootecnia_notebook.winfo_manager() != "":
+                self.zootecnia_notebook.pack_forget()
+            self.lbl_zootecnia_vuoto.config(
+                text="Nessun tipo allevamento impostato. Configura i gruppi in Azienda > Tipi Allevamento."
+            )
+            if self.lbl_zootecnia_vuoto.winfo_manager() == "":
+                self.lbl_zootecnia_vuoto.pack(anchor="w", pady=(8, 0))
+            self.var_zootecnia_stato.set("Nessun tipo allevamento impostato.")
 
     def cambia_utente(self):
         conferma = messagebox.askyesno("Conferma", "Vuoi uscire e cambiare utente?")
         if not conferma:
             return
 
+        self.root.config(menu="")
         for widget in self.root.winfo_children():
             widget.destroy()
         FinestraLogin(self.root)

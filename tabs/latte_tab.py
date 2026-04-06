@@ -9,20 +9,22 @@ from database import get_conn, LITRI_PER_QUINTALE
 
 class LatteTabMixin:
     def setup_tab_latte(self):
-        ttk.Label(self.tab_latte, text="Produzione Latte", font=("Arial", 14, "bold")).pack(pady=10)
+        content = self.crea_container_scorribile(self.tab_latte)
+
+        ttk.Label(content, text="Produzione Latte", font=("Arial", 14, "bold")).pack(pady=10)
 
         self.var_latte_data = tk.StringVar(value=datetime.now().strftime("%d/%m/%Y"))
         self.var_latte_quintali = tk.StringVar()
         self.var_latte_prezzo = tk.StringVar(value="0,00")
         self.produzione_in_modifica_id = None
 
-        self.crea_campo_data(self.tab_latte, "Data produzione:", self.var_latte_data)
-        self.crea_campo(self.tab_latte, "Quintali prodotti:", self.var_latte_quintali)
-        self.crea_campo(self.tab_latte, "Prezzo al litro (EUR):", self.var_latte_prezzo)
+        self.crea_campo_data(content, "Data produzione:", self.var_latte_data)
+        self.crea_campo(content, "Quintali prodotti:", self.var_latte_quintali)
+        self.crea_campo(content, "Prezzo al litro (EUR):", self.var_latte_prezzo)
 
-        ttk.Label(self.tab_latte, text="Conversione automatica: 1 quintale = 100 litri").pack(pady=(0, 6))
+        ttk.Label(content, text="Conversione automatica: 1 quintale = 100 litri").pack(pady=(0, 6))
 
-        frame_actions = ttk.Frame(self.tab_latte)
+        frame_actions = ttk.Frame(content)
         frame_actions.pack(pady=10)
 
         self.btn_salva_produzione = ttk.Button(frame_actions, text="Salva Produzione", command=self.salva_produzione_latte)
@@ -31,7 +33,7 @@ class LatteTabMixin:
         ttk.Button(frame_actions, text="Elimina selezionata", command=self.elimina_produzione_latte_selezionata).pack(side="left", padx=6)
 
         self.var_nome_fattura_latte = tk.StringVar(value="Nessuna fattura caricata")
-        frame_fattura = ttk.Frame(self.tab_latte)
+        frame_fattura = ttk.Frame(content)
         frame_fattura.pack(fill="x", padx=20, pady=(0, 8))
 
         ttk.Label(frame_fattura, text="Fattura latte:", width=20).pack(side="left")
@@ -39,7 +41,7 @@ class LatteTabMixin:
         ttk.Button(frame_fattura, text="Carica Fattura", command=self.seleziona_fattura_latte).pack(side="right")
         ttk.Button(frame_fattura, text="Rimuovi", command=self.rimuovi_fattura_latte).pack(side="right", padx=(0, 5))
 
-        frame_table = ttk.Frame(self.tab_latte)
+        frame_table = ttk.Frame(content)
         frame_table.pack(fill="both", expand=True, padx=12, pady=8)
 
         cols = ("id", "data", "quintali", "prezzo")

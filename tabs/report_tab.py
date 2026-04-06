@@ -9,27 +9,7 @@ from database import get_conn, LITRI_PER_QUINTALE
 
 class ReportTabMixin:
     def setup_tab_report(self):
-        container = ttk.Frame(self.tab_report)
-        container.pack(fill="both", expand=True)
-
-        self.report_canvas = tk.Canvas(container, highlightthickness=0)
-        self.report_scrollbar = ttk.Scrollbar(container, orient="vertical", command=self.report_canvas.yview)
-        self.report_canvas.configure(yscrollcommand=self.report_scrollbar.set)
-
-        self.report_scrollbar.pack(side="right", fill="y")
-        self.report_canvas.pack(side="left", fill="both", expand=True)
-
-        content = ttk.Frame(self.report_canvas)
-        self.report_canvas_window = self.report_canvas.create_window((0, 0), window=content, anchor="nw")
-
-        def _on_content_configure(_event):
-            self.report_canvas.configure(scrollregion=self.report_canvas.bbox("all"))
-
-        def _on_canvas_configure(event):
-            self.report_canvas.itemconfigure(self.report_canvas_window, width=event.width)
-
-        content.bind("<Configure>", _on_content_configure)
-        self.report_canvas.bind("<Configure>", _on_canvas_configure)
+        content = self.crea_container_scorribile(self.tab_report)
 
         ttk.Label(content, text="Genera Report", font=("Arial", 14, "bold")).pack(pady=10)
 
