@@ -22,21 +22,51 @@ def extract_line_items(lines: list, header_aliases: dict[str, list[str]]) -> lis
 
     header_index, stop_index, anchors = layout
 
-    parsed: list[LineItemResult] = []
+    candidates: list[tuple[LineItemResult, str]] = []
     for line in lines[header_index + 1 : stop_index]:
         text = line_text(line)
         if not text:
             continue
 
         lowered = text.lower()
-        if any(keyword in lowered for keyword in ("totale documento", "totale da pagare", "pagamento")):
+        if _is_line_item_stop(lowered):
             break
         if any(keyword in lowered for keyword in ("tipo dato", "valore testo", "esigibil")):
             continue
 
         item = _parse_line_item_geometric(line, anchors)
-        if item and _is_material_row(item, lowered):
-            parsed.append(item)
+        if item:
+            candidates.append((item, lowered))
+
+    parsed: list[LineItemResult] = []
+    idx = 0
+    while idx < len(candidates):
+        item, lowered = candidates[idx]
+        if not _is_material_row(item, lowered):
+            idx += 1
+            continue
+
+        description_parts = [item.description]
+        next_idx = idx + 1
+        while next_idx < len(candidates):
+            next_item, next_lowered = candidates[next_idx]
+            if _is_material_row(next_item, next_lowered):
+                break
+            if _is_line_item_stop(next_lowered):
+                break
+
+            # Continuations must look like wrapped product-description text.
+            if _is_line_item_continuation(next_item, next_lowered):
+                description_parts.append(next_item.description)
+                next_idx += 1
+                continue
+
+            # As soon as the next row is not a valid continuation, close current item.
+            break
+
+        item.description = _merge_descriptions(description_parts)
+        parsed.append(item)
+        idx = next_idx
 
     return parsed
 
@@ -105,7 +135,12 @@ def _find_line_item_layout(
     line_total_x = _find_column_x(header_tokens, header_aliases.get("line_total", []), fallback=0.82)
     vat_rate_x = _find_column_x(header_tokens, header_aliases.get("vat_rate", []), fallback=0.91)
 
-    stop_index = section_indices.vat_header if section_indices.vat_header is not None else len(lines)
+    stop_candidates = [
+        idx
+        for idx in (section_indices.vat_header, section_indices.payment_header, section_indices.footer)
+        if idx is not None and idx > items_header
+    ]
+    stop_index = min(stop_candidates) if stop_candidates else len(lines)
     anchors = {
         "quantity": quantity_x,
         "unit_price": unit_price_x,
@@ -247,6 +282,57 @@ def _is_material_row(item: LineItemResult, lowered_text: str) -> bool:
     if item.unit_price is not None and item.unit_price <= Decimal("0"):
         return False
     return True
+
+
+def _is_line_item_stop(lowered_text: str) -> bool:
+    return any(keyword in lowered_text for keyword in ("totale documento", "totale da pagare", "pagamento"))
+
+
+def _is_line_item_continuation(item: LineItemResult, lowered_text: str) -> bool:
+    if any(keyword in lowered_text for keyword in ("tipo dato", "valore testo", "esigibil")):
+        return False
+    if any(keyword in lowered_text for keyword in ("documento n.", "sede di consegna", "riga ausiliaria")):
+        return False
+    if not item.description:
+        return False
+
+    # Key-value rows are usually metadata/noise, not wrapped product descriptions.
+    if ":" in item.description:
+        return False
+
+    # Continuation rows should not contain parsed numeric columns.
+    if item.quantity is not None:
+        return False
+    if item.unit_price is not None:
+        return False
+    if item.line_total is not None:
+        return False
+    if item.vat_rate is not None:
+        return False
+
+    if not re.search(r"[A-Za-z]", item.description):
+        return False
+
+    return True
+
+
+def _merge_descriptions(parts: list[str]) -> str:
+    merged: list[str] = []
+    seen: set[str] = set()
+
+    for raw in parts:
+        text = normalize_text(raw)
+        if not text:
+            continue
+
+        dedupe_key = text.lower()
+        if dedupe_key in seen:
+            continue
+
+        seen.add(dedupe_key)
+        merged.append(text)
+
+    return " ".join(merged)
 
 
 def _extract_vat_breakdown_fallback(lines: list) -> list[VATBreakdownRow]:

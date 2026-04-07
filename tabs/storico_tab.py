@@ -378,7 +378,7 @@ class StoricoTabMixin:
         except sqlite3.Error:
             gruppi_animali_collegati = []
 
-        gruppi_animali_text = " | ".join(gruppi_animali_collegati) if gruppi_animali_collegati else "Nessun gruppo collegato"
+        gruppi_animali_text = "\n".join(gruppi_animali_collegati) if gruppi_animali_collegati else "Nessun gruppo collegato"
 
         self._fattura_dettaglio_corrente = {
             "id": fattura_id,

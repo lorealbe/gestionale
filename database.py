@@ -1,9 +1,12 @@
 import os
+import re
 import json
 import shutil
 import sqlite3
 from datetime import datetime
 from pathlib import Path
+
+from services.product_parser_utils import build_basic_product_storage_line, serialize_product_storage_lines
 
 APP_NAME = "Gestionale"
 DB_NAME = "gestionale.db"
@@ -30,8 +33,16 @@ DEFAULT_AZIENDA_ANIMALI = {
     "altro_capi": 0,
 }
 
+DEFAULT_AZIENDA_INFO = {
+    "nome_azienda": "",
+    "piva": "",
+    "occupazione": "",
+    "data_creazione": "",
+}
+
 ANIMAL_TYPE_OPTIONS = ("BOVINI", "OVINI", "CAPRINI", "SUINI", "AVICOLI", "EQUINI", "ALTRO")
 ANIMAL_PURPOSE_OPTIONS = ("LATTE", "CARNE")
+GROUPS_DESCRIPTION_PATTERN = re.compile(r"\s*\|\s*Gruppi:\s*.*$", re.IGNORECASE)
 
 
 def _as_relative_fattura_path(percorso_file: str) -> str:
@@ -165,9 +176,9 @@ def _migrate_legacy_parser_payload(cursor):
                 if quantita_num <= 0 or totale_num <= 0:
                     continue
 
-                prodotti.append(f"{descrizione} - qta {quantita} - tot {totale}")
+                prodotti.append(build_basic_product_storage_line(descrizione, quantita, totale))
 
-        products_text = " | ".join(prodotti)
+        products_text = serialize_product_storage_lines(prodotti, separator=" | ")
 
         campi_riepilogo = []
         for field_name in sorted(fields):
@@ -317,6 +328,65 @@ def get_azienda_animali(user_id: int) -> dict:
     config["altro_text"] = (row[6] or "").strip()
     config["altro_capi"] = int(row[7] or 0)
     return config
+
+
+def get_azienda_info(user_id: int) -> dict:
+    info = dict(DEFAULT_AZIENDA_INFO)
+
+    try:
+        with get_conn() as conn:
+            c = conn.cursor()
+            c.execute(
+                '''
+                SELECT nome_azienda, piva, occupazione, data_creazione
+                FROM azienda_info
+                WHERE user_id=?
+            ''',
+                (user_id,),
+            )
+            row = c.fetchone()
+    except sqlite3.Error:
+        return info
+
+    if not row:
+        return info
+
+    info["nome_azienda"] = (row[0] or "").strip()
+    info["piva"] = (row[1] or "").strip()
+    info["occupazione"] = (row[2] or "").strip()
+    info["data_creazione"] = (row[3] or "").strip()
+    return info
+
+
+def save_azienda_info(user_id: int, nome_azienda: str, piva: str, occupazione: str, data_creazione: str):
+    nome_clean = (nome_azienda or "").strip()
+    piva_clean = (piva or "").strip()
+    occupazione_clean = (occupazione or "").strip()
+    data_creazione_clean = (data_creazione or "").strip()
+    updated_at = datetime.now().isoformat(timespec="seconds")
+
+    with get_conn() as conn:
+        c = conn.cursor()
+        c.execute(
+            '''
+            INSERT INTO azienda_info (user_id, nome_azienda, piva, occupazione, data_creazione, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(user_id) DO UPDATE SET
+                nome_azienda=excluded.nome_azienda,
+                piva=excluded.piva,
+                occupazione=excluded.occupazione,
+                data_creazione=excluded.data_creazione,
+                updated_at=excluded.updated_at
+        ''',
+            (
+                user_id,
+                nome_clean,
+                piva_clean,
+                occupazione_clean,
+                data_creazione_clean,
+                updated_at,
+            ),
+        )
 
 
 def _to_non_negative_int(value) -> int:
@@ -695,6 +765,253 @@ def get_movimento_animali_group_labels(user_id: int, movimento_id: int) -> list[
     return labels
 
 
+def _refresh_linked_group_descriptions(user_id: int, movimento_ids, cursor: sqlite3.Cursor) -> int:
+    normalized_ids = []
+    seen = set()
+    for raw_movimento_id in movimento_ids or []:
+        movimento_id = _to_non_negative_int(raw_movimento_id)
+        if movimento_id <= 0 or movimento_id in seen:
+            continue
+        seen.add(movimento_id)
+        normalized_ids.append(movimento_id)
+
+    if not normalized_ids:
+        return 0
+
+    placeholders = ",".join(["?"] * len(normalized_ids))
+
+    cursor.execute(
+        f'''
+            SELECT
+                l.movimento_id,
+                a.id,
+                a.tipo_animale,
+                a.finalita,
+                a.altro_label,
+                a.group_name
+            FROM movimenti_animali_link l
+            JOIN azienda_animali_dettaglio a
+              ON a.id = l.animale_entry_id
+             AND a.user_id = l.user_id
+            WHERE l.user_id=? AND l.movimento_id IN ({placeholders})
+            ORDER BY
+                l.movimento_id,
+                COALESCE(NULLIF(TRIM(a.group_name), ''), a.tipo_animale) COLLATE NOCASE,
+                a.id
+        ''',
+        (user_id, *normalized_ids),
+    )
+    rows = cursor.fetchall()
+
+    group_names_by_movimento = {}
+    for movimento_id, _entry_id, tipo_animale, finalita, altro_label, group_name in rows:
+        movimento_id_value = _to_non_negative_int(movimento_id)
+        if movimento_id_value <= 0:
+            continue
+
+        tipo_norm = (tipo_animale or "").strip().upper()
+        finalita_norm = (finalita or "").strip().upper()
+        altro_norm = (altro_label or "").strip()
+        group_name_clean = (group_name or "").strip() or _default_group_name(tipo_norm, finalita_norm, altro_norm)
+
+        names = group_names_by_movimento.setdefault(movimento_id_value, [])
+        if group_name_clean and group_name_clean not in names:
+            names.append(group_name_clean)
+
+    cursor.execute(
+        f'''
+            SELECT id, COALESCE(descrizione, '')
+            FROM movimenti
+            WHERE user_id=? AND id IN ({placeholders})
+        ''',
+        (user_id, *normalized_ids),
+    )
+    movimenti_rows = cursor.fetchall()
+
+    updated_rows = 0
+    for movimento_id, descrizione in movimenti_rows:
+        movimento_id_value = _to_non_negative_int(movimento_id)
+        descrizione_text = str(descrizione or "").strip()
+        if movimento_id_value <= 0 or not descrizione_text:
+            continue
+
+        if not GROUPS_DESCRIPTION_PATTERN.search(descrizione_text):
+            continue
+
+        base_descrizione = GROUPS_DESCRIPTION_PATTERN.sub("", descrizione_text).rstrip()
+        if not base_descrizione:
+            continue
+
+        group_names = group_names_by_movimento.get(movimento_id_value, [])
+        groups_text = ", ".join(group_names) if group_names else "Nessun gruppo"
+        nuova_descrizione = f"{base_descrizione} | Gruppi: {groups_text}"
+        if nuova_descrizione == descrizione_text:
+            continue
+
+        cursor.execute(
+            "UPDATE movimenti SET descrizione=? WHERE id=? AND user_id=?",
+            (nuova_descrizione, movimento_id_value, user_id),
+        )
+        updated_rows += int(cursor.rowcount or 0)
+
+    return updated_rows
+
+
+def set_produzione_latte_group_allocations(
+    user_id: int,
+    produzione_id: int,
+    movimento_id: int | None,
+    allocations,
+    cursor: sqlite3.Cursor | None = None,
+):
+    produzione_id_value = _to_non_negative_int(produzione_id)
+    if produzione_id_value <= 0:
+        raise ValueError("Produzione non valida.")
+
+    movimento_id_value = _to_non_negative_int(movimento_id)
+    if movimento_id_value <= 0:
+        movimento_id_value = 0
+
+    def _parse_litri(raw_value) -> float:
+        if raw_value is None:
+            return 0.0
+        if isinstance(raw_value, (int, float)):
+            return float(raw_value)
+
+        text = str(raw_value).strip()
+        if not text:
+            return 0.0
+
+        text = text.replace(" ", "").replace("'", "").replace("’", "").replace(",", ".")
+        try:
+            return float(text)
+        except ValueError:
+            return 0.0
+
+    parsed_by_entry = {}
+    iterable = []
+    if isinstance(allocations, dict):
+        iterable = allocations.items()
+    elif allocations is not None:
+        iterable = allocations
+
+    for item in iterable:
+        if isinstance(item, dict):
+            raw_entry_id = item.get("animale_entry_id")
+            raw_litri = item.get("litri")
+        elif isinstance(item, (tuple, list)) and len(item) >= 2:
+            raw_entry_id = item[0]
+            raw_litri = item[1]
+        else:
+            continue
+
+        entry_id = _to_non_negative_int(raw_entry_id)
+        if entry_id <= 0:
+            continue
+
+        litri_value = _parse_litri(raw_litri)
+        if litri_value <= 0:
+            continue
+
+        parsed_by_entry[entry_id] = float(litri_value)
+
+    def _apply(target_cursor: sqlite3.Cursor):
+        target_cursor.execute(
+            "SELECT movimento_id FROM produzione_latte WHERE id=? AND user_id=?",
+            (produzione_id_value, user_id),
+        )
+        produzione_row = target_cursor.fetchone()
+        if not produzione_row:
+            raise ValueError("Produzione non trovata.")
+
+        movimento_id_db = _to_non_negative_int((produzione_row[0] if produzione_row else 0) or 0)
+        movimento_fk = movimento_id_value if movimento_id_value > 0 else movimento_id_db
+        if movimento_fk <= 0:
+            movimento_fk = None
+
+        entry_ids = list(parsed_by_entry.keys())
+        if entry_ids:
+            placeholders = ",".join(["?"] * len(entry_ids))
+            target_cursor.execute(
+                f"""
+                SELECT id
+                FROM azienda_animali_dettaglio
+                WHERE user_id=? AND id IN ({placeholders})
+            """,
+                (user_id, *entry_ids),
+            )
+            valid_ids = {int(row[0]) for row in target_cursor.fetchall()}
+            missing_ids = [entry_id for entry_id in entry_ids if entry_id not in valid_ids]
+            if missing_ids:
+                raise ValueError("Uno o piu gruppi animali non sono piu disponibili.")
+
+        target_cursor.execute(
+            "DELETE FROM produzione_latte_gruppi WHERE user_id=? AND produzione_id=?",
+            (user_id, produzione_id_value),
+        )
+
+        if not entry_ids:
+            return
+
+        now_text = datetime.now().isoformat(timespec="seconds")
+        rows_to_insert = [
+            (
+                user_id,
+                produzione_id_value,
+                movimento_fk,
+                entry_id,
+                parsed_by_entry[entry_id],
+                now_text,
+                now_text,
+            )
+            for entry_id in entry_ids
+        ]
+        target_cursor.executemany(
+            '''
+            INSERT INTO produzione_latte_gruppi
+                (user_id, produzione_id, movimento_id, animale_entry_id, litri, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        ''',
+            rows_to_insert,
+        )
+
+    if cursor is not None:
+        _apply(cursor)
+        return
+
+    with get_conn() as conn:
+        c = conn.cursor()
+        _apply(c)
+
+
+def get_produzione_latte_group_allocations(user_id: int, produzione_id: int) -> dict[int, float]:
+    produzione_id_value = _to_non_negative_int(produzione_id)
+    if produzione_id_value <= 0:
+        return {}
+
+    with get_conn() as conn:
+        c = conn.cursor()
+        c.execute(
+            '''
+            SELECT animale_entry_id, COALESCE(litri, 0)
+            FROM produzione_latte_gruppi
+            WHERE user_id=? AND produzione_id=?
+            ORDER BY id
+        ''',
+            (user_id, produzione_id_value),
+        )
+        rows = c.fetchall()
+
+    allocations = {}
+    for entry_id_raw, litri_raw in rows:
+        entry_id = _to_non_negative_int(entry_id_raw)
+        litri = float(litri_raw or 0)
+        if entry_id <= 0 or litri <= 0:
+            continue
+        allocations[entry_id] = litri
+    return allocations
+
+
 def add_azienda_animale_entry(
     user_id: int,
     tipo_animale: str,
@@ -956,6 +1273,17 @@ def set_azienda_animale_group_name(user_id: int, entry_id: int, nuovo_group_name
             )
         except sqlite3.IntegrityError:
             raise ValueError("Esiste gia un gruppo con questo nome per la stessa categoria.")
+
+        c.execute(
+            '''
+            SELECT DISTINCT movimento_id
+            FROM movimenti_animali_link
+            WHERE user_id=? AND animale_entry_id=?
+        ''',
+            (user_id, entry_id_value),
+        )
+        movimento_ids = [int(row[0]) for row in c.fetchall() if _to_non_negative_int(row[0]) > 0]
+        _refresh_linked_group_descriptions(user_id, movimento_ids, c)
     return True
 
 
@@ -1048,6 +1376,17 @@ def split_azienda_animale_group(user_id: int, entry_id: int, capi_nuovo_gruppo: 
                 (nuovo_entry_id, now_text, user_id, entry_id_value),
             )
 
+            c.execute(
+                '''
+                SELECT DISTINCT movimento_id
+                FROM movimenti_animali_link
+                WHERE user_id=? AND animale_entry_id=?
+            ''',
+                (user_id, entry_id_value),
+            )
+            movimento_ids = [int(row[0]) for row in c.fetchall() if _to_non_negative_int(row[0]) > 0]
+            _refresh_linked_group_descriptions(user_id, movimento_ids, c)
+
     return capi_restanti
 
 
@@ -1072,6 +1411,16 @@ def merge_azienda_animale_groups(
     now_text = datetime.now().isoformat(timespec="seconds")
     with get_conn() as conn:
         c = conn.cursor()
+
+        c.execute(
+            '''
+            SELECT DISTINCT movimento_id
+            FROM movimenti_animali_link
+            WHERE user_id=? AND animale_entry_id IN (?, ?)
+        ''',
+            (user_id, entry_id_principale_value, entry_id_secondario_value),
+        )
+        movimento_ids = [int(row[0]) for row in c.fetchall() if _to_non_negative_int(row[0]) > 0]
 
         c.execute(
             '''
@@ -1141,6 +1490,8 @@ def merge_azienda_animale_groups(
             )
         except sqlite3.IntegrityError:
             raise ValueError("Esiste gia un gruppo con questo nome per la stessa categoria.")
+
+        _refresh_linked_group_descriptions(user_id, movimento_ids, c)
 
     return capi_totali
 
@@ -1244,6 +1595,31 @@ def init_db():
                       piva TEXT,
                       professione TEXT,
                       FOREIGN KEY(user_id) REFERENCES utenti(id) ON DELETE CASCADE)''')
+
+        # Informazioni aziendali principali.
+        c.execute(
+            '''CREATE TABLE IF NOT EXISTS azienda_info
+                     (user_id INTEGER PRIMARY KEY,
+                      nome_azienda TEXT NOT NULL DEFAULT '',
+                      piva TEXT NOT NULL DEFAULT '',
+                      occupazione TEXT NOT NULL DEFAULT '',
+                      data_creazione TEXT NOT NULL DEFAULT '',
+                      updated_at TEXT NOT NULL DEFAULT '',
+                      FOREIGN KEY(user_id) REFERENCES utenti(id) ON DELETE CASCADE)'''
+        )
+
+        c.execute("PRAGMA table_info(azienda_info)")
+        colonne_azienda_info = {row[1] for row in c.fetchall()}
+        if colonne_azienda_info and "nome_azienda" not in colonne_azienda_info:
+            c.execute("ALTER TABLE azienda_info ADD COLUMN nome_azienda TEXT NOT NULL DEFAULT ''")
+        if colonne_azienda_info and "piva" not in colonne_azienda_info:
+            c.execute("ALTER TABLE azienda_info ADD COLUMN piva TEXT NOT NULL DEFAULT ''")
+        if colonne_azienda_info and "occupazione" not in colonne_azienda_info:
+            c.execute("ALTER TABLE azienda_info ADD COLUMN occupazione TEXT NOT NULL DEFAULT ''")
+        if colonne_azienda_info and "data_creazione" not in colonne_azienda_info:
+            c.execute("ALTER TABLE azienda_info ADD COLUMN data_creazione TEXT NOT NULL DEFAULT ''")
+        if colonne_azienda_info and "updated_at" not in colonne_azienda_info:
+            c.execute("ALTER TABLE azienda_info ADD COLUMN updated_at TEXT NOT NULL DEFAULT ''")
 
         # Configurazione azienda: tipi animali allevati.
         c.execute('''CREATE TABLE IF NOT EXISTS azienda_animali
@@ -1413,6 +1789,38 @@ def init_db():
                      ON produzione_latte(user_id, data_op)''')
         c.execute('''CREATE INDEX IF NOT EXISTS idx_prod_user_movimento
                  ON produzione_latte(user_id, movimento_id)''')
+
+        # Ripartizione litri produzione latte per gruppo animale.
+        c.execute(
+            '''CREATE TABLE IF NOT EXISTS produzione_latte_gruppi
+                     (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                      user_id INTEGER NOT NULL,
+                      produzione_id INTEGER NOT NULL,
+                      movimento_id INTEGER,
+                      animale_entry_id INTEGER NOT NULL,
+                      litri REAL NOT NULL CHECK(litri >= 0),
+                      created_at TEXT NOT NULL DEFAULT '',
+                      updated_at TEXT NOT NULL DEFAULT '',
+                      UNIQUE(user_id, produzione_id, animale_entry_id),
+                      FOREIGN KEY(user_id) REFERENCES utenti(id) ON DELETE CASCADE,
+                      FOREIGN KEY(produzione_id) REFERENCES produzione_latte(id) ON DELETE CASCADE,
+                      FOREIGN KEY(movimento_id) REFERENCES movimenti(id) ON DELETE SET NULL,
+                      FOREIGN KEY(animale_entry_id) REFERENCES azienda_animali_dettaglio(id) ON DELETE CASCADE)'''
+        )
+
+        c.execute("PRAGMA table_info(produzione_latte_gruppi)")
+        colonne_produzione_gruppi = {row[1] for row in c.fetchall()}
+        if colonne_produzione_gruppi and "movimento_id" not in colonne_produzione_gruppi:
+            c.execute("ALTER TABLE produzione_latte_gruppi ADD COLUMN movimento_id INTEGER")
+        if colonne_produzione_gruppi and "updated_at" not in colonne_produzione_gruppi:
+            c.execute("ALTER TABLE produzione_latte_gruppi ADD COLUMN updated_at TEXT NOT NULL DEFAULT ''")
+
+        c.execute('''CREATE INDEX IF NOT EXISTS idx_prod_gruppi_user_produzione
+                 ON produzione_latte_gruppi(user_id, produzione_id)''')
+        c.execute('''CREATE INDEX IF NOT EXISTS idx_prod_gruppi_user_movimento
+                 ON produzione_latte_gruppi(user_id, movimento_id)''')
+        c.execute('''CREATE INDEX IF NOT EXISTS idx_prod_gruppi_user_entry
+                 ON produzione_latte_gruppi(user_id, animale_entry_id)''')
 
         # Se viene eliminato un movimento latte, elimina anche la produzione collegata.
         c.execute('''CREATE TRIGGER IF NOT EXISTS trg_movimenti_delete_produzione_latte

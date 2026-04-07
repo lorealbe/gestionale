@@ -7,7 +7,9 @@ from app_utils import clear_treeview, format_eur, format_number, is_blank, parse
 from database import (
     get_conn,
     get_movimento_animali_entry_ids,
+    get_produzione_latte_group_allocations,
     list_azienda_animali_entries,
+    set_produzione_latte_group_allocations,
     set_movimento_animali_links,
     LITRI_PER_QUINTALE,
 )
@@ -23,6 +25,7 @@ class LatteTabMixin:
         self.var_latte_quintali = tk.StringVar()
         self.var_latte_prezzo = tk.StringVar(value="0,00")
         self.produzione_in_modifica_id = None
+        self._latte_litri_quote_by_group = {}
 
         self.crea_campo_data(content, "Data produzione:", self.var_latte_data)
         self.crea_campo(content, "Quintali prodotti:", self.var_latte_quintali)
@@ -66,6 +69,12 @@ class LatteTabMixin:
             text="Deseleziona",
             command=self.deseleziona_gruppi_latte,
         ).pack(fill="x")
+        self.btn_quote_litri_gruppi = ttk.Button(
+            frame_gruppi_btn,
+            text="Litri per gruppo...",
+            command=self.apri_dialog_quote_litri_gruppi_latte,
+        )
+        self.btn_quote_litri_gruppi.pack(fill="x", pady=(4, 0))
 
         ttk.Label(frame_gruppi, textvariable=self.var_latte_gruppi_stato).pack(anchor="w", padx=8, pady=(0, 6))
 
@@ -201,7 +210,176 @@ class LatteTabMixin:
         self._aggiorna_stato_gruppi_latte()
 
     def _on_selezione_gruppi_latte(self, _event=None):
+        self._pulisci_quote_litri_non_selezionate()
         self._aggiorna_stato_gruppi_latte()
+
+    def _pulisci_quote_litri_non_selezionate(self):
+        if not hasattr(self, "_latte_litri_quote_by_group"):
+            self._latte_litri_quote_by_group = {}
+
+        selected_ids = set(self.get_gruppi_latte_selezionati_ids())
+        filtered = {}
+        for entry_id, litri in self._latte_litri_quote_by_group.items():
+            if entry_id not in selected_ids:
+                continue
+            if float(litri or 0) <= 0:
+                continue
+            filtered[int(entry_id)] = float(litri)
+        self._latte_litri_quote_by_group = filtered
+
+    def _litri_totali_correnti(self):
+        quintali_text = self.var_latte_quintali.get().strip() if hasattr(self, "var_latte_quintali") else ""
+        if is_blank(quintali_text):
+            return None
+
+        quintali = self._normalizza_importo(quintali_text, allow_zero=False)
+        if quintali is None:
+            return None
+        return float(quintali) * LITRI_PER_QUINTALE
+
+    def _normalizza_quota_litri_input(self, raw_value):
+        value = parse_decimal(raw_value, allow_zero=True, allow_negative=False)
+        if value is None or value <= 0:
+            return None
+        return float(value)
+
+    def _quote_litri_gruppi_per_salvataggio(self, gruppi_ids, litri_totali):
+        if not hasattr(self, "_latte_litri_quote_by_group"):
+            self._latte_litri_quote_by_group = {}
+
+        if len(gruppi_ids) <= 1:
+            self._latte_litri_quote_by_group = {}
+            return {}
+
+        quote = {}
+        for entry_id in gruppi_ids:
+            litri = self._latte_litri_quote_by_group.get(int(entry_id))
+            if litri is None:
+                continue
+            litri_value = self._normalizza_quota_litri_input(litri)
+            if litri_value is None:
+                continue
+            quote[int(entry_id)] = litri_value
+
+        totale_esplicito = sum(quote.values())
+        if totale_esplicito > float(litri_totali) + 1e-6:
+            messagebox.showerror(
+                "Errore",
+                "La somma dei litri specificati per i gruppi supera i litri totali della produzione.",
+            )
+            return None
+
+        self._latte_litri_quote_by_group = dict(quote)
+        return quote
+
+    def _label_breve_gruppo_latte(self, entry_id):
+        entry = self._latte_gruppi_entries_by_id.get(int(entry_id), {})
+        group_name = (entry.get("group_name") or "").strip() or f"Gruppo {entry_id}"
+        capi = int(entry.get("capi", 0) or 0)
+        return f"{group_name} ({format_number(capi, 0)} capi)"
+
+    def apri_dialog_quote_litri_gruppi_latte(self):
+        gruppi_ids = self.get_gruppi_latte_selezionati_ids()
+        if len(gruppi_ids) <= 1:
+            messagebox.showinfo(
+                "Quote litri per gruppo",
+                "Seleziona almeno due gruppi per specificare i litri prodotti da ciascun gruppo.",
+            )
+            return
+
+        litri_totali = self._litri_totali_correnti()
+        if litri_totali is None:
+            messagebox.showerror(
+                "Errore",
+                "Inserisci prima i quintali prodotti (valore valido) per poter ripartire i litri per gruppo.",
+            )
+            return
+
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Litri prodotti per gruppo")
+        dialog.resizable(False, False)
+        dialog.transient(self.root)
+        dialog.grab_set()
+
+        frame = ttk.Frame(dialog, padding=12)
+        frame.pack(fill="both", expand=True)
+
+        ttk.Label(
+            frame,
+            text=(
+                f"Litri totali produzione: {format_number(litri_totali, 2)} L\n"
+                "Compila solo i gruppi con litri espliciti. I restanti litri saranno ripartiti in base ai capi."
+            ),
+            justify="left",
+        ).pack(anchor="w", pady=(0, 10))
+
+        entry_vars = {}
+        for entry_id in gruppi_ids:
+            row = ttk.Frame(frame)
+            row.pack(fill="x", pady=3)
+
+            ttk.Label(row, text=self._label_breve_gruppo_latte(entry_id), width=42).pack(side="left")
+            var_litri = tk.StringVar(value="")
+            litri_existing = self._latte_litri_quote_by_group.get(int(entry_id))
+            if litri_existing is not None and float(litri_existing or 0) > 0:
+                var_litri.set(format_number(float(litri_existing), 2))
+
+            ttk.Entry(row, textvariable=var_litri, width=16).pack(side="left", padx=(8, 6))
+            ttk.Label(row, text="L").pack(side="left")
+            entry_vars[int(entry_id)] = var_litri
+
+        var_esito = tk.StringVar(value="")
+        ttk.Label(frame, textvariable=var_esito, foreground="#1f5f3f", justify="left").pack(anchor="w", pady=(8, 0))
+
+        def _aggiorna_esito_preview():
+            totale_esplicito = 0.0
+            for var in entry_vars.values():
+                litri_val = self._normalizza_quota_litri_input(var.get())
+                if litri_val is None:
+                    continue
+                totale_esplicito += litri_val
+
+            residuo = max(litri_totali - totale_esplicito, 0.0)
+            var_esito.set(
+                f"Litri espliciti: {format_number(totale_esplicito, 2)} L | "
+                f"Residuo automatico (per capi): {format_number(residuo, 2)} L"
+            )
+
+        def _auto_per_capi():
+            for var in entry_vars.values():
+                var.set("")
+            _aggiorna_esito_preview()
+
+        def _conferma():
+            nuove_quote = {}
+            for entry_id, var in entry_vars.items():
+                litri_val = self._normalizza_quota_litri_input(var.get())
+                if litri_val is None:
+                    continue
+                nuove_quote[entry_id] = litri_val
+
+            totale_esplicito = sum(nuove_quote.values())
+            if totale_esplicito > litri_totali + 1e-6:
+                messagebox.showerror(
+                    "Errore",
+                    "La somma dei litri inseriti supera i litri totali della produzione.",
+                    parent=dialog,
+                )
+                return
+
+            self._latte_litri_quote_by_group = nuove_quote
+            dialog.destroy()
+            self._aggiorna_stato_gruppi_latte()
+
+        frame_btn = ttk.Frame(frame)
+        frame_btn.pack(fill="x", pady=(10, 0))
+        ttk.Button(frame_btn, text="Auto per capi", command=_auto_per_capi).pack(side="left")
+        ttk.Button(frame_btn, text="Conferma", command=_conferma).pack(side="right")
+        ttk.Button(frame_btn, text="Annulla", command=dialog.destroy).pack(side="right", padx=(0, 6))
+
+        for var in entry_vars.values():
+            var.trace_add("write", lambda *_args: _aggiorna_esito_preview())
+        _aggiorna_esito_preview()
 
     def _aggiorna_stato_gruppi_latte(self):
         if not hasattr(self, "var_latte_gruppi_stato") or not hasattr(self, "listbox_latte_gruppi"):
@@ -209,12 +387,17 @@ class LatteTabMixin:
 
         totale = int(self.listbox_latte_gruppi.size())
         if totale <= 0:
+            if hasattr(self, "btn_quote_litri_gruppi"):
+                self.btn_quote_litri_gruppi.config(state="disabled")
             self.var_latte_gruppi_stato.set(
                 "Nessun gruppo da latte disponibile. Configurali in Azienda > Tipi Allevamento."
             )
             return
 
         selected_ids = self.get_gruppi_latte_selezionati_ids()
+        if hasattr(self, "btn_quote_litri_gruppi"):
+            self.btn_quote_litri_gruppi.config(state="normal" if len(selected_ids) > 1 else "disabled")
+
         if not selected_ids:
             self.var_latte_gruppi_stato.set(
                 "Seleziona almeno un gruppo. Puoi selezionare piu gruppi solo se dello stesso tipo animale."
@@ -233,6 +416,28 @@ class LatteTabMixin:
             )
             return
 
+        self._pulisci_quote_litri_non_selezionate()
+        if len(selected_ids) > 1:
+            quote = {
+                entry_id: float(litri)
+                for entry_id, litri in self._latte_litri_quote_by_group.items()
+                if entry_id in set(selected_ids) and float(litri or 0) > 0
+            }
+            if quote:
+                totale_quote = sum(quote.values())
+                self.var_latte_gruppi_stato.set(
+                    f"Gruppi selezionati: {len(selected_ids)} su {totale}. "
+                    f"Quote litri esplicite: {len(quote)} gruppi ({format_number(totale_quote, 2)} L). "
+                    "Litri restanti ripartiti automaticamente in base ai capi."
+                )
+            else:
+                self.var_latte_gruppi_stato.set(
+                    f"Gruppi selezionati: {len(selected_ids)} su {totale}. "
+                    "Nessuna quota litri esplicita: ripartizione automatica in base ai capi."
+                )
+            return
+
+        self._latte_litri_quote_by_group = {}
         self.var_latte_gruppi_stato.set(
             f"Gruppi selezionati: {len(selected_ids)} su {totale}."
         )
@@ -257,6 +462,7 @@ class LatteTabMixin:
             return
 
         self.listbox_latte_gruppi.selection_clear(0, tk.END)
+        self._latte_litri_quote_by_group = {}
         self._aggiorna_stato_gruppi_latte()
 
     def seleziona_tutti_gruppi_latte(self):
@@ -276,6 +482,7 @@ class LatteTabMixin:
             if tipo and tipo == tipo_base:
                 self.listbox_latte_gruppi.selection_set(idx)
 
+        self._pulisci_quote_litri_non_selezionate()
         self._aggiorna_stato_gruppi_latte()
 
     def _valida_gruppi_latte_selezionati(self):
@@ -363,6 +570,10 @@ class LatteTabMixin:
 
         gruppi_ids = gruppi_info["entry_ids"]
         gruppi_text = ", ".join(gruppi_info["group_names"])
+
+        quote_litri_gruppi = self._quote_litri_gruppi_per_salvataggio(gruppi_ids, litri_val)
+        if quote_litri_gruppi is None:
+            return
 
         importo_entrata = litri_val * prezzo_val
         descrizione_mov = (
@@ -571,6 +782,15 @@ class LatteTabMixin:
                     ''',
                         (movimento_id, produzione_id, self.pending_fattura_latte_id, self.user_id),
                     )
+
+                if produzione_id is not None:
+                    set_produzione_latte_group_allocations(
+                        self.user_id,
+                        produzione_id,
+                        movimento_id,
+                        quote_litri_gruppi,
+                        cursor=c,
+                    )
         except ValueError as e:
             messagebox.showerror("Errore", str(e))
             return
@@ -645,6 +865,7 @@ class LatteTabMixin:
         self.var_latte_prezzo.set(valori[3] or "0,00")
 
         linked_group_ids = []
+        group_allocations = {}
         try:
             with get_conn() as conn:
                 c = conn.cursor()
@@ -657,10 +878,19 @@ class LatteTabMixin:
             movimento_id = int((row[0] if row else 0) or 0)
             if movimento_id > 0:
                 linked_group_ids = get_movimento_animali_entry_ids(self.user_id, movimento_id)
+
+            group_allocations = get_produzione_latte_group_allocations(self.user_id, self.produzione_in_modifica_id)
         except (sqlite3.Error, ValueError):
             linked_group_ids = []
+            group_allocations = {}
 
         self.imposta_gruppi_latte_selezionati(linked_group_ids)
+        self._latte_litri_quote_by_group = {
+            int(entry_id): float(litri)
+            for entry_id, litri in group_allocations.items()
+            if int(entry_id) in set(linked_group_ids) and float(litri or 0) > 0
+        }
+        self._aggiorna_stato_gruppi_latte()
 
         if hasattr(self, "btn_salva_produzione"):
             self.btn_salva_produzione.config(text="Aggiorna Produzione")
@@ -676,6 +906,7 @@ class LatteTabMixin:
             self.var_latte_data.set(datetime.now().strftime("%d/%m/%Y"))
             self.var_latte_quintali.set("")
             self.var_latte_prezzo.set("0,00")
+            self._latte_litri_quote_by_group = {}
             self.deseleziona_gruppi_latte()
 
     def elimina_produzione_latte_selezionata(self):

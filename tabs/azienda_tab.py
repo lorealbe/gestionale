@@ -7,6 +7,7 @@ from app_utils import clear_treeview, format_eur, format_number, is_blank, parse
 from database import (
     add_azienda_animale_entry,
     delete_azienda_animale_entry,
+    get_azienda_info,
     get_movimento_animali_entry_ids,
     get_movimento_animali_group_labels,
     get_conn,
@@ -18,6 +19,12 @@ from database import (
     set_azienda_animale_capi,
     set_azienda_animale_finalita,
     set_azienda_animale_group_name,
+    save_azienda_info,
+)
+from services.product_parser_utils import (
+    extract_products_rows_from_parser_text,
+    normalize_cost_type,
+    normalize_multiline_display_text,
 )
 
 
@@ -35,6 +42,38 @@ class AziendaTabMixin:
     PURPOSE_OPTIONS = ("Da Latte", "Da Carne")
     PURPOSE_TO_DB = {"Da Latte": "LATTE", "Da Carne": "CARNE"}
 
+    def _normalizza_piva(self, raw_value: str) -> str:
+        value = (raw_value or "").strip().upper()
+        if value.startswith("IT"):
+            value = value[2:]
+
+        cleaned = []
+        for ch in value:
+            if ch.isdigit():
+                cleaned.append(ch)
+            elif ch in (" ", ".", "-"):
+                continue
+            else:
+                return ""
+
+        return "".join(cleaned)
+
+    def _piva_is_valid(self, piva_value: str) -> bool:
+        if len(piva_value) != 11 or not piva_value.isdigit():
+            return False
+
+        checksum = 0
+        for idx, char in enumerate(piva_value[:10]):
+            digit = int(char)
+            if idx % 2 == 0:
+                checksum += digit
+            else:
+                doubled = digit * 2
+                checksum += doubled - 9 if doubled > 9 else doubled
+
+        control = (10 - (checksum % 10)) % 10
+        return control == int(piva_value[10])
+
     def setup_categoria_azienda(self):
         container = ttk.Frame(self.frame_azienda, padding=10)
         container.pack(fill="both", expand=True)
@@ -46,19 +85,288 @@ class AziendaTabMixin:
 
         self.tab_azienda_report = ttk.Frame(self.azienda_notebook)
         self.tab_azienda_fatture = ttk.Frame(self.azienda_notebook)
-        self.tab_azienda_animali = ttk.Frame(self.azienda_notebook)
+        self.tab_azienda_dati = ttk.Frame(self.azienda_notebook)
 
         self.azienda_notebook.add(self.tab_azienda_report, text="Report Azienda")
         self.azienda_notebook.add(self.tab_azienda_fatture, text="Fatture")
-        self.azienda_notebook.add(self.tab_azienda_animali, text="Tipi Allevamento")
+        self.azienda_notebook.add(self.tab_azienda_dati, text="Dati Azienda")
+
+        self.azienda_dati_notebook = ttk.Notebook(self.tab_azienda_dati)
+        self.azienda_dati_notebook.pack(fill="both", expand=True, padx=12, pady=12)
+        self.tab_azienda_info = ttk.Frame(self.azienda_dati_notebook)
+        self.tab_azienda_animali = ttk.Frame(self.azienda_dati_notebook)
+        self.azienda_dati_notebook.add(self.tab_azienda_info, text="Informazioni")
+        self.azienda_dati_notebook.add(self.tab_azienda_animali, text="Tipi Allevamenti")
 
         self._setup_pagina_report_azienda()
         self._setup_pagina_fatture_azienda()
+        self._setup_pagina_dati_azienda_informazioni(self.tab_azienda_info)
         self._setup_pagina_animali_azienda()
 
         self.imposta_periodo_report_azienda_default(mostra_errori=False)
         self.carica_report_animali_allevamento(mostra_errori=False)
         self.genera_report_azienda(mostra_errori=False)
+        self.carica_dati_azienda_info(mostra_errori=False)
+
+    def _setup_pagina_dati_azienda_informazioni(self, parent):
+        content = self.crea_container_scorribile(parent, stretch_to_viewport=True)
+
+        ttk.Label(content, text="Informazioni Azienda", font=("Arial", 14, "bold")).pack(anchor="w", padx=12, pady=(10, 8))
+
+        self.var_azienda_info_nome = tk.StringVar(value="-")
+        self.var_azienda_info_piva = tk.StringVar(value="-")
+        self.var_azienda_info_occupazione = tk.StringVar(value="-")
+        self.var_azienda_info_data_creazione = tk.StringVar(value="-")
+
+        frame_anagrafica = ttk.LabelFrame(content, text="Dati anagrafici")
+        frame_anagrafica.pack(fill="x", padx=12, pady=(0, 8))
+
+        def _aggiungi_riga_info(label_text, text_var):
+            riga = ttk.Frame(frame_anagrafica)
+            riga.pack(fill="x", padx=12, pady=4)
+            ttk.Label(riga, text=label_text, width=20).pack(side="left")
+            ttk.Label(riga, textvariable=text_var, anchor="w").pack(side="left", fill="x", expand=True)
+
+        _aggiungi_riga_info("Nome dell'Azienda:", self.var_azienda_info_nome)
+        _aggiungi_riga_info("P.IVA:", self.var_azienda_info_piva)
+        _aggiungi_riga_info("Occupazione:", self.var_azienda_info_occupazione)
+        _aggiungi_riga_info("Data creazione:", self.var_azienda_info_data_creazione)
+
+        frame_anagrafica_btn = ttk.Frame(frame_anagrafica)
+        frame_anagrafica_btn.pack(fill="x", padx=12, pady=(6, 10))
+        ttk.Button(
+            frame_anagrafica_btn,
+            text="Modifica informazioni",
+            command=self.apri_dialog_modifica_info_azienda,
+        ).pack(side="left")
+
+        frame_andamento = ttk.LabelFrame(content, text="Andamento economico annuale")
+        frame_andamento.pack(fill="both", expand=True, padx=12, pady=(0, 10))
+
+        self.tree_azienda_info_andamento = ttk.Treeview(
+            frame_andamento,
+            columns=("metrica", "valore"),
+            show="headings",
+            height=8,
+        )
+        self.tree_azienda_info_andamento.heading("metrica", text="Metrica")
+        self.tree_azienda_info_andamento.heading("valore", text="Valore")
+        self.tree_azienda_info_andamento.column("metrica", width=320, anchor="w")
+        self.tree_azienda_info_andamento.column("valore", width=220, anchor="e")
+
+        scroll_info = ttk.Scrollbar(frame_andamento, orient="vertical", command=self.tree_azienda_info_andamento.yview)
+        self.tree_azienda_info_andamento.configure(yscrollcommand=scroll_info.set)
+
+        self.tree_azienda_info_andamento.pack(side="left", fill="both", expand=True)
+        scroll_info.pack(side="right", fill="y")
+
+    def _format_data_info_azienda(self, raw_value, fallback="-"):
+        testo = (raw_value or "").strip()
+        if not testo:
+            return fallback
+
+        for fmt in ("%Y-%m-%d", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S", "%d/%m/%Y", "%d-%m-%Y"):
+            try:
+                return datetime.strptime(testo, fmt).strftime("%d/%m/%Y")
+            except ValueError:
+                continue
+
+        return testo
+
+    def _calcola_totali_annuali_azienda_info(self, anno: int, mostra_errori=True):
+        data_da = f"{anno:04d}-01-01"
+        data_a = f"{anno:04d}-12-31"
+
+        try:
+            with get_conn() as conn:
+                c = conn.cursor()
+                c.execute(
+                    '''
+                    SELECT
+                        COUNT(id),
+                        COALESCE(SUM(CASE WHEN tipo='ENTRATA' THEN importo ELSE 0 END), 0),
+                        COALESCE(SUM(CASE WHEN tipo='USCITA' THEN importo ELSE 0 END), 0)
+                    FROM movimenti
+                    WHERE user_id=? AND data_op BETWEEN ? AND ?
+                ''',
+                    (self.user_id, data_da, data_a),
+                )
+                row = c.fetchone()
+        except sqlite3.Error as e:
+            if mostra_errori:
+                messagebox.showerror("Errore DB", f"Errore database: {e}")
+            return None
+
+        movimenti = int((row[0] if row else 0) or 0)
+        entrate = float((row[1] if row else 0) or 0)
+        uscite = float((row[2] if row else 0) or 0)
+        return {
+            "movimenti": movimenti,
+            "entrate": entrate,
+            "uscite": uscite,
+            "utile": entrate - uscite,
+        }
+
+    def carica_dati_azienda_info(self, mostra_errori=True):
+        if not hasattr(self, "var_azienda_info_nome") or not hasattr(self, "tree_azienda_info_andamento"):
+            return
+
+        try:
+            info = get_azienda_info(self.user_id)
+        except sqlite3.Error as e:
+            if mostra_errori:
+                messagebox.showerror("Errore DB", f"Errore database: {e}")
+            return
+
+        nome = (info.get("nome_azienda") or "").strip()
+        piva = (info.get("piva") or "").strip()
+        occupazione = (info.get("occupazione") or "").strip()
+        data_creazione = info.get("data_creazione") or ""
+
+        self.var_azienda_info_nome.set(nome if nome else "-")
+        self.var_azienda_info_piva.set(piva if piva else "-")
+        self.var_azienda_info_occupazione.set(occupazione if occupazione else "-")
+        self.var_azienda_info_data_creazione.set(self._format_data_info_azienda(data_creazione, fallback="-"))
+
+        anno_corrente = datetime.now().year
+        anno_precedente = anno_corrente - 1
+
+        stats_precedente = self._calcola_totali_annuali_azienda_info(anno_precedente, mostra_errori=mostra_errori)
+        stats_corrente = self._calcola_totali_annuali_azienda_info(anno_corrente, mostra_errori=mostra_errori)
+        if stats_precedente is None or stats_corrente is None:
+            return
+
+        clear_treeview(self.tree_azienda_info_andamento)
+
+        righe = []
+        if stats_precedente["movimenti"] > 0:
+            righe.extend(
+                [
+                    (f"Entrate {anno_precedente}", format_eur(stats_precedente["entrate"])),
+                    (f"Uscite {anno_precedente}", format_eur(stats_precedente["uscite"])),
+                    (f"Utile {anno_precedente}", format_eur(stats_precedente["utile"])),
+                ]
+            )
+
+        righe.extend(
+            [
+                (f"Entrate {anno_corrente}", format_eur(stats_corrente["entrate"])),
+                (f"Uscite {anno_corrente}", format_eur(stats_corrente["uscite"])),
+                (f"Utile {anno_corrente}", format_eur(stats_corrente["utile"])),
+            ]
+        )
+
+        for metrica, valore in righe:
+            self.tree_azienda_info_andamento.insert("", "end", values=(metrica, valore))
+
+    def apri_dialog_modifica_info_azienda(self):
+        info = get_azienda_info(self.user_id)
+
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Modifica informazioni azienda")
+        dialog.resizable(False, False)
+        dialog.transient(self.root)
+        dialog.grab_set()
+
+        frame = ttk.Frame(dialog, padding=12)
+        frame.pack(fill="both", expand=True)
+
+        var_nome = tk.StringVar(value=(info.get("nome_azienda") or "").strip())
+        var_piva = tk.StringVar(value=(info.get("piva") or "").strip())
+        var_occupazione = tk.StringVar(value=(info.get("occupazione") or "").strip())
+        data_default = self._format_data_info_azienda(info.get("data_creazione") or "", fallback="")
+        if is_blank(data_default):
+            data_default = datetime.now().strftime("%d/%m/%Y")
+        var_data = tk.StringVar(value=data_default)
+
+        riga_nome = ttk.Frame(frame)
+        riga_nome.pack(fill="x", pady=(0, 6))
+        ttk.Label(riga_nome, text="Nome dell'Azienda:", width=20).pack(side="left")
+        ttk.Entry(riga_nome, textvariable=var_nome).pack(side="left", fill="x", expand=True)
+
+        riga_occupazione = ttk.Frame(frame)
+        riga_occupazione.pack(fill="x", pady=6)
+        ttk.Label(riga_occupazione, text="Occupazione:", width=20).pack(side="left")
+        ttk.Entry(riga_occupazione, textvariable=var_occupazione).pack(side="left", fill="x", expand=True)
+
+        riga_piva = ttk.Frame(frame)
+        riga_piva.pack(fill="x", pady=6)
+        ttk.Label(riga_piva, text="P.IVA:", width=20).pack(side="left")
+        ttk.Entry(riga_piva, textvariable=var_piva).pack(side="left", fill="x", expand=True)
+
+        riga_data = ttk.Frame(frame)
+        riga_data.pack(fill="x", pady=6)
+        ttk.Label(riga_data, text="Data creazione:", width=20).pack(side="left")
+        entry_data = ttk.Entry(riga_data, textvariable=var_data, width=14, state="readonly")
+        entry_data.pack(side="left")
+
+        def _seleziona_data():
+            testo_data = var_data.get().strip()
+            if testo_data:
+                try:
+                    initial_date = datetime.strptime(testo_data, "%d/%m/%Y").date()
+                except ValueError:
+                    initial_date = datetime.now().date()
+            else:
+                initial_date = datetime.now().date()
+
+            scelta = self.calendar_dialog_cls(dialog, initial_date).show()
+            if scelta is not None:
+                var_data.set(scelta.strftime("%d/%m/%Y"))
+
+        ttk.Button(riga_data, text="...", width=3, command=_seleziona_data).pack(side="left", padx=(5, 0))
+        entry_data.bind("<Button-1>", lambda _event: _seleziona_data())
+
+        frame_btn = ttk.Frame(frame)
+        frame_btn.pack(fill="x", pady=(12, 0))
+        ttk.Button(
+            frame_btn,
+            text="Salva",
+            command=lambda: self._salva_modifica_info_azienda(dialog, var_nome, var_piva, var_occupazione, var_data),
+        ).pack(side="left")
+        ttk.Button(frame_btn, text="Annulla", command=dialog.destroy).pack(side="left", padx=6)
+
+    def _salva_modifica_info_azienda(self, dialog, var_nome, var_piva, var_occupazione, var_data):
+        piva_raw = var_piva.get().strip()
+        piva_clean = ""
+        if not is_blank(piva_raw):
+            piva_clean = self._normalizza_piva(piva_raw)
+            if len(piva_clean) != 11:
+                messagebox.showerror(
+                    "Errore",
+                    "P.IVA non valida. Inserisci 11 cifre (puoi usare anche prefisso IT).",
+                )
+                return
+            if not self._piva_is_valid(piva_clean):
+                messagebox.showerror("Errore", "P.IVA non valida (checksum errato).")
+                return
+
+        data_text = var_data.get().strip()
+        if is_blank(data_text):
+            messagebox.showerror("Errore", "Inserisci la data di creazione.")
+            return
+
+        try:
+            data_iso = datetime.strptime(data_text, "%d/%m/%Y").strftime("%Y-%m-%d")
+        except ValueError:
+            messagebox.showerror("Errore", "Formato data non valido (Usa GG/MM/AAAA).")
+            return
+
+        try:
+            save_azienda_info(
+                self.user_id,
+                var_nome.get().strip(),
+                piva_clean,
+                var_occupazione.get().strip(),
+                data_iso,
+            )
+        except sqlite3.Error as e:
+            messagebox.showerror("Errore DB", f"Errore database: {e}")
+            return
+
+        dialog.destroy()
+        self.carica_dati_azienda_info(mostra_errori=False)
+        messagebox.showinfo("Successo", "Informazioni azienda aggiornate.")
 
     def _setup_pagina_report_azienda(self):
         content = self.crea_container_scorribile(self.tab_azienda_report)
@@ -137,12 +445,15 @@ class AziendaTabMixin:
 
         self.tab_azienda_fatture_inserimento = ttk.Frame(self.azienda_fatture_notebook)
         self.tab_azienda_fatture_storico = ttk.Frame(self.azienda_fatture_notebook)
+        self.tab_azienda_fatture_storico_prodotti = ttk.Frame(self.azienda_fatture_notebook)
 
         self.azienda_fatture_notebook.add(self.tab_azienda_fatture_inserimento, text="Nuovo movimento")
         self.azienda_fatture_notebook.add(self.tab_azienda_fatture_storico, text="Storico movimenti")
+        self.azienda_fatture_notebook.add(self.tab_azienda_fatture_storico_prodotti, text="Storico Prodotti")
 
         self._setup_pagina_fatture_azienda_inserimento(self.tab_azienda_fatture_inserimento)
         self._setup_pagina_fatture_azienda_storico(self.tab_azienda_fatture_storico)
+        self._setup_pagina_fatture_azienda_storico_prodotti(self.tab_azienda_fatture_storico_prodotti)
         self.carica_movimenti_azienda_storico(mostra_errori=False)
 
     def _setup_pagina_fatture_azienda_inserimento(self, parent):
@@ -164,10 +475,6 @@ class AziendaTabMixin:
             self.var_iva = tk.StringVar(value="0,00")
         if not hasattr(self, "var_nome_fattura_mov"):
             self.var_nome_fattura_mov = tk.StringVar(value="Nessuna fattura caricata")
-        if not hasattr(self, "var_movimento_animali_link_stato"):
-            self.var_movimento_animali_link_stato = tk.StringVar(value="Nessun gruppo selezionato.")
-        if not hasattr(self, "_movimento_animali_list_entry_ids"):
-            self._movimento_animali_list_entry_ids = []
 
         self.crea_campo_data(content, "Data:", self.var_data)
 
@@ -187,52 +494,15 @@ class AziendaTabMixin:
         self.crea_campo(content, "Importo (EUR):", self.var_imp)
         self.crea_campo(content, "IVA (EUR):", self.var_iva)
 
-        frame_animali_collegati = ttk.LabelFrame(content, text="Gruppi animali collegati")
-        frame_animali_collegati.pack(fill="x", padx=20, pady=(2, 8))
+        frame_fattura = ttk.Frame(content)
+        frame_fattura.pack(fill="x", padx=20, pady=(0, 6))
 
-        frame_animali_collegati_body = ttk.Frame(frame_animali_collegati)
-        frame_animali_collegati_body.pack(fill="x", padx=8, pady=(6, 4))
+        ttk.Label(frame_fattura, text="Fattura caricata:", width=20).pack(side="left")
+        ttk.Label(frame_fattura, textvariable=self.var_nome_fattura_mov).pack(side="left", fill="x", expand=True)
+        ttk.Button(frame_fattura, text="Rimuovi", command=self.rimuovi_fattura_movimento).pack(side="right")
 
-        frame_animali_lista = ttk.Frame(frame_animali_collegati_body)
-        frame_animali_lista.pack(side="left", fill="x", expand=True)
-
-        self.listbox_movimento_animali = tk.Listbox(
-            frame_animali_lista,
-            selectmode=tk.MULTIPLE,
-            exportselection=False,
-            height=6,
-        )
-        scroll_animali = ttk.Scrollbar(frame_animali_lista, orient="vertical", command=self.listbox_movimento_animali.yview)
-        self.listbox_movimento_animali.configure(yscrollcommand=scroll_animali.set)
-
-        self.listbox_movimento_animali.pack(side="left", fill="x", expand=True)
-        scroll_animali.pack(side="right", fill="y")
-        self.listbox_movimento_animali.bind("<<ListboxSelect>>", self._on_selezione_gruppi_animali_movimento)
-
-        frame_animali_btn = ttk.Frame(frame_animali_collegati_body)
-        frame_animali_btn.pack(side="left", padx=(8, 0), anchor="n")
-
-        ttk.Button(
-            frame_animali_btn,
-            text="Aggiorna elenco",
-            command=self.aggiorna_lista_gruppi_animali_movimento,
-        ).pack(fill="x", pady=(0, 4))
-        ttk.Button(
-            frame_animali_btn,
-            text="Seleziona tutti",
-            command=self.seleziona_tutti_gruppi_animali_movimento,
-        ).pack(fill="x", pady=(0, 4))
-        ttk.Button(
-            frame_animali_btn,
-            text="Deseleziona",
-            command=self.deseleziona_gruppi_animali_movimento,
-        ).pack(fill="x")
-
-        ttk.Label(frame_animali_collegati, textvariable=self.var_movimento_animali_link_stato).pack(
-            anchor="w", padx=8, pady=(0, 6)
-        )
-
-        self.aggiorna_lista_gruppi_animali_movimento()
+        if hasattr(self, "_setup_tabella_prodotti_fattura_movimento"):
+            self._setup_tabella_prodotti_fattura_movimento(content)
 
         frame_actions = ttk.Frame(content)
         frame_actions.pack(pady=20)
@@ -249,13 +519,6 @@ class AziendaTabMixin:
         self.btn_annulla_modifica_azienda.pack(side="left", padx=6)
 
         ttk.Button(frame_actions, text="Importa fattura PDF", command=self.importa_fattura_pdf).pack(side="left", padx=6)
-
-        frame_fattura = ttk.Frame(content)
-        frame_fattura.pack(fill="x", padx=20, pady=(0, 6))
-
-        ttk.Label(frame_fattura, text="Fattura caricata:", width=20).pack(side="left")
-        ttk.Label(frame_fattura, textvariable=self.var_nome_fattura_mov).pack(side="left", fill="x", expand=True)
-        ttk.Button(frame_fattura, text="Rimuovi", command=self.rimuovi_fattura_movimento).pack(side="right")
 
     def _label_gruppo_animale_movimento(self, entry):
         entry_id = int(entry.get("id", 0) or 0)
@@ -374,7 +637,7 @@ class AziendaTabMixin:
 
         if not labels:
             return "Nessun gruppo collegato"
-        return " | ".join(labels)
+        return "\n".join(labels)
 
     def _setup_pagina_fatture_azienda_storico(self, parent):
         container = ttk.Frame(parent)
@@ -557,6 +820,431 @@ class AziendaTabMixin:
 
         self._fattura_dettaglio_corrente_azienda = None
         self._azzera_dettagli_fattura_azienda()
+
+    def _setup_pagina_fatture_azienda_storico_prodotti(self, parent):
+        container = ttk.Frame(parent)
+        container.pack(fill="both", expand=True)
+
+        self.var_filtro_storico_prodotti_data_da = tk.StringVar()
+        self.var_filtro_storico_prodotti_data_a = tk.StringVar()
+        self.var_filtro_storico_prodotti_numero_fattura = tk.StringVar()
+        self.var_filtro_storico_prodotti_fornitore = tk.StringVar()
+        self.var_filtro_storico_prodotti_prodotto = tk.StringVar()
+        self.var_filtro_storico_prodotti_gruppo = tk.StringVar()
+        self.var_filtro_storico_prodotti_tipo_costo = tk.StringVar(value="Tutti")
+
+        frame_top = ttk.Frame(container)
+        frame_top.pack(fill="x", padx=12, pady=(10, 6))
+
+        self.var_storico_prodotti_azienda_stato = tk.StringVar(value="Nessun prodotto caricato.")
+        ttk.Label(frame_top, textvariable=self.var_storico_prodotti_azienda_stato).pack(side="left")
+        ttk.Button(
+            frame_top,
+            text="Ricarica",
+            command=self.carica_storico_prodotti_fatture_azienda,
+        ).pack(side="right")
+
+        frame_filtri = ttk.LabelFrame(container, text="Filtri")
+        frame_filtri.pack(fill="x", padx=12, pady=(0, 6))
+
+        riga_filtri_1 = ttk.Frame(frame_filtri)
+        riga_filtri_1.pack(fill="x", padx=8, pady=(8, 4))
+
+        ttk.Label(riga_filtri_1, text="Data mov. da:").pack(side="left")
+        entry_data_da = ttk.Entry(
+            riga_filtri_1,
+            textvariable=self.var_filtro_storico_prodotti_data_da,
+            width=12,
+            state="readonly",
+        )
+        entry_data_da.pack(side="left", padx=(6, 0))
+        ttk.Button(
+            riga_filtri_1,
+            text="...",
+            width=3,
+            command=lambda: self._apri_calendario_filtro_azienda_prodotti(self.var_filtro_storico_prodotti_data_da),
+        ).pack(side="left", padx=(4, 12))
+        entry_data_da.bind(
+            "<Button-1>",
+            lambda _event: self._apri_calendario_filtro_azienda_prodotti(self.var_filtro_storico_prodotti_data_da),
+        )
+
+        ttk.Label(riga_filtri_1, text="a:").pack(side="left")
+        entry_data_a = ttk.Entry(
+            riga_filtri_1,
+            textvariable=self.var_filtro_storico_prodotti_data_a,
+            width=12,
+            state="readonly",
+        )
+        entry_data_a.pack(side="left", padx=(6, 0))
+        ttk.Button(
+            riga_filtri_1,
+            text="...",
+            width=3,
+            command=lambda: self._apri_calendario_filtro_azienda_prodotti(self.var_filtro_storico_prodotti_data_a),
+        ).pack(side="left", padx=(4, 12))
+        entry_data_a.bind(
+            "<Button-1>",
+            lambda _event: self._apri_calendario_filtro_azienda_prodotti(self.var_filtro_storico_prodotti_data_a),
+        )
+
+        ttk.Label(riga_filtri_1, text="Tipo costo:").pack(side="left")
+        self.combo_filtro_storico_prodotti_tipo_costo = ttk.Combobox(
+            riga_filtri_1,
+            textvariable=self.var_filtro_storico_prodotti_tipo_costo,
+            values=("Tutti", "Variabili", "Fissi"),
+            state="readonly",
+            width=14,
+        )
+        self.combo_filtro_storico_prodotti_tipo_costo.pack(side="left", padx=(6, 0))
+        self.combo_filtro_storico_prodotti_tipo_costo.current(0)
+        self.combo_filtro_storico_prodotti_tipo_costo.bind(
+            "<<ComboboxSelected>>",
+            lambda _event: self.carica_storico_prodotti_fatture_azienda(),
+        )
+
+        riga_filtri_2 = ttk.Frame(frame_filtri)
+        riga_filtri_2.pack(fill="x", padx=8, pady=(0, 4))
+
+        ttk.Label(riga_filtri_2, text="N. fattura:").pack(side="left")
+        entry_numero_fattura = ttk.Entry(riga_filtri_2, textvariable=self.var_filtro_storico_prodotti_numero_fattura, width=18)
+        entry_numero_fattura.pack(side="left", padx=(6, 14))
+        entry_numero_fattura.bind("<Return>", lambda _event: self.carica_storico_prodotti_fatture_azienda())
+
+        ttk.Label(riga_filtri_2, text="Fornitore:").pack(side="left")
+        entry_fornitore = ttk.Entry(riga_filtri_2, textvariable=self.var_filtro_storico_prodotti_fornitore)
+        entry_fornitore.pack(side="left", fill="x", expand=True, padx=(6, 0))
+        entry_fornitore.bind("<Return>", lambda _event: self.carica_storico_prodotti_fatture_azienda())
+
+        riga_filtri_3 = ttk.Frame(frame_filtri)
+        riga_filtri_3.pack(fill="x", padx=8, pady=(0, 8))
+
+        ttk.Label(riga_filtri_3, text="Prodotto:").pack(side="left")
+        entry_prodotto = ttk.Entry(riga_filtri_3, textvariable=self.var_filtro_storico_prodotti_prodotto)
+        entry_prodotto.pack(side="left", fill="x", expand=True, padx=(6, 14))
+        entry_prodotto.bind("<Return>", lambda _event: self.carica_storico_prodotti_fatture_azienda())
+
+        ttk.Label(riga_filtri_3, text="Gruppo:").pack(side="left")
+        entry_gruppo = ttk.Entry(riga_filtri_3, textvariable=self.var_filtro_storico_prodotti_gruppo, width=22)
+        entry_gruppo.pack(side="left", padx=(6, 12))
+        entry_gruppo.bind("<Return>", lambda _event: self.carica_storico_prodotti_fatture_azienda())
+
+        ttk.Button(
+            riga_filtri_3,
+            text="Applica filtri",
+            command=self.carica_storico_prodotti_fatture_azienda,
+        ).pack(side="left", padx=(0, 6))
+        ttk.Button(
+            riga_filtri_3,
+            text="Pulisci",
+            command=self.pulisci_filtri_storico_prodotti_fatture_azienda,
+        ).pack(side="left")
+
+        frame_table = ttk.Frame(container)
+        frame_table.pack(fill="both", expand=True, padx=12, pady=(0, 10))
+
+        cols = (
+            "data",
+            "numero_fattura",
+            "fornitore",
+            "prodotto",
+            "quantita",
+            "totale",
+            "natura_costo",
+            "gruppi",
+            "movimento_id",
+        )
+        self.tree_storico_prodotti_azienda = ttk.Treeview(frame_table, columns=cols, show="headings", height=14)
+
+        self.tree_storico_prodotti_azienda.heading("data", text="Data")
+        self.tree_storico_prodotti_azienda.heading("numero_fattura", text="N. fattura")
+        self.tree_storico_prodotti_azienda.heading("fornitore", text="Fornitore")
+        self.tree_storico_prodotti_azienda.heading("prodotto", text="Prodotto")
+        self.tree_storico_prodotti_azienda.heading("quantita", text="Qta")
+        self.tree_storico_prodotti_azienda.heading("totale", text="Totale")
+        self.tree_storico_prodotti_azienda.heading("natura_costo", text="Tipo costo")
+        self.tree_storico_prodotti_azienda.heading("gruppi", text="Imputazione gruppi")
+        self.tree_storico_prodotti_azienda.heading("movimento_id", text="ID movimento")
+
+        self.tree_storico_prodotti_azienda.column("data", width=95, anchor="center")
+        self.tree_storico_prodotti_azienda.column("numero_fattura", width=130, anchor="center")
+        self.tree_storico_prodotti_azienda.column("fornitore", width=220, anchor="w")
+        self.tree_storico_prodotti_azienda.column("prodotto", width=340, anchor="w")
+        self.tree_storico_prodotti_azienda.column("quantita", width=90, anchor="e")
+        self.tree_storico_prodotti_azienda.column("totale", width=110, anchor="e")
+        self.tree_storico_prodotti_azienda.column("natura_costo", width=105, anchor="center")
+        self.tree_storico_prodotti_azienda.column("gruppi", width=260, anchor="w")
+        self.tree_storico_prodotti_azienda.column("movimento_id", width=95, anchor="center")
+
+        scroll_y = ttk.Scrollbar(frame_table, orient="vertical", command=self.tree_storico_prodotti_azienda.yview)
+        scroll_x = ttk.Scrollbar(frame_table, orient="horizontal", command=self.tree_storico_prodotti_azienda.xview)
+        self.tree_storico_prodotti_azienda.configure(yscrollcommand=scroll_y.set, xscrollcommand=scroll_x.set)
+
+        self.tree_storico_prodotti_azienda.grid(row=0, column=0, sticky="nsew")
+        scroll_y.grid(row=0, column=1, sticky="ns")
+        scroll_x.grid(row=1, column=0, sticky="ew")
+        frame_table.grid_rowconfigure(0, weight=1)
+        frame_table.grid_columnconfigure(0, weight=1)
+
+    def _apri_calendario_filtro_azienda_prodotti(self, text_var):
+        date_text = text_var.get().strip()
+        if date_text:
+            try:
+                initial_date = datetime.strptime(date_text, "%d/%m/%Y").date()
+            except ValueError:
+                initial_date = datetime.now().date()
+        else:
+            initial_date = datetime.now().date()
+
+        scelta = self.calendar_dialog_cls(self.root, initial_date).show()
+        if scelta is not None:
+            text_var.set(scelta.strftime("%d/%m/%Y"))
+            self.carica_storico_prodotti_fatture_azienda()
+
+    def pulisci_filtri_storico_prodotti_fatture_azienda(self):
+        if hasattr(self, "var_filtro_storico_prodotti_data_da"):
+            self.var_filtro_storico_prodotti_data_da.set("")
+        if hasattr(self, "var_filtro_storico_prodotti_data_a"):
+            self.var_filtro_storico_prodotti_data_a.set("")
+        if hasattr(self, "var_filtro_storico_prodotti_numero_fattura"):
+            self.var_filtro_storico_prodotti_numero_fattura.set("")
+        if hasattr(self, "var_filtro_storico_prodotti_fornitore"):
+            self.var_filtro_storico_prodotti_fornitore.set("")
+        if hasattr(self, "var_filtro_storico_prodotti_prodotto"):
+            self.var_filtro_storico_prodotti_prodotto.set("")
+        if hasattr(self, "var_filtro_storico_prodotti_gruppo"):
+            self.var_filtro_storico_prodotti_gruppo.set("")
+        if hasattr(self, "var_filtro_storico_prodotti_tipo_costo"):
+            self.var_filtro_storico_prodotti_tipo_costo.set("Tutti")
+
+        self.carica_storico_prodotti_fatture_azienda()
+
+    def _normalizza_tipo_costo_storico_prodotti(self, raw_value):
+        return normalize_cost_type(raw_value)
+
+    def _estrai_righe_prodotti_da_parser_text(self, products_text):
+        return extract_products_rows_from_parser_text(products_text)
+
+    def _format_data_storico_prodotti_azienda(self, raw_invoice_date, raw_movimento_date):
+        invoice_date = (raw_invoice_date or "").strip()
+        if invoice_date and hasattr(self, "_format_data_parser"):
+            formatted_invoice_date = self._format_data_parser(invoice_date)
+            if formatted_invoice_date:
+                return formatted_invoice_date
+
+        movimento_date = (raw_movimento_date or "").strip()
+        if not movimento_date:
+            return "-"
+
+        try:
+            return datetime.strptime(movimento_date, "%Y-%m-%d").strftime("%d/%m/%Y")
+        except ValueError:
+            return movimento_date
+
+    def _format_numero_storico_prodotti_azienda(self, raw_value, decimals):
+        testo = str(raw_value or "").strip()
+        if not testo or testo == "-":
+            return "-"
+
+        numero = parse_decimal(testo, allow_zero=True, allow_negative=False)
+        if numero is None:
+            return testo
+        return format_number(numero, decimals)
+
+    def _normalizza_testo_prodotti_per_display(self, raw_text):
+        return normalize_multiline_display_text(raw_text)
+
+    def _normalizza_testo_gruppi_animali_per_display(self, raw_text):
+        return normalize_multiline_display_text(raw_text)
+
+    def carica_storico_prodotti_fatture_azienda(self, mostra_errori=True):
+        if not hasattr(self, "tree_storico_prodotti_azienda"):
+            return
+
+        clear_treeview(self.tree_storico_prodotti_azienda)
+
+        filtro_data_da = self.var_filtro_storico_prodotti_data_da.get().strip() if hasattr(
+            self, "var_filtro_storico_prodotti_data_da"
+        ) else ""
+        filtro_data_a = self.var_filtro_storico_prodotti_data_a.get().strip() if hasattr(
+            self, "var_filtro_storico_prodotti_data_a"
+        ) else ""
+        filtro_numero_fattura = self.var_filtro_storico_prodotti_numero_fattura.get().strip() if hasattr(
+            self, "var_filtro_storico_prodotti_numero_fattura"
+        ) else ""
+        filtro_fornitore = self.var_filtro_storico_prodotti_fornitore.get().strip() if hasattr(
+            self, "var_filtro_storico_prodotti_fornitore"
+        ) else ""
+        filtro_prodotto = self.var_filtro_storico_prodotti_prodotto.get().strip().lower() if hasattr(
+            self, "var_filtro_storico_prodotti_prodotto"
+        ) else ""
+        filtro_gruppo = self.var_filtro_storico_prodotti_gruppo.get().strip().lower() if hasattr(
+            self, "var_filtro_storico_prodotti_gruppo"
+        ) else ""
+        filtro_tipo_costo = self.var_filtro_storico_prodotti_tipo_costo.get().strip() if hasattr(
+            self, "var_filtro_storico_prodotti_tipo_costo"
+        ) else "Tutti"
+
+        if filtro_tipo_costo not in ("Tutti", "Variabili", "Fissi"):
+            filtro_tipo_costo = "Tutti"
+
+        data_da_iso = None
+        data_a_iso = None
+
+        if filtro_data_da:
+            try:
+                data_da_iso = datetime.strptime(filtro_data_da, "%d/%m/%Y").strftime("%Y-%m-%d")
+            except ValueError:
+                if mostra_errori:
+                    messagebox.showerror("Errore", "Data DA non valida (usa GG/MM/AAAA).")
+                return
+
+        if filtro_data_a:
+            try:
+                data_a_iso = datetime.strptime(filtro_data_a, "%d/%m/%Y").strftime("%Y-%m-%d")
+            except ValueError:
+                if mostra_errori:
+                    messagebox.showerror("Errore", "Data A non valida (usa GG/MM/AAAA).")
+                return
+
+        if data_da_iso and data_a_iso and data_da_iso > data_a_iso:
+            if mostra_errori:
+                messagebox.showerror("Errore", "La Data DA non puo essere successiva alla Data A.")
+            return
+
+        query = (
+            '''
+                    SELECT
+                        m.id,
+                        m.data_op,
+                        m.parser_invoice_number,
+                        m.parser_invoice_date,
+                        m.parser_supplier_name,
+                        m.parser_products
+                    FROM movimenti m
+                    WHERE m.user_id=?
+                      AND TRIM(COALESCE(m.parser_products, '')) <> ''
+                      AND EXISTS (
+                          SELECT 1
+                          FROM fatture f
+                          WHERE f.user_id = m.user_id
+                            AND (
+                                f.movimento_id = m.id
+                                OR (
+                                    f.produzione_id IS NOT NULL
+                                    AND EXISTS (
+                                        SELECT 1
+                                        FROM produzione_latte p
+                                        WHERE p.id = f.produzione_id
+                                          AND p.user_id = f.user_id
+                                          AND p.movimento_id = m.id
+                                    )
+                                )
+                            )
+                      )
+                '''
+        )
+        params = [self.user_id]
+
+        if data_da_iso:
+            query += " AND m.data_op >= ?"
+            params.append(data_da_iso)
+
+        if data_a_iso:
+            query += " AND m.data_op <= ?"
+            params.append(data_a_iso)
+
+        if filtro_numero_fattura:
+            query += " AND LOWER(COALESCE(m.parser_invoice_number, '')) LIKE ?"
+            params.append(f"%{filtro_numero_fattura.lower()}%")
+
+        if filtro_fornitore:
+            query += " AND LOWER(COALESCE(m.parser_supplier_name, '')) LIKE ?"
+            params.append(f"%{filtro_fornitore.lower()}%")
+
+        query += " ORDER BY m.data_op DESC, m.id DESC"
+
+        filtri_attivi = any(
+            (
+                filtro_data_da,
+                filtro_data_a,
+                filtro_numero_fattura,
+                filtro_fornitore,
+                filtro_prodotto,
+                filtro_gruppo,
+                filtro_tipo_costo != "Tutti",
+            )
+        )
+
+        try:
+            with get_conn() as conn:
+                c = conn.cursor()
+                c.execute(query, tuple(params))
+                rows = c.fetchall()
+        except sqlite3.Error as e:
+            if mostra_errori:
+                messagebox.showerror("Errore DB", f"Errore database: {e}")
+            if hasattr(self, "var_storico_prodotti_azienda_stato"):
+                self.var_storico_prodotti_azienda_stato.set("Errore caricamento storico prodotti.")
+            return
+
+        movimenti_con_prodotti = set()
+        righe_prodotti = 0
+
+        for mov_id, data_op, invoice_number, invoice_date, supplier_name, products_text in rows:
+            prodotti = self._estrai_righe_prodotti_da_parser_text(products_text)
+            if not prodotti:
+                continue
+
+            data_view = self._format_data_storico_prodotti_azienda(invoice_date, data_op)
+            numero_fattura = (invoice_number or "").strip() or "-"
+            fornitore = (supplier_name or "").strip() or "-"
+            movimento_inserito = False
+
+            for prodotto in prodotti:
+                descrizione = str(prodotto.get("description", "-") or "-").strip() or "-"
+                gruppi_text = str(prodotto.get("groups", "-") or "-").strip() or "-"
+                tipo_costo = self._normalizza_tipo_costo_storico_prodotti(prodotto.get("cost_type"))
+
+                if filtro_tipo_costo != "Tutti" and tipo_costo != filtro_tipo_costo:
+                    continue
+                if filtro_prodotto and filtro_prodotto not in descrizione.lower():
+                    continue
+                if filtro_gruppo and filtro_gruppo not in gruppi_text.lower():
+                    continue
+
+                self.tree_storico_prodotti_azienda.insert(
+                    "",
+                    "end",
+                    values=(
+                        data_view,
+                        numero_fattura,
+                        fornitore,
+                        descrizione,
+                        self._format_numero_storico_prodotti_azienda(prodotto.get("quantity"), 3),
+                        self._format_numero_storico_prodotti_azienda(prodotto.get("line_total"), 2),
+                        tipo_costo,
+                        gruppi_text,
+                        int(mov_id or 0),
+                    ),
+                )
+                righe_prodotti += 1
+                movimento_inserito = True
+
+            if movimento_inserito:
+                movimenti_con_prodotti.add(int(mov_id or 0))
+
+        if hasattr(self, "var_storico_prodotti_azienda_stato"):
+            if righe_prodotti <= 0:
+                if filtri_attivi:
+                    self.var_storico_prodotti_azienda_stato.set("Nessun prodotto trovato con i filtri impostati.")
+                else:
+                    self.var_storico_prodotti_azienda_stato.set("Nessun prodotto trovato nelle fatture archiviate.")
+            else:
+                suffix = " (filtri attivi)" if filtri_attivi else ""
+                self.var_storico_prodotti_azienda_stato.set(
+                    f"Prodotti trovati: {righe_prodotti} | Movimenti con fattura: {len(movimenti_con_prodotti)}{suffix}"
+                )
 
     def _apri_calendario_filtro_azienda_movimenti(self, text_var):
         date_text = text_var.get().strip()
@@ -808,6 +1496,8 @@ class AziendaTabMixin:
         self._carica_gruppi_filtro_azienda_movimenti(mostra_errori=False)
         if hasattr(self, "carica_categorie_salvate"):
             self.carica_categorie_salvate(mostra_errori=False)
+        if hasattr(self, "carica_storico_prodotti_fatture_azienda"):
+            self.carica_storico_prodotti_fatture_azienda(mostra_errori=False)
 
     def _azzera_dettagli_fattura_azienda(self, testo="Seleziona un movimento per vedere la fattura collegata."):
         self._fattura_dettaglio_corrente_azienda = None
@@ -936,9 +1626,9 @@ class AziendaTabMixin:
             "vat_total": self._format_importo_parser(parser_vat_total),
             "payment_terms": parser_payment_terms or "",
             "warnings": parser_warnings or "",
-            "products": parser_products or "",
+            "products": self._normalizza_testo_prodotti_per_display(parser_products),
             "fields_view": parser_fields_view or "",
-            "gruppi_animali": gruppi_animali_collegati,
+            "gruppi_animali": self._normalizza_testo_gruppi_animali_per_display(gruppi_animali_collegati),
         }
         self._mostra_dettagli_fattura_azienda(self._fattura_dettaglio_corrente_azienda)
 
@@ -2197,8 +2887,10 @@ class AziendaTabMixin:
         return "-"
 
     def mostra_tab_azienda_animali(self):
-        if hasattr(self, "azienda_notebook") and hasattr(self, "tab_azienda_animali"):
-            self.azienda_notebook.select(self.tab_azienda_animali)
+        if hasattr(self, "azienda_notebook") and hasattr(self, "tab_azienda_dati"):
+            self.azienda_notebook.select(self.tab_azienda_dati)
+        if hasattr(self, "azienda_dati_notebook") and hasattr(self, "tab_azienda_animali"):
+            self.azienda_dati_notebook.select(self.tab_azienda_animali)
         if hasattr(self, "carica_report_animali_allevamento"):
             self.carica_report_animali_allevamento(mostra_errori=False)
         if hasattr(self, "_aggiorna_scroll_animali"):
