@@ -4,7 +4,7 @@ from datetime import datetime
 
 
 class FormHelpersMixin:
-    def crea_container_scorribile(self, parent, *, padding=0):
+    def crea_container_scorribile(self, parent, *, padding=0, stretch_to_viewport=False):
         container = ttk.Frame(parent)
         container.pack(fill="both", expand=True)
 
@@ -21,6 +21,19 @@ class FormHelpersMixin:
         content._scroll_canvas = canvas
         content._scroll_container = container
         content._scroll_window_id = window_id
+
+        def _sync_window_size(canvas_width=None):
+            options = {}
+            if canvas_width is not None:
+                options["width"] = canvas_width
+
+            if stretch_to_viewport:
+                viewport_height = max(int(canvas.winfo_height()), 0)
+                required_height = max(int(content.winfo_reqheight()), 0)
+                options["height"] = max(required_height, viewport_height)
+
+            if options:
+                canvas.itemconfigure(window_id, **options)
 
         def _has_vertical_overflow():
             bbox = canvas.bbox("all")
@@ -41,10 +54,11 @@ class FormHelpersMixin:
                 canvas.yview_moveto(0.0)
 
         def _on_content_configure(_event):
+            _sync_window_size()
             _refresh_scrollregion_and_clamp()
 
         def _on_canvas_configure(event):
-            canvas.itemconfigure(window_id, width=event.width)
+            _sync_window_size(canvas_width=event.width)
             _refresh_scrollregion_and_clamp()
 
         def _on_mousewheel(event):

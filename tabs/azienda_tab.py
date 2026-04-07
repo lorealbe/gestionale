@@ -3,7 +3,7 @@ from datetime import datetime
 import tkinter as tk
 from tkinter import ttk, messagebox
 
-from app_utils import clear_treeview, format_eur, format_number, is_blank
+from app_utils import clear_treeview, format_eur, format_number, is_blank, parse_decimal
 from database import (
     add_azienda_animale_entry,
     delete_azienda_animale_entry,
@@ -700,7 +700,8 @@ class AziendaTabMixin:
         query = (
             '''
                     SELECT
-                        id, data_op, tipo, categoria, descrizione, importo, iva_importo
+                        id, data_op, tipo, categoria, descrizione, importo, iva_importo,
+                        parser_taxable_total, parser_vat_total, parser_total_amount
                     FROM movimenti
                     WHERE user_id=?
                 '''
@@ -751,11 +752,42 @@ class AziendaTabMixin:
                 messagebox.showerror("Errore DB", f"Errore database: {e}")
             return
 
-        for mov_id, data_op, tipo, categoria, descrizione, importo, iva_importo in rows:
+        for (
+            mov_id,
+            data_op,
+            tipo,
+            categoria,
+            descrizione,
+            importo,
+            iva_importo,
+            parser_taxable_total,
+            parser_vat_total,
+            parser_total_amount,
+        ) in rows:
             try:
                 data_view = datetime.strptime(data_op, "%Y-%m-%d").strftime("%d/%m/%Y")
             except ValueError:
                 data_view = data_op
+
+            importo_view = parse_decimal(importo, allow_zero=True, allow_negative=False)
+            if importo_view is None:
+                importo_view = 0.0
+
+            iva_view = parse_decimal(iva_importo, allow_zero=True, allow_negative=False)
+            if iva_view is None:
+                iva_view = 0.0
+
+            if iva_view <= 0 and (categoria or "").strip().upper() == "LATTE":
+                iva_parser = parse_decimal(parser_vat_total, allow_zero=True, allow_negative=False)
+                imponibile_parser = parse_decimal(parser_taxable_total, allow_zero=True, allow_negative=False)
+                totale_parser = parse_decimal(parser_total_amount, allow_zero=False, allow_negative=False)
+
+                if iva_parser is not None and iva_parser > 0:
+                    iva_view = iva_parser
+                    if imponibile_parser is not None and imponibile_parser >= 0:
+                        importo_view = imponibile_parser
+                    elif totale_parser is not None and totale_parser >= iva_view:
+                        importo_view = totale_parser - iva_view
 
             self.tree_movimenti_azienda.insert(
                 "",
@@ -766,8 +798,8 @@ class AziendaTabMixin:
                     tipo,
                     categoria or "",
                     descrizione or "",
-                    format_number(importo, 2),
-                    format_number(iva_importo, 2),
+                    format_number(importo_view, 2),
+                    format_number(iva_view, 2),
                 ),
             )
 
@@ -833,11 +865,24 @@ class AziendaTabMixin:
                     LEFT JOIN movimenti m
                       ON m.id = f.movimento_id
                      AND m.user_id = f.user_id
-                    WHERE f.user_id=? AND f.movimento_id=?
+                                        WHERE f.user_id=?
+                                            AND (
+                                                        f.movimento_id=?
+                                                        OR (
+                                                                f.produzione_id IS NOT NULL
+                                                                AND EXISTS (
+                                                                        SELECT 1
+                                                                        FROM produzione_latte p
+                                                                        WHERE p.id = f.produzione_id
+                                                                            AND p.user_id = f.user_id
+                                                                            AND p.movimento_id = ?
+                                                                )
+                                                        )
+                                            )
                     ORDER BY f.data_caricamento DESC, f.id DESC
                     LIMIT 1
                 ''',
-                    (self.user_id, mov_id),
+                                        (self.user_id, mov_id, mov_id),
                 )
                 row = c.fetchone()
         except sqlite3.Error as e:

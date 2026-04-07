@@ -3,13 +3,19 @@ import sqlite3
 from datetime import datetime
 from tkinter import ttk, messagebox
 
-from app_utils import clear_treeview, format_eur, format_number, is_blank
-from database import get_conn, LITRI_PER_QUINTALE
+from app_utils import clear_treeview, format_eur, format_number, is_blank, parse_decimal
+from database import (
+    get_conn,
+    get_movimento_animali_entry_ids,
+    list_azienda_animali_entries,
+    set_movimento_animali_links,
+    LITRI_PER_QUINTALE,
+)
 
 
 class LatteTabMixin:
     def setup_tab_latte(self):
-        content = self.crea_container_scorribile(self.tab_latte)
+        content = self.crea_container_scorribile(self.tab_latte, stretch_to_viewport=True)
 
         ttk.Label(content, text="Produzione Latte", font=("Arial", 14, "bold")).pack(pady=10)
 
@@ -21,6 +27,47 @@ class LatteTabMixin:
         self.crea_campo_data(content, "Data produzione:", self.var_latte_data)
         self.crea_campo(content, "Quintali prodotti:", self.var_latte_quintali)
         self.crea_campo(content, "Prezzo al litro (EUR):", self.var_latte_prezzo)
+
+        self.var_latte_gruppi_stato = tk.StringVar(value="")
+        self._latte_gruppi_entry_ids = []
+        self._latte_gruppi_entries_by_id = {}
+
+        frame_gruppi = ttk.LabelFrame(content, text="Attribuzione gruppi animali (da latte)")
+        frame_gruppi.pack(fill="x", padx=20, pady=(6, 6))
+
+        corpo_gruppi = ttk.Frame(frame_gruppi)
+        corpo_gruppi.pack(fill="x", padx=8, pady=8)
+
+        frame_list_gruppi = ttk.Frame(corpo_gruppi)
+        frame_list_gruppi.pack(side="left", fill="x", expand=True)
+
+        self.listbox_latte_gruppi = tk.Listbox(
+            frame_list_gruppi,
+            selectmode=tk.EXTENDED,
+            exportselection=False,
+            height=5,
+        )
+        scroll_latte_gruppi = ttk.Scrollbar(frame_list_gruppi, orient="vertical", command=self.listbox_latte_gruppi.yview)
+        self.listbox_latte_gruppi.configure(yscrollcommand=scroll_latte_gruppi.set)
+        self.listbox_latte_gruppi.pack(side="left", fill="x", expand=True)
+        scroll_latte_gruppi.pack(side="right", fill="y")
+
+        self.listbox_latte_gruppi.bind("<<ListboxSelect>>", self._on_selezione_gruppi_latte)
+
+        frame_gruppi_btn = ttk.Frame(corpo_gruppi)
+        frame_gruppi_btn.pack(side="left", padx=(8, 0))
+        ttk.Button(
+            frame_gruppi_btn,
+            text="Seleziona tutti",
+            command=self.seleziona_tutti_gruppi_latte,
+        ).pack(fill="x", pady=(0, 4))
+        ttk.Button(
+            frame_gruppi_btn,
+            text="Deseleziona",
+            command=self.deseleziona_gruppi_latte,
+        ).pack(fill="x")
+
+        ttk.Label(frame_gruppi, textvariable=self.var_latte_gruppi_stato).pack(anchor="w", padx=8, pady=(0, 6))
 
         ttk.Label(content, text="Conversione automatica: 1 quintale = 100 litri").pack(pady=(0, 6))
 
@@ -63,8 +110,221 @@ class LatteTabMixin:
         self.tree_produzione.pack(side="left", fill="both", expand=True)
         scroll.pack(side="right", fill="y")
 
+        self.aggiorna_lista_gruppi_latte()
         self.tree_produzione.bind("<<TreeviewSelect>>", self.prepara_modifica_produzione_latte)
         self.tree_produzione.bind("<Delete>", lambda _event: self.elimina_produzione_latte_selezionata())
+
+    def _label_gruppo_latte(self, entry):
+        if hasattr(self, "_label_gruppo_animale_movimento"):
+            return self._label_gruppo_animale_movimento(entry)
+
+        entry_id = int(entry.get("id", 0) or 0)
+        group_name = (entry.get("group_name") or "").strip() or f"Gruppo {entry_id}"
+        tipo = (entry.get("tipo_animale") or "").strip().upper()
+        altro = (entry.get("altro_label") or "").strip()
+
+        if tipo == "ALTRO":
+            tipo_label = f"Altro ({altro})" if altro else "Altro"
+        else:
+            tipo_label = tipo.title() if tipo else "Tipo"
+
+        capi = int(entry.get("capi", 0) or 0)
+        return f"{group_name} | {tipo_label} | {format_number(capi, 0)} capi"
+
+    def _carica_gruppi_latte_attivi(self):
+        try:
+            entries = list_azienda_animali_entries(self.user_id)
+        except sqlite3.Error:
+            return []
+
+        gruppi_attivi = []
+        for entry in entries:
+            entry_id = int(entry.get("id", 0) or 0)
+            capi = int(entry.get("capi", 0) or 0)
+            finalita = (entry.get("finalita") or "").strip().upper()
+
+            if entry_id <= 0 or capi <= 0 or finalita != "LATTE":
+                continue
+
+            gruppi_attivi.append(entry)
+
+        gruppi_attivi.sort(
+            key=lambda item: (
+                (item.get("group_name") or "").strip().lower(),
+                int(item.get("id", 0) or 0),
+            )
+        )
+        return gruppi_attivi
+
+    def aggiorna_lista_gruppi_latte(self, selected_entry_ids=None):
+        if not hasattr(self, "listbox_latte_gruppi"):
+            return
+
+        if selected_entry_ids is None:
+            selected_entry_ids = self.get_gruppi_latte_selezionati_ids()
+
+        selected_ids = set()
+        for raw in selected_entry_ids or []:
+            try:
+                entry_id = int(raw)
+            except (TypeError, ValueError):
+                continue
+            if entry_id > 0:
+                selected_ids.add(entry_id)
+
+        entries = self._carica_gruppi_latte_attivi()
+        self._latte_gruppi_entry_ids = []
+        self._latte_gruppi_entries_by_id = {}
+
+        self.listbox_latte_gruppi.delete(0, tk.END)
+
+        label_seen = set()
+        listbox_idx = 0
+        for entry in entries:
+            entry_id = int(entry.get("id", 0) or 0)
+            if entry_id <= 0:
+                continue
+
+            self._latte_gruppi_entries_by_id[entry_id] = entry
+            self._latte_gruppi_entry_ids.append(entry_id)
+
+            label = self._label_gruppo_latte(entry)
+            if label in label_seen:
+                label = f"{label} [ID {entry_id}]"
+            label_seen.add(label)
+
+            self.listbox_latte_gruppi.insert(tk.END, label)
+            if entry_id in selected_ids:
+                self.listbox_latte_gruppi.selection_set(listbox_idx)
+            listbox_idx += 1
+
+        self._aggiorna_stato_gruppi_latte()
+
+    def _on_selezione_gruppi_latte(self, _event=None):
+        self._aggiorna_stato_gruppi_latte()
+
+    def _aggiorna_stato_gruppi_latte(self):
+        if not hasattr(self, "var_latte_gruppi_stato") or not hasattr(self, "listbox_latte_gruppi"):
+            return
+
+        totale = int(self.listbox_latte_gruppi.size())
+        if totale <= 0:
+            self.var_latte_gruppi_stato.set(
+                "Nessun gruppo da latte disponibile. Configurali in Azienda > Tipi Allevamento."
+            )
+            return
+
+        selected_ids = self.get_gruppi_latte_selezionati_ids()
+        if not selected_ids:
+            self.var_latte_gruppi_stato.set(
+                "Seleziona almeno un gruppo. Puoi selezionare piu gruppi solo se dello stesso tipo animale."
+            )
+            return
+
+        selected_types = {
+            (self._latte_gruppi_entries_by_id.get(entry_id, {}).get("tipo_animale") or "").strip().upper()
+            for entry_id in selected_ids
+        }
+        selected_types.discard("")
+
+        if len(selected_types) > 1:
+            self.var_latte_gruppi_stato.set(
+                "Selezione non valida: i gruppi scelti appartengono a tipi animali diversi."
+            )
+            return
+
+        self.var_latte_gruppi_stato.set(
+            f"Gruppi selezionati: {len(selected_ids)} su {totale}."
+        )
+
+    def get_gruppi_latte_selezionati_ids(self):
+        if not hasattr(self, "listbox_latte_gruppi"):
+            return []
+
+        selected_ids = []
+        for idx in self.listbox_latte_gruppi.curselection():
+            if 0 <= idx < len(self._latte_gruppi_entry_ids):
+                entry_id = int(self._latte_gruppi_entry_ids[idx] or 0)
+                if entry_id > 0:
+                    selected_ids.append(entry_id)
+        return selected_ids
+
+    def imposta_gruppi_latte_selezionati(self, entry_ids):
+        self.aggiorna_lista_gruppi_latte(selected_entry_ids=entry_ids)
+
+    def deseleziona_gruppi_latte(self):
+        if not hasattr(self, "listbox_latte_gruppi"):
+            return
+
+        self.listbox_latte_gruppi.selection_clear(0, tk.END)
+        self._aggiorna_stato_gruppi_latte()
+
+    def seleziona_tutti_gruppi_latte(self):
+        if not hasattr(self, "listbox_latte_gruppi"):
+            return
+        if not self._latte_gruppi_entry_ids:
+            return
+
+        self.listbox_latte_gruppi.selection_clear(0, tk.END)
+
+        first_entry = self._latte_gruppi_entries_by_id.get(self._latte_gruppi_entry_ids[0], {})
+        tipo_base = (first_entry.get("tipo_animale") or "").strip().upper()
+
+        for idx, entry_id in enumerate(self._latte_gruppi_entry_ids):
+            entry = self._latte_gruppi_entries_by_id.get(entry_id, {})
+            tipo = (entry.get("tipo_animale") or "").strip().upper()
+            if tipo and tipo == tipo_base:
+                self.listbox_latte_gruppi.selection_set(idx)
+
+        self._aggiorna_stato_gruppi_latte()
+
+    def _valida_gruppi_latte_selezionati(self):
+        selected_ids = []
+        seen = set()
+        for entry_id in self.get_gruppi_latte_selezionati_ids():
+            if entry_id <= 0 or entry_id in seen:
+                continue
+            seen.add(entry_id)
+            selected_ids.append(entry_id)
+
+        if not selected_ids:
+            messagebox.showerror("Errore", "Seleziona almeno un gruppo da latte.")
+            return None
+
+        entries = self._carica_gruppi_latte_attivi()
+        entries_by_id = {int(entry.get("id", 0) or 0): entry for entry in entries}
+
+        missing_ids = [entry_id for entry_id in selected_ids if entry_id not in entries_by_id]
+        if missing_ids:
+            messagebox.showerror(
+                "Errore",
+                "Uno o piu gruppi selezionati non sono piu disponibili. Aggiorna e riprova.",
+            )
+            self.aggiorna_lista_gruppi_latte()
+            return None
+
+        selected_types = {
+            (entries_by_id[entry_id].get("tipo_animale") or "").strip().upper() for entry_id in selected_ids
+        }
+        selected_types.discard("")
+
+        if len(selected_types) > 1:
+            messagebox.showerror(
+                "Errore",
+                "Puoi attribuire la produzione a piu gruppi solo se appartengono allo stesso tipo animale.",
+            )
+            return None
+
+        group_names = []
+        for entry_id in selected_ids:
+            entry = entries_by_id[entry_id]
+            group_name = (entry.get("group_name") or "").strip() or f"Gruppo {entry_id}"
+            group_names.append(group_name)
+
+        return {
+            "entry_ids": selected_ids,
+            "group_names": group_names,
+        }
 
     def salva_produzione_latte(self):
         if is_blank(self.var_latte_data.get()):
@@ -97,11 +357,53 @@ class LatteTabMixin:
                 messagebox.showerror("Errore", "Prezzo al litro non valido.")
                 return
 
+        gruppi_info = self._valida_gruppi_latte_selezionati()
+        if gruppi_info is None:
+            return
+
+        gruppi_ids = gruppi_info["entry_ids"]
+        gruppi_text = ", ".join(gruppi_info["group_names"])
+
         importo_entrata = litri_val * prezzo_val
         descrizione_mov = (
             f"Produzione latte: {format_number(quintali_val, 2)} q "
             f"({format_number(litri_val, 2)} L) x {format_eur(prezzo_val, 4)}/L"
+            f" | Gruppi: {gruppi_text}"
         )
+
+        parser_data = getattr(self, "pending_parser_latte_data", None)
+        parser_values = None
+        if parser_data is not None and hasattr(self, "_estrai_valori_parser_db"):
+            parser_values = self._estrai_valori_parser_db(parser_data)
+
+        importo_movimento = importo_entrata
+        iva_importo_movimento = 0.0
+        if isinstance(parser_data, dict):
+            parser_vat = parse_decimal(
+                parser_data.get("vat_total"),
+                allow_zero=True,
+                allow_negative=False,
+            )
+            parser_taxable = parse_decimal(
+                parser_data.get("taxable_total"),
+                allow_zero=True,
+                allow_negative=False,
+            )
+            parser_total = parse_decimal(
+                parser_data.get("total_amount"),
+                allow_zero=False,
+                allow_negative=False,
+            )
+
+            if parser_taxable is not None and parser_vat is not None:
+                importo_movimento = max(parser_taxable, 0.0)
+                iva_importo_movimento = max(parser_vat, 0.0)
+            elif parser_total is not None and parser_vat is not None and parser_total >= parser_vat:
+                iva_importo_movimento = max(parser_vat, 0.0)
+                importo_movimento = max(parser_total - iva_importo_movimento, 0.0)
+            elif parser_vat is not None and parser_vat > 0 and importo_entrata >= parser_vat:
+                iva_importo_movimento = parser_vat
+                importo_movimento = max(importo_entrata - iva_importo_movimento, 0.0)
 
         try:
             with get_conn() as conn:
@@ -109,21 +411,49 @@ class LatteTabMixin:
                 movimento_id = None
                 produzione_id = None
 
+                def _insert_movimento_latte(target_cursor):
+                    if parser_values is not None:
+                        target_cursor.execute(
+                            '''
+                            INSERT INTO movimenti (
+                                user_id, data_op, tipo, categoria, descrizione, importo, iva_importo,
+                                parser_invoice_number, parser_invoice_date, parser_due_date,
+                                parser_supplier_name, parser_supplier_vat,
+                                parser_customer_name, parser_customer_vat,
+                                parser_total_amount, parser_taxable_total, parser_vat_total,
+                                parser_payment_terms, parser_warnings, parser_products, parser_fields_view
+                            )
+                            VALUES (?, ?, 'ENTRATA', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ''',
+                            (
+                                self.user_id,
+                                data_db,
+                                "Latte",
+                                descrizione_mov,
+                                importo_movimento,
+                                iva_importo_movimento,
+                                *parser_values,
+                            ),
+                        )
+                    else:
+                        target_cursor.execute(
+                            '''
+                            INSERT INTO movimenti (user_id, data_op, tipo, categoria, descrizione, importo, iva_importo)
+                            VALUES (?, ?, 'ENTRATA', ?, ?, ?, ?)
+                        ''',
+                            (
+                                self.user_id,
+                                data_db,
+                                "Latte",
+                                descrizione_mov,
+                                importo_movimento,
+                                iva_importo_movimento,
+                            ),
+                        )
+                    return target_cursor.lastrowid
+
                 if self.produzione_in_modifica_id is None:
-                    c.execute(
-                        '''
-                        INSERT INTO movimenti (user_id, data_op, tipo, categoria, descrizione, importo, iva_importo)
-                        VALUES (?, ?, 'ENTRATA', ?, ?, ?, 0)
-                    ''',
-                        (
-                            self.user_id,
-                            data_db,
-                            "Latte",
-                            descrizione_mov,
-                            importo_entrata,
-                        ),
-                    )
-                    movimento_id = c.lastrowid
+                    movimento_id = _insert_movimento_latte(c)
 
                     c.execute(
                         '''
@@ -160,45 +490,77 @@ class LatteTabMixin:
                         return
 
                     if movimento_id is not None:
-                        c.execute(
-                            '''
-                            UPDATE movimenti
-                            SET data_op=?, tipo='ENTRATA', categoria=?, descrizione=?, importo=?, iva_importo=0
-                            WHERE id=? AND user_id=?
-                        ''',
-                            (
-                                data_db,
-                                "Latte",
-                                descrizione_mov,
-                                importo_entrata,
-                                movimento_id,
-                                self.user_id,
-                            ),
-                        )
+                        if parser_values is None:
+                            c.execute(
+                                "SELECT importo, iva_importo FROM movimenti WHERE id=? AND user_id=?",
+                                (movimento_id, self.user_id),
+                            )
+                            row_prev = c.fetchone()
+                            if row_prev:
+                                prev_importo = float((row_prev[0] or 0) if row_prev[0] is not None else 0)
+                                prev_iva = float((row_prev[1] or 0) if row_prev[1] is not None else 0)
+                                prev_totale = max(prev_importo + prev_iva, 0.0)
+                                if prev_totale > 0 and prev_iva > 0 and importo_entrata > 0:
+                                    iva_importo_movimento = importo_entrata * (prev_iva / prev_totale)
+                                    importo_movimento = max(importo_entrata - iva_importo_movimento, 0.0)
+
+                        if parser_values is not None:
+                            c.execute(
+                                '''
+                                UPDATE movimenti
+                                SET data_op=?, tipo='ENTRATA', categoria=?, descrizione=?, importo=?, iva_importo=?,
+                                    parser_invoice_number=?, parser_invoice_date=?, parser_due_date=?,
+                                    parser_supplier_name=?, parser_supplier_vat=?,
+                                    parser_customer_name=?, parser_customer_vat=?,
+                                    parser_total_amount=?, parser_taxable_total=?, parser_vat_total=?,
+                                    parser_payment_terms=?, parser_warnings=?, parser_products=?, parser_fields_view=?
+                                WHERE id=? AND user_id=?
+                            ''',
+                                (
+                                    data_db,
+                                    "Latte",
+                                    descrizione_mov,
+                                    importo_movimento,
+                                    iva_importo_movimento,
+                                    *parser_values,
+                                    movimento_id,
+                                    self.user_id,
+                                ),
+                            )
+                        else:
+                            c.execute(
+                                '''
+                                UPDATE movimenti
+                                SET data_op=?, tipo='ENTRATA', categoria=?, descrizione=?, importo=?, iva_importo=?
+                                WHERE id=? AND user_id=?
+                            ''',
+                                (
+                                    data_db,
+                                    "Latte",
+                                    descrizione_mov,
+                                    importo_movimento,
+                                    iva_importo_movimento,
+                                    movimento_id,
+                                    self.user_id,
+                                ),
+                            )
                         if c.rowcount == 0:
                             movimento_id = None
 
                     if movimento_id is None:
-                        c.execute(
-                            '''
-                            INSERT INTO movimenti (user_id, data_op, tipo, categoria, descrizione, importo, iva_importo)
-                            VALUES (?, ?, 'ENTRATA', ?, ?, ?, 0)
-                        ''',
-                            (
-                                self.user_id,
-                                data_db,
-                                "Latte",
-                                descrizione_mov,
-                                importo_entrata,
-                            ),
-                        )
-                        movimento_id = c.lastrowid
+                        movimento_id = _insert_movimento_latte(c)
                         c.execute(
                             "UPDATE produzione_latte SET movimento_id=? WHERE id=? AND user_id=?",
                             (movimento_id, produzione_id, self.user_id),
                         )
 
+                    if movimento_id is not None:
+                        set_movimento_animali_links(self.user_id, movimento_id, gruppi_ids, cursor=c)
+
                     msg_ok = "Produzione latte aggiornata"
+
+                if self.produzione_in_modifica_id is None and movimento_id is not None:
+                    set_movimento_animali_links(self.user_id, movimento_id, gruppi_ids, cursor=c)
 
                 if self.pending_fattura_latte_id is not None and movimento_id is not None and produzione_id is not None:
                     c.execute(
@@ -209,6 +571,9 @@ class LatteTabMixin:
                     ''',
                         (movimento_id, produzione_id, self.pending_fattura_latte_id, self.user_id),
                     )
+        except ValueError as e:
+            messagebox.showerror("Errore", str(e))
+            return
         except sqlite3.Error as e:
             messagebox.showerror("Errore DB", f"Errore database: {e}")
             return
@@ -278,6 +643,25 @@ class LatteTabMixin:
         self.var_latte_data.set(valori[1] or datetime.now().strftime("%d/%m/%Y"))
         self.var_latte_quintali.set(valori[2] or "")
         self.var_latte_prezzo.set(valori[3] or "0,00")
+
+        linked_group_ids = []
+        try:
+            with get_conn() as conn:
+                c = conn.cursor()
+                c.execute(
+                    "SELECT movimento_id FROM produzione_latte WHERE id=? AND user_id=?",
+                    (self.produzione_in_modifica_id, self.user_id),
+                )
+                row = c.fetchone()
+
+            movimento_id = int((row[0] if row else 0) or 0)
+            if movimento_id > 0:
+                linked_group_ids = get_movimento_animali_entry_ids(self.user_id, movimento_id)
+        except (sqlite3.Error, ValueError):
+            linked_group_ids = []
+
+        self.imposta_gruppi_latte_selezionati(linked_group_ids)
+
         if hasattr(self, "btn_salva_produzione"):
             self.btn_salva_produzione.config(text="Aggiorna Produzione")
 
@@ -292,6 +676,7 @@ class LatteTabMixin:
             self.var_latte_data.set(datetime.now().strftime("%d/%m/%Y"))
             self.var_latte_quintali.set("")
             self.var_latte_prezzo.set("0,00")
+            self.deseleziona_gruppi_latte()
 
     def elimina_produzione_latte_selezionata(self):
         selezione = self.tree_produzione.selection()

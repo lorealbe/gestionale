@@ -10,7 +10,13 @@ from pathlib import Path
 from tkinter import ttk, messagebox, filedialog
 
 from app_utils import format_number, is_blank, parse_decimal
-from database import get_conn, get_fatture_user_dir, set_movimento_animali_links, to_storage_fattura_path
+from database import (
+    get_conn,
+    get_fatture_user_dir,
+    set_movimento_animali_links,
+    to_storage_fattura_path,
+    LITRI_PER_QUINTALE,
+)
 
 
 class MovimentiTabMixin:
@@ -315,12 +321,35 @@ class MovimentiTabMixin:
 
         self.pending_fattura_latte_id = fattura_id
         self.pending_fattura_latte_path = percorso_archiviato
+        self.pending_parser_latte_data = None
         if hasattr(self, "var_nome_fattura_latte"):
             self.var_nome_fattura_latte.set(Path(percorso_archiviato).name)
+
+        try:
+            dati_latte = self.analizza_fattura_latte_con_parser_fatture(percorso_archiviato, file_path)
+        except Exception as e:
+            messagebox.showwarning(
+                "Analisi non completata",
+                f"Fattura salvata correttamente, ma analisi automatica non disponibile: {e}",
+            )
+            return
+
+        self._applica_dati_parser_al_form_latte(dati_latte)
+        self.pending_parser_latte_data = dati_latte.get("parser_data")
+
+        iva_label = format_number(dati_latte.get("iva_percent", 0.0), 2)
+        messagebox.showinfo(
+            "Importazione completata",
+            "Valori produzione impostati da fattura:\n"
+            f"- Quintali: {self.var_latte_quintali.get()}\n"
+            f"- Prezzo al litro (IVA inclusa): {self.var_latte_prezzo.get()}\n"
+            f"- Aliquota IVA applicata: {iva_label}%",
+        )
 
     def rimuovi_fattura_latte(self):
         self.pending_fattura_latte_id = None
         self.pending_fattura_latte_path = None
+        self.pending_parser_latte_data = None
         if hasattr(self, "var_nome_fattura_latte"):
             self.var_nome_fattura_latte.set("Nessuna fattura caricata")
 
@@ -337,6 +366,133 @@ class MovimentiTabMixin:
             valore = dati.get(chiave)
             if valore:
                 variabile.set(valore)
+
+    def _applica_dati_parser_al_form_latte(self, dati):
+        mapping = (
+            ("data", "var_latte_data"),
+            ("quintali", "var_latte_quintali"),
+            ("prezzo_litro", "var_latte_prezzo"),
+        )
+        for chiave, attr_name in mapping:
+            variabile = getattr(self, attr_name, None)
+            if variabile is None:
+                continue
+            valore = dati.get(chiave)
+            if valore:
+                variabile.set(valore)
+
+    def analizza_fattura_latte_con_parser_fatture(self, pdf_path, file_path):
+        parse_invoice_pdf = self._get_parser_fatture_function()
+        risultato = parse_invoice_pdf(str(pdf_path))
+        fields = getattr(risultato, "fields", {}) or {}
+        parser_data = self._costruisci_dati_parser_movimento(risultato, fields)
+
+        data_raw = self._estrai_valore_campo_parser(fields, "invoice_date")
+        data_out = self._normalizza_data_fattura(data_raw) or datetime.now().strftime("%d/%m/%Y")
+
+        line_items = getattr(risultato, "line_items", []) or []
+        linea_latte = self._seleziona_linea_latte(line_items)
+        if linea_latte is None:
+            raise RuntimeError(
+                "Impossibile individuare riga prodotto latte con quantita e prezzo validi nella fattura."
+            )
+
+        quintali = self._valore_parser_to_float(getattr(linea_latte, "quantity", None), allow_zero=False)
+        if quintali is None or quintali <= 0:
+            raise RuntimeError("Quantita in quintali non trovata o non valida nella fattura.")
+
+        prezzo_quintale = self._valore_parser_to_float(getattr(linea_latte, "unit_price", None), allow_zero=False)
+        if prezzo_quintale is None:
+            line_total = self._valore_parser_to_float(getattr(linea_latte, "line_total", None), allow_zero=False)
+            if line_total is not None and line_total > 0:
+                prezzo_quintale = line_total / quintali
+
+        if prezzo_quintale is None or prezzo_quintale <= 0:
+            raise RuntimeError("Prezzo al quintale non trovato o non valido nella fattura.")
+
+        iva_percent = self._valore_parser_to_float(getattr(linea_latte, "vat_rate", None), allow_zero=True)
+        if iva_percent is None or iva_percent < 0:
+            iva_percent = self._calcola_aliquota_iva_parser(fields, risultato)
+        if iva_percent is None or iva_percent < 0:
+            iva_percent = 0.0
+
+        prezzo_quintale_lordo = prezzo_quintale * (1.0 + (iva_percent / 100.0))
+        prezzo_litro_lordo = prezzo_quintale_lordo / LITRI_PER_QUINTALE
+
+        return {
+            "data": data_out,
+            "quintali": format_number(quintali, 2),
+            "prezzo_litro": format_number(prezzo_litro_lordo, 4),
+            "iva_percent": iva_percent,
+            "file": str(Path(file_path).name),
+            "parser_data": parser_data,
+        }
+
+    def _seleziona_linea_latte(self, line_items):
+        candidati = []
+        for item in line_items:
+            quantity = self._valore_parser_to_float(getattr(item, "quantity", None), allow_zero=False)
+            if quantity is None or quantity <= 0:
+                continue
+
+            unit_price = self._valore_parser_to_float(getattr(item, "unit_price", None), allow_zero=False)
+            line_total = self._valore_parser_to_float(getattr(item, "line_total", None), allow_zero=False)
+            if unit_price is None and line_total is None:
+                continue
+
+            description = str(getattr(item, "description", "") or "").strip().lower()
+            score = 0
+            if "latte" in description:
+                score += 4
+            if "q" in description or "quint" in description:
+                score += 2
+
+            candidati.append((score, line_total or 0.0, item))
+
+        if not candidati:
+            return None
+
+        candidati.sort(key=lambda data: (data[0], data[1]), reverse=True)
+        return candidati[0][2]
+
+    def _calcola_aliquota_iva_parser(self, fields, risultato=None):
+        vat_rows = getattr(risultato, "vat_breakdown", []) or []
+        for row in vat_rows:
+            vat_rate = self._valore_parser_to_float(getattr(row, "vat_rate", None), allow_zero=False)
+            if vat_rate is not None and vat_rate > 0:
+                return vat_rate
+
+        vat_total = self._estrai_importo_parser(fields, "vat_total", allow_zero=True)
+        taxable_total = self._estrai_importo_parser(fields, "taxable_total", allow_zero=False)
+
+        if vat_total is None or taxable_total is None or taxable_total <= 0:
+            total_amount = self._estrai_importo_parser(fields, "total_amount", allow_zero=False)
+            if total_amount is None or total_amount <= 0:
+                return None
+            taxable_total = total_amount - (vat_total or 0.0)
+            if taxable_total <= 0:
+                return None
+
+        return max((vat_total or 0.0) * 100.0 / taxable_total, 0.0)
+
+    def _valore_parser_to_float(self, value, allow_zero=False):
+        if value is None:
+            return None
+
+        if isinstance(value, (int, float)):
+            number = float(value)
+        else:
+            try:
+                number = float(value)
+            except (TypeError, ValueError):
+                number = self._normalizza_importo(str(value), allow_zero=allow_zero)
+                return number
+
+        if number < 0:
+            return None
+        if number == 0 and not allow_zero:
+            return None
+        return number
 
     def _estrai_valori_parser_db(self, parser_data):
         if not isinstance(parser_data, dict):

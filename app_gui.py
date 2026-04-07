@@ -278,6 +278,7 @@ class AppGestionaleGUI(
         self.pending_parser_movimento_data = None
         self.pending_fattura_latte_id = None
         self.pending_fattura_latte_path = None
+        self.pending_parser_latte_data = None
 
         self.root.title("Gestione Fatture")
         self.root.geometry("980x700")
@@ -375,13 +376,10 @@ class AppGestionaleGUI(
         self.notebook = ttk.Notebook(self.frame_operativa)
         self.notebook.pack(pady=4, padx=4, expand=True, fill="both")
 
-        self.tab_latte = ttk.Frame(self.notebook)
         self.tab_report = ttk.Frame(self.notebook)
 
-        self.notebook.add(self.tab_latte, text="Produzione Latte")
         self.notebook.add(self.tab_report, text="Report Periodo")
 
-        self.setup_tab_latte()
         self.setup_tab_report()
 
     def _setup_categoria_attrezzature(self):
@@ -399,7 +397,7 @@ class AppGestionaleGUI(
         )
 
     def _setup_categoria_zootecnia(self):
-        container = self.crea_container_scorribile(self.frame_zootecnia, padding=18)
+        container = self.crea_container_scorribile(self.frame_zootecnia, padding=18, stretch_to_viewport=True)
 
         ttk.Label(container, text="Zootecnia", font=("Arial", 14, "bold")).pack(anchor="w", pady=(0, 8))
 
@@ -423,6 +421,7 @@ class AppGestionaleGUI(
 
         self.zootecnia_notebook = ttk.Notebook(self.frame_zootecnia_pagine)
         self.zootecnia_notebook.pack(fill="both", expand=True)
+        self.tab_zootecnia_latte = None
 
         self.lbl_zootecnia_vuoto = ttk.Label(
             self.frame_zootecnia_pagine,
@@ -446,6 +445,21 @@ class AppGestionaleGUI(
         if finalita == "CARNE":
             return "Da Carne"
         return "-"
+
+    def _is_entry_latte_attiva(self, entry):
+        finalita = (entry.get("finalita") or "").strip().upper()
+        capi = int(entry.get("capi") or 0)
+        return finalita == "LATTE" and capi > 0
+
+    def _ensure_tab_zootecnia_latte(self):
+        pagina = getattr(self, "tab_zootecnia_latte", None)
+        if pagina is not None and pagina.winfo_exists():
+            return pagina
+
+        self.tab_zootecnia_latte = ttk.Frame(self.zootecnia_notebook)
+        self.tab_latte = self.tab_zootecnia_latte
+        self.setup_tab_latte()
+        return self.tab_zootecnia_latte
 
     def _setup_categoria_placeholder(self, frame, titolo, descrizione):
         container = self.crea_container_scorribile(frame, padding=18)
@@ -483,12 +497,16 @@ class AppGestionaleGUI(
             self.zootecnia_notebook.forget(tab_id)
 
         gruppi_attivi = []
+        gruppi_latte_attivi = []
 
         for entry in entries:
             capi = int(entry.get("capi") or 0)
 
             if capi <= 0:
                 continue
+
+            if self._is_entry_latte_attiva(entry):
+                gruppi_latte_attivi.append(entry)
 
             group_name = (entry.get("group_name") or "").strip()
             if not group_name:
@@ -508,6 +526,14 @@ class AppGestionaleGUI(
                 self.lbl_zootecnia_vuoto.pack_forget()
             if self.zootecnia_notebook.winfo_manager() == "":
                 self.zootecnia_notebook.pack(fill="both", expand=True)
+
+            if gruppi_latte_attivi:
+                pagina_latte = self._ensure_tab_zootecnia_latte()
+                self.zootecnia_notebook.add(pagina_latte, text="Produzione Latte")
+                if hasattr(self, "aggiorna_lista_gruppi_latte"):
+                    self.aggiorna_lista_gruppi_latte()
+                if hasattr(self, "carica_produzioni_latte"):
+                    self.carica_produzioni_latte(mostra_errori=False)
 
             for gruppo in gruppi_attivi:
                 pagina = ttk.Frame(self.zootecnia_notebook, padding=12)
@@ -529,9 +555,15 @@ class AppGestionaleGUI(
 
                 self.zootecnia_notebook.add(pagina, text=gruppo["nome"])
 
-            self.var_zootecnia_stato.set(
-                f"Sono disponibili {len(gruppi_attivi)} sottopagine: una per ogni gruppo animale attivo."
-            )
+            if gruppi_latte_attivi:
+                self.var_zootecnia_stato.set(
+                    f"Sono disponibili {len(gruppi_attivi)} sottopagine per i gruppi animali attivi "
+                    "e la pagina Produzione Latte."
+                )
+            else:
+                self.var_zootecnia_stato.set(
+                    f"Sono disponibili {len(gruppi_attivi)} sottopagine: una per ogni gruppo animale attivo."
+                )
         else:
             if self.zootecnia_notebook.winfo_manager() != "":
                 self.zootecnia_notebook.pack_forget()
