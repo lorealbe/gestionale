@@ -512,9 +512,26 @@ def _ensure_animali_dettaglio_unique_on_group_name(cursor):
     if "UNIQUE(USER_ID, TIPO_ANIMALE, FINALITA, ALTRO_LABEL, GROUP_NAME)" in table_sql:
         return
 
+    cursor.execute("PRAGMA table_info(azienda_animali_dettaglio)")
+    colonne = {row[1] for row in cursor.fetchall()}
+
+    merged_into_expr = "COALESCE(merged_into_entry_id, 0)" if "merged_into_entry_id" in colonne else "0"
+    merge_date_expr = "COALESCE(merge_date, '')" if "merge_date" in colonne else "''"
+
     cursor.execute(
-        '''
-        SELECT id, user_id, tipo_animale, finalita, altro_label, group_name, capi, created_at, updated_at
+        f'''
+        SELECT
+            id,
+            user_id,
+            tipo_animale,
+            finalita,
+            altro_label,
+            group_name,
+            capi,
+            created_at,
+            updated_at,
+            {merged_into_expr} AS merged_into_entry_id,
+            {merge_date_expr} AS merge_date
         FROM azienda_animali_dettaglio
         ORDER BY id
     '''
@@ -534,25 +551,55 @@ def _ensure_animali_dettaglio_unique_on_group_name(cursor):
              capi INTEGER NOT NULL DEFAULT 0 CHECK(capi >= 0),
              created_at TEXT NOT NULL DEFAULT '',
              updated_at TEXT NOT NULL DEFAULT '',
+             merged_into_entry_id INTEGER,
+             merge_date TEXT NOT NULL DEFAULT '',
              UNIQUE(user_id, tipo_animale, finalita, altro_label, group_name),
              FOREIGN KEY(user_id) REFERENCES utenti(id) ON DELETE CASCADE)
     '''
     )
 
     now_text = datetime.now().isoformat(timespec="seconds")
-    for row_id, user_id, tipo_animale, finalita, altro_label, group_name, capi, created_at, updated_at in rows:
+    for (
+        row_id,
+        user_id,
+        tipo_animale,
+        finalita,
+        altro_label,
+        group_name,
+        capi,
+        created_at,
+        updated_at,
+        merged_into_entry_id,
+        merge_date,
+    ) in rows:
         tipo_norm = _normalize_tipo_animale(tipo_animale)
         finalita_norm = _normalize_finalita_animale(finalita)
         altro_clean = (altro_label or "").strip()
         group_name_clean = (group_name or "").strip() or _default_group_name(tipo_norm, finalita_norm, altro_clean)
         created_at_clean = (created_at or "").strip() or now_text
         updated_at_clean = (updated_at or "").strip() or now_text
+        merged_into_clean = _to_non_negative_int(merged_into_entry_id)
+        if merged_into_clean <= 0:
+            merged_into_clean = None
+        merge_date_clean = (merge_date or "").strip()
 
         cursor.execute(
             '''
             INSERT INTO azienda_animali_dettaglio_new
-                (id, user_id, tipo_animale, finalita, altro_label, group_name, capi, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (
+                    id,
+                    user_id,
+                    tipo_animale,
+                    finalita,
+                    altro_label,
+                    group_name,
+                    capi,
+                    created_at,
+                    updated_at,
+                    merged_into_entry_id,
+                    merge_date
+                )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''',
             (
                 int(row_id),
@@ -564,6 +611,8 @@ def _ensure_animali_dettaglio_unique_on_group_name(cursor):
                 _to_non_negative_int(capi),
                 created_at_clean,
                 updated_at_clean,
+                merged_into_clean,
+                merge_date_clean,
             ),
         )
 
@@ -571,30 +620,64 @@ def _ensure_animali_dettaglio_unique_on_group_name(cursor):
     cursor.execute("ALTER TABLE azienda_animali_dettaglio_new RENAME TO azienda_animali_dettaglio")
 
 
-def list_azienda_animali_entries(user_id: int) -> list[dict]:
+def list_azienda_animali_entries(user_id: int, include_merged: bool = False) -> list[dict]:
     with get_conn() as conn:
         c = conn.cursor()
-        c.execute(
+        query = (
             '''
-            SELECT id, tipo_animale, finalita, altro_label, capi, group_name
+            SELECT
+                id,
+                tipo_animale,
+                finalita,
+                altro_label,
+                capi,
+                group_name,
+                COALESCE(created_at, ''),
+                COALESCE(updated_at, ''),
+                COALESCE(merged_into_entry_id, 0),
+                COALESCE(merge_date, '')
             FROM azienda_animali_dettaglio
             WHERE user_id=?
+        '''
+        )
+        if not include_merged:
+            query += " AND COALESCE(merged_into_entry_id, 0)=0"
+        query += (
+            '''
             ORDER BY
                 COALESCE(NULLIF(TRIM(group_name), ''), tipo_animale) COLLATE NOCASE,
                 tipo_animale,
                 finalita,
                 altro_label,
                 id
-        ''',
+        '''
+        )
+        c.execute(
+            query,
             (user_id,),
         )
         rows = c.fetchall()
 
     entries = []
-    for row_id, tipo_animale, finalita, altro_label, capi, group_name in rows:
+    for (
+        row_id,
+        tipo_animale,
+        finalita,
+        altro_label,
+        capi,
+        group_name,
+        created_at,
+        updated_at,
+        merged_into_entry_id,
+        merge_date,
+    ) in rows:
         group_name_clean = (group_name or "").strip()
         if not group_name_clean:
             group_name_clean = _default_group_name(tipo_animale, finalita, altro_label)
+
+        merged_into_clean = _to_non_negative_int(merged_into_entry_id)
+        if merged_into_clean <= 0:
+            merged_into_clean = None
 
         entries.append(
             {
@@ -604,6 +687,10 @@ def list_azienda_animali_entries(user_id: int) -> list[dict]:
                 "altro_label": (altro_label or "").strip(),
                 "capi": _to_non_negative_int(capi),
                 "group_name": group_name_clean,
+                "created_at": (created_at or "").strip(),
+                "updated_at": (updated_at or "").strip(),
+                "merged_into_entry_id": merged_into_clean,
+                "merge_date": (merge_date or "").strip(),
             }
         )
     return entries
@@ -1093,6 +1180,14 @@ def remove_azienda_animale_capi(user_id: int, entry_id: int, capi_da_rimuovere: 
 
         if capi_value == capi_attuali:
             c.execute(
+                '''
+                UPDATE azienda_animali_dettaglio
+                SET merged_into_entry_id=NULL, merge_date='', updated_at=?
+                WHERE user_id=? AND merged_into_entry_id=?
+            ''',
+                (now_text, user_id, entry_id_value),
+            )
+            c.execute(
                 "DELETE FROM azienda_animali_dettaglio WHERE id=? AND user_id=?",
                 (entry_id_value, user_id),
             )
@@ -1131,6 +1226,14 @@ def set_azienda_animale_capi(user_id: int, entry_id: int, nuovo_capi: int) -> bo
             raise ValueError("Categoria animale non trovata.")
 
         if nuovo_capi_value == 0:
+            c.execute(
+                '''
+                UPDATE azienda_animali_dettaglio
+                SET merged_into_entry_id=NULL, merge_date='', updated_at=?
+                WHERE user_id=? AND merged_into_entry_id=?
+            ''',
+                (now_text, user_id, entry_id_value),
+            )
             c.execute(
                 "DELETE FROM azienda_animali_dettaglio WHERE id=? AND user_id=?",
                 (entry_id_value, user_id),
@@ -1395,6 +1498,7 @@ def merge_azienda_animale_groups(
     entry_id_principale: int,
     entry_id_secondario: int,
     nuovo_group_name: str,
+    merge_date: str | None = None,
 ) -> int:
     entry_id_principale_value = _to_non_negative_int(entry_id_principale)
     entry_id_secondario_value = _to_non_negative_int(entry_id_secondario)
@@ -1407,6 +1511,15 @@ def merge_azienda_animale_groups(
     new_group_name_clean = (nuovo_group_name or "").strip()
     if not new_group_name_clean:
         raise ValueError("Inserisci un nome per il gruppo unificato.")
+
+    merge_date_clean = (merge_date or "").strip()
+    if merge_date_clean:
+        try:
+            datetime.strptime(merge_date_clean, "%Y-%m-%d")
+        except ValueError:
+            raise ValueError("Data unione non valida. Usa il formato YYYY-MM-DD.")
+    else:
+        merge_date_clean = datetime.now().strftime("%Y-%m-%d")
 
     now_text = datetime.now().isoformat(timespec="seconds")
     with get_conn() as conn:
@@ -1424,7 +1537,8 @@ def merge_azienda_animale_groups(
 
         c.execute(
             '''
-            SELECT id, tipo_animale, finalita, altro_label, capi
+            SELECT id, tipo_animale, finalita, altro_label, capi,
+                   COALESCE(merged_into_entry_id, 0)
             FROM azienda_animali_dettaglio
             WHERE id IN (?, ?) AND user_id=?
         ''',
@@ -1444,11 +1558,18 @@ def merge_azienda_animale_groups(
         finalita_principale = (principale[2] or "").strip().upper()
         altro_principale = (principale[3] or "").strip()
         capi_principale = _to_non_negative_int(principale[4])
+        merged_principale = _to_non_negative_int(principale[5])
 
         tipo_secondario = (secondario[1] or "").strip().upper()
         finalita_secondario = (secondario[2] or "").strip().upper()
         altro_secondario = (secondario[3] or "").strip()
         capi_secondario = _to_non_negative_int(secondario[4])
+        merged_secondario = _to_non_negative_int(secondario[5])
+
+        if merged_principale > 0:
+            raise ValueError("Il gruppo principale risulta gia unito ad un altro gruppo.")
+        if merged_secondario > 0:
+            raise ValueError("Il gruppo secondario risulta gia unito ad un altro gruppo.")
 
         if (
             tipo_principale != tipo_secondario
@@ -1465,18 +1586,98 @@ def merge_azienda_animale_groups(
             '''
             UPDATE OR IGNORE movimenti_animali_link
             SET animale_entry_id=?
-            WHERE user_id=? AND animale_entry_id=?
+            WHERE user_id=?
+              AND animale_entry_id=?
+              AND EXISTS (
+                  SELECT 1
+                  FROM movimenti m
+                  WHERE m.user_id = movimenti_animali_link.user_id
+                    AND m.id = movimenti_animali_link.movimento_id
+                    AND m.data_op >= ?
+              )
         ''',
-            (entry_id_principale_value, user_id, entry_id_secondario_value),
+            (entry_id_principale_value, user_id, entry_id_secondario_value, merge_date_clean),
         )
         c.execute(
-            "DELETE FROM movimenti_animali_link WHERE user_id=? AND animale_entry_id=?",
-            (user_id, entry_id_secondario_value),
+            '''
+            DELETE FROM movimenti_animali_link
+            WHERE user_id=?
+              AND animale_entry_id=?
+              AND EXISTS (
+                  SELECT 1
+                  FROM movimenti m
+                  WHERE m.user_id = movimenti_animali_link.user_id
+                    AND m.id = movimenti_animali_link.movimento_id
+                    AND m.data_op >= ?
+              )
+        ''',
+            (user_id, entry_id_secondario_value, merge_date_clean),
         )
 
         c.execute(
-            "DELETE FROM azienda_animali_dettaglio WHERE id=? AND user_id=?",
-            (entry_id_secondario_value, user_id),
+            '''
+            INSERT INTO produzione_latte_gruppi
+                (user_id, produzione_id, movimento_id, animale_entry_id, litri, created_at, updated_at)
+            SELECT
+                g.user_id,
+                g.produzione_id,
+                g.movimento_id,
+                ?,
+                COALESCE(g.litri, 0),
+                ?,
+                ?
+            FROM produzione_latte_gruppi g
+            WHERE g.user_id=?
+              AND g.animale_entry_id=?
+              AND EXISTS (
+                  SELECT 1
+                  FROM produzione_latte p
+                  WHERE p.user_id = g.user_id
+                    AND p.id = g.produzione_id
+                    AND p.data_op >= ?
+              )
+            ON CONFLICT(user_id, produzione_id, animale_entry_id) DO UPDATE SET
+                litri = COALESCE(produzione_latte_gruppi.litri, 0) + COALESCE(excluded.litri, 0),
+                updated_at = excluded.updated_at
+        ''',
+            (
+                entry_id_principale_value,
+                now_text,
+                now_text,
+                user_id,
+                entry_id_secondario_value,
+                merge_date_clean,
+            ),
+        )
+        c.execute(
+            '''
+            DELETE FROM produzione_latte_gruppi
+            WHERE user_id=?
+              AND animale_entry_id=?
+              AND EXISTS (
+                  SELECT 1
+                  FROM produzione_latte p
+                  WHERE p.user_id = produzione_latte_gruppi.user_id
+                    AND p.id = produzione_latte_gruppi.produzione_id
+                    AND p.data_op >= ?
+              )
+        ''',
+            (user_id, entry_id_secondario_value, merge_date_clean),
+        )
+
+        c.execute(
+            '''
+            UPDATE azienda_animali_dettaglio
+            SET merged_into_entry_id=?, merge_date=?, updated_at=?
+            WHERE id=? AND user_id=?
+        ''',
+            (
+                entry_id_principale_value,
+                merge_date_clean,
+                now_text,
+                entry_id_secondario_value,
+                user_id,
+            ),
         )
 
         try:
@@ -1503,12 +1704,22 @@ def delete_azienda_animale_entry(user_id: int, entry_id: int):
 
     with get_conn() as conn:
         c = conn.cursor()
+        now_text = datetime.now().isoformat(timespec="seconds")
         c.execute(
             "SELECT 1 FROM azienda_animali_dettaglio WHERE id=? AND user_id=?",
             (entry_id_value, user_id),
         )
         if not c.fetchone():
             raise ValueError("Categoria animale non trovata.")
+
+        c.execute(
+            '''
+            UPDATE azienda_animali_dettaglio
+            SET merged_into_entry_id=NULL, merge_date='', updated_at=?
+            WHERE user_id=? AND merged_into_entry_id=?
+        ''',
+            (now_text, user_id, entry_id_value),
+        )
 
         c.execute(
             "DELETE FROM azienda_animali_dettaglio WHERE id=? AND user_id=?",
@@ -1669,6 +1880,8 @@ def init_db():
                  capi INTEGER NOT NULL DEFAULT 0 CHECK(capi >= 0),
                  created_at TEXT NOT NULL DEFAULT '',
                  updated_at TEXT NOT NULL DEFAULT '',
+                 merged_into_entry_id INTEGER,
+                 merge_date TEXT NOT NULL DEFAULT '',
                  UNIQUE(user_id, tipo_animale, finalita, altro_label, group_name),
                  FOREIGN KEY(user_id) REFERENCES utenti(id) ON DELETE CASCADE)
         '''
@@ -1688,6 +1901,10 @@ def init_db():
             c.execute("ALTER TABLE azienda_animali_dettaglio ADD COLUMN created_at TEXT NOT NULL DEFAULT ''")
         if colonne_animali_det and "updated_at" not in colonne_animali_det:
             c.execute("ALTER TABLE azienda_animali_dettaglio ADD COLUMN updated_at TEXT NOT NULL DEFAULT ''")
+        if colonne_animali_det and "merged_into_entry_id" not in colonne_animali_det:
+            c.execute("ALTER TABLE azienda_animali_dettaglio ADD COLUMN merged_into_entry_id INTEGER")
+        if colonne_animali_det and "merge_date" not in colonne_animali_det:
+            c.execute("ALTER TABLE azienda_animali_dettaglio ADD COLUMN merge_date TEXT NOT NULL DEFAULT ''")
 
         _ensure_animali_dettaglio_unique_on_group_name(c)
 
@@ -1697,6 +1914,8 @@ def init_db():
                      ON azienda_animali_dettaglio(user_id, tipo_animale, finalita)''')
         c.execute('''CREATE INDEX IF NOT EXISTS idx_animali_dettaglio_nome
                  ON azienda_animali_dettaglio(user_id, group_name)''')
+        c.execute('''CREATE INDEX IF NOT EXISTS idx_animali_dettaglio_merge
+                 ON azienda_animali_dettaglio(user_id, merged_into_entry_id, merge_date)''')
 
         _migrate_legacy_azienda_animali_to_dettaglio(c)
         _backfill_missing_group_names(c)
@@ -1828,6 +2047,37 @@ def init_db():
                      FOR EACH ROW
                      BEGIN
                          DELETE FROM produzione_latte WHERE movimento_id = OLD.id;
+                     END''')
+
+        # Tabella Produzione Carne (quantita salvata in kg, prezzo in EUR/kg)
+        c.execute('''CREATE TABLE IF NOT EXISTS produzione_carne
+                     (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                      user_id INTEGER NOT NULL,
+                      data_op TEXT NOT NULL, -- ISO: YYYY-MM-DD
+                      kg REAL NOT NULL CHECK(kg > 0),
+                      prezzo_kg REAL NOT NULL DEFAULT 0,
+                      movimento_id INTEGER,
+                      FOREIGN KEY(movimento_id) REFERENCES movimenti(id) ON DELETE SET NULL,
+                      FOREIGN KEY(user_id) REFERENCES utenti(id) ON DELETE CASCADE)''')
+
+        c.execute("PRAGMA table_info(produzione_carne)")
+        colonne_produzione_carne = {row[1] for row in c.fetchall()}
+        if colonne_produzione_carne and "prezzo_kg" not in colonne_produzione_carne:
+            c.execute("ALTER TABLE produzione_carne ADD COLUMN prezzo_kg REAL NOT NULL DEFAULT 0")
+        if colonne_produzione_carne and "movimento_id" not in colonne_produzione_carne:
+            c.execute("ALTER TABLE produzione_carne ADD COLUMN movimento_id INTEGER")
+
+        c.execute('''CREATE INDEX IF NOT EXISTS idx_prod_carne_user_date
+                     ON produzione_carne(user_id, data_op)''')
+        c.execute('''CREATE INDEX IF NOT EXISTS idx_prod_carne_user_movimento
+                 ON produzione_carne(user_id, movimento_id)''')
+
+        # Se viene eliminato un movimento carne, elimina anche la produzione collegata.
+        c.execute('''CREATE TRIGGER IF NOT EXISTS trg_movimenti_delete_produzione_carne
+                     BEFORE DELETE ON movimenti
+                     FOR EACH ROW
+                     BEGIN
+                         DELETE FROM produzione_carne WHERE movimento_id = OLD.id;
                      END''')
 
         # Archivio fatture caricate

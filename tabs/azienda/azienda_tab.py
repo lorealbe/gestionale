@@ -1817,6 +1817,7 @@ class AziendaTabMixin:
         self.var_animale_dividi_restanti = tk.StringVar(value="Capi che restano nel gruppo attuale: -")
         self.var_animale_unisci_target = tk.StringVar(value="")
         self.var_animale_unisci_nome_nuovo_gruppo = tk.StringVar(value="")
+        self.var_animale_unisci_data = tk.StringVar(value="")
         self.var_animale_unisci_totale = tk.StringVar(value="Totale capi nel gruppo unificato: -")
         self._animale_dividi_capi_totali = 0
         self._animale_unisci_candidati = {}
@@ -2065,6 +2066,24 @@ class AziendaTabMixin:
             side="left", fill="x", expand=True, padx=(6, 8)
         )
 
+        row_unisci_data = ttk.Frame(self.frame_operazione_unisci)
+        row_unisci_data.pack(fill="x", pady=4)
+        ttk.Label(row_unisci_data, text="Data unione (opz.):", width=20).pack(side="left")
+        entry_unisci_data = ttk.Entry(
+            row_unisci_data,
+            textvariable=self.var_animale_unisci_data,
+            width=14,
+            state="readonly",
+        )
+        entry_unisci_data.pack(side="left", padx=(6, 0))
+        ttk.Button(
+            row_unisci_data,
+            text="...",
+            width=3,
+            command=self._apri_calendario_data_unione_animale,
+        ).pack(side="left", padx=(4, 8))
+        entry_unisci_data.bind("<Button-1>", lambda _event: self._apri_calendario_data_unione_animale())
+
         row_unisci_btn = ttk.Frame(self.frame_operazione_unisci)
         row_unisci_btn.pack(fill="x", pady=(0, 4))
         ttk.Button(
@@ -2216,10 +2235,25 @@ class AziendaTabMixin:
             if self.frame_operazione_dividi.winfo_manager() == "":
                 self.frame_operazione_dividi.pack(fill="x", padx=20, pady=(0, 8))
 
+    def _apri_calendario_data_unione_animale(self):
+        date_text = self.var_animale_unisci_data.get().strip()
+        if date_text:
+            try:
+                initial_date = datetime.strptime(date_text, "%d/%m/%Y").date()
+            except ValueError:
+                initial_date = datetime.now().date()
+        else:
+            initial_date = datetime.now().date()
+
+        scelta = self.calendar_dialog_cls(self.root, initial_date).show()
+        if scelta is not None:
+            self.var_animale_unisci_data.set(scelta.strftime("%d/%m/%Y"))
+
     def _carica_candidati_unione_animale(self, entry_id: int):
         self._animale_unisci_candidati = {}
         self.var_animale_unisci_target.set("")
         self.var_animale_unisci_nome_nuovo_gruppo.set("")
+        self.var_animale_unisci_data.set("")
         self.var_animale_unisci_totale.set("Totale capi nel gruppo unificato: -")
 
         try:
@@ -2313,6 +2347,7 @@ class AziendaTabMixin:
         self.var_animale_dividi_restanti.set("Capi che restano nel gruppo attuale: -")
         self.var_animale_unisci_target.set("")
         self.var_animale_unisci_nome_nuovo_gruppo.set("")
+        self.var_animale_unisci_data.set("")
         self.var_animale_unisci_totale.set("Totale capi nel gruppo unificato: -")
         self._animale_unisci_candidati = {}
         if hasattr(self, "combo_animale_unisci_target"):
@@ -2648,12 +2683,24 @@ class AziendaTabMixin:
             messagebox.showerror("Errore", "Inserisci il nome del gruppo unificato.")
             return
 
+        data_unione_text = self.var_animale_unisci_data.get().strip()
+        data_unione_db = None
+        data_unione_label = "Data odierna"
+        if data_unione_text:
+            try:
+                data_unione_db = datetime.strptime(data_unione_text, "%d/%m/%Y").strftime("%Y-%m-%d")
+                data_unione_label = data_unione_text
+            except ValueError:
+                messagebox.showerror("Errore", "Data unione non valida (Usa GG/MM/AAAA).")
+                return
+
         conferma = messagebox.askyesno(
             "Conferma unione",
             "Riepilogo unione:\n"
             f"- Gruppo 1: {categoria_label} ({format_number(capi_corrente, 0)} capi)\n"
             f"- Gruppo 2: {nome_secondario} ({format_number(capi_secondario, 0)} capi)\n"
             f"- Nuovo nome gruppo: {nuovo_nome_gruppo}\n"
+            f"- Data unione: {data_unione_label}\n"
             f"- Totale capi gruppo unificato: {format_number(capi_totali_preview, 0)}\n\n"
             "Confermi l'operazione?",
         )
@@ -2666,16 +2713,18 @@ class AziendaTabMixin:
                 entry_id,
                 entry_id_secondario,
                 nuovo_nome_gruppo,
+                merge_date=data_unione_db,
             )
         except (sqlite3.Error, ValueError) as e:
             messagebox.showerror("Errore", str(e))
             return
 
+        data_effettiva = data_unione_text if data_unione_text else datetime.now().strftime("%d/%m/%Y")
         self.carica_report_animali_allevamento(mostra_errori=False)
         self.var_animali_stato.set(
             "Unione completata: "
             f"{categoria_label} + {nome_secondario} -> {nuovo_nome_gruppo} "
-            f"({format_number(capi_totali, 0)} capi)."
+            f"({format_number(capi_totali, 0)} capi), data unione {data_effettiva}."
         )
         if hasattr(self, "aggiorna_categoria_zootecnia"):
             self.aggiorna_categoria_zootecnia()

@@ -16,6 +16,9 @@ from database import (
 
 
 class LatteTabMixin:
+    _UNITA_QTA_LATTE = ("Quintali", "Litri")
+    _UNITA_PREZZO_LATTE = ("EUR/Litro", "EUR/Quintale")
+
     def setup_tab_latte(self):
         content = self.crea_container_scorribile(self.tab_latte, stretch_to_viewport=True)
 
@@ -23,13 +26,39 @@ class LatteTabMixin:
 
         self.var_latte_data = tk.StringVar(value=datetime.now().strftime("%d/%m/%Y"))
         self.var_latte_quintali = tk.StringVar()
+        self.var_latte_unita_quantita = tk.StringVar(value=self._UNITA_QTA_LATTE[0])
         self.var_latte_prezzo = tk.StringVar(value="0,00")
+        self.var_latte_unita_prezzo = tk.StringVar(value=self._UNITA_PREZZO_LATTE[0])
         self.produzione_in_modifica_id = None
         self._latte_litri_quote_by_group = {}
 
         self.crea_campo_data(content, "Data produzione:", self.var_latte_data)
-        self.crea_campo(content, "Quintali prodotti:", self.var_latte_quintali)
-        self.crea_campo(content, "Prezzo al litro (EUR):", self.var_latte_prezzo)
+
+        row_qta = ttk.Frame(content)
+        row_qta.pack(fill="x", padx=20, pady=5)
+        ttk.Label(row_qta, text="Quantita prodotta:", width=20).pack(side="left")
+        ttk.Entry(row_qta, textvariable=self.var_latte_quintali, width=16).pack(side="left", padx=(0, 8))
+        combo_qta = ttk.Combobox(
+            row_qta,
+            textvariable=self.var_latte_unita_quantita,
+            values=self._UNITA_QTA_LATTE,
+            state="readonly",
+            width=12,
+        )
+        combo_qta.pack(side="left")
+
+        row_prezzo = ttk.Frame(content)
+        row_prezzo.pack(fill="x", padx=20, pady=5)
+        ttk.Label(row_prezzo, text="Prezzo:", width=20).pack(side="left")
+        ttk.Entry(row_prezzo, textvariable=self.var_latte_prezzo, width=16).pack(side="left", padx=(0, 8))
+        combo_prezzo = ttk.Combobox(
+            row_prezzo,
+            textvariable=self.var_latte_unita_prezzo,
+            values=self._UNITA_PREZZO_LATTE,
+            state="readonly",
+            width=12,
+        )
+        combo_prezzo.pack(side="left")
 
         self.var_latte_gruppi_stato = tk.StringVar(value="")
         self._latte_gruppi_entry_ids = []
@@ -85,8 +114,26 @@ class LatteTabMixin:
 
         self.btn_salva_produzione = ttk.Button(frame_actions, text="Salva Produzione", command=self.salva_produzione_latte)
         self.btn_salva_produzione.pack(side="left", padx=6)
+        self.btn_modifica_produzione = ttk.Button(
+            frame_actions,
+            text="Modifica selezionata",
+            command=self.modifica_produzione_latte_selezionata,
+        )
+        self.btn_modifica_produzione.pack(side="left", padx=6)
+        self.btn_annulla_modifica_produzione = ttk.Button(
+            frame_actions,
+            text="Annulla modifica",
+            command=lambda: self.annulla_modifica_produzione_latte(reset_campi=True),
+            state="disabled",
+        )
+        self.btn_annulla_modifica_produzione.pack(side="left", padx=6)
         ttk.Button(frame_actions, text="Ricarica Storico", command=self.carica_produzioni_latte).pack(side="left", padx=6)
         ttk.Button(frame_actions, text="Elimina selezionata", command=self.elimina_produzione_latte_selezionata).pack(side="left", padx=6)
+
+        self.var_latte_modifica_stato = tk.StringVar(value="")
+        ttk.Label(content, textvariable=self.var_latte_modifica_stato, foreground="#1f5f3f").pack(
+            anchor="w", padx=20, pady=(0, 6)
+        )
 
         self.var_nome_fattura_latte = tk.StringVar(value="Nessuna fattura caricata")
         frame_fattura = ttk.Frame(content)
@@ -120,7 +167,8 @@ class LatteTabMixin:
         scroll.pack(side="right", fill="y")
 
         self.aggiorna_lista_gruppi_latte()
-        self.tree_produzione.bind("<<TreeviewSelect>>", self.prepara_modifica_produzione_latte)
+        self.tree_produzione.bind("<<TreeviewSelect>>", self._on_selezione_produzione_latte)
+        self.tree_produzione.bind("<Double-1>", lambda _event: self.modifica_produzione_latte_selezionata())
         self.tree_produzione.bind("<Delete>", lambda _event: self.elimina_produzione_latte_selezionata())
 
     def _label_gruppo_latte(self, entry):
@@ -232,10 +280,42 @@ class LatteTabMixin:
         if is_blank(quintali_text):
             return None
 
-        quintali = self._normalizza_importo(quintali_text, allow_zero=False)
-        if quintali is None:
+        return self._parse_quantita_litri_latte(
+            quintali_text,
+            self.var_latte_unita_quantita.get() if hasattr(self, "var_latte_unita_quantita") else "Quintali",
+        )
+
+    def _normalizza_unita_quantita_latte(self, raw_value):
+        value = (raw_value or "").strip().lower()
+        if value.startswith("l"):
+            return self._UNITA_QTA_LATTE[1]
+        return self._UNITA_QTA_LATTE[0]
+
+    def _normalizza_unita_prezzo_latte(self, raw_value):
+        value = (raw_value or "").strip().lower()
+        if "quint" in value or value.endswith("/q") or value.endswith("/quintale"):
+            return self._UNITA_PREZZO_LATTE[1]
+        return self._UNITA_PREZZO_LATTE[0]
+
+    def _parse_quantita_litri_latte(self, raw_value, unita_value):
+        quantita = parse_decimal(raw_value, allow_zero=False, allow_negative=False)
+        if quantita is None or quantita <= 0:
             return None
-        return float(quintali) * LITRI_PER_QUINTALE
+
+        unita_norm = self._normalizza_unita_quantita_latte(unita_value)
+        if unita_norm == self._UNITA_QTA_LATTE[1]:
+            return float(quantita)
+        return float(quantita) * LITRI_PER_QUINTALE
+
+    def _parse_prezzo_litro_latte(self, raw_value, unita_value):
+        prezzo = parse_decimal(raw_value, allow_zero=True, allow_negative=False)
+        if prezzo is None or prezzo < 0:
+            return None
+
+        unita_norm = self._normalizza_unita_prezzo_latte(unita_value)
+        if unita_norm == self._UNITA_PREZZO_LATTE[1]:
+            return float(prezzo) / LITRI_PER_QUINTALE
+        return float(prezzo)
 
     def _normalizza_quota_litri_input(self, raw_value):
         value = parse_decimal(raw_value, allow_zero=True, allow_negative=False)
@@ -291,7 +371,7 @@ class LatteTabMixin:
         if litri_totali is None:
             messagebox.showerror(
                 "Errore",
-                "Inserisci prima i quintali prodotti (valore valido) per poter ripartire i litri per gruppo.",
+                "Inserisci prima la quantita prodotta (valore valido) per poter ripartire i litri per gruppo.",
             )
             return
 
@@ -538,7 +618,7 @@ class LatteTabMixin:
             messagebox.showerror("Errore", "Inserisci la data di produzione.")
             return
         if is_blank(self.var_latte_quintali.get()):
-            messagebox.showerror("Errore", "Inserisci i quintali prodotti.")
+            messagebox.showerror("Errore", "Inserisci la quantita prodotta.")
             return
 
         try:
@@ -548,20 +628,26 @@ class LatteTabMixin:
             messagebox.showerror("Errore", "Formato data non valido (Usa GG/MM/AAAA)")
             return
 
-        quintali_val = self._normalizza_importo(self.var_latte_quintali.get(), allow_zero=False)
-        if quintali_val is None:
-            messagebox.showerror("Errore", "Quintali non validi.")
+        litri_val = self._parse_quantita_litri_latte(
+            self.var_latte_quintali.get(),
+            self.var_latte_unita_quantita.get() if hasattr(self, "var_latte_unita_quantita") else "Quintali",
+        )
+        if litri_val is None or litri_val <= 0:
+            messagebox.showerror("Errore", "Quantita non valida.")
             return
 
-        litri_val = quintali_val * LITRI_PER_QUINTALE
+        quintali_val = litri_val / LITRI_PER_QUINTALE
 
         prezzo_text = self.var_latte_prezzo.get().strip()
         if is_blank(prezzo_text):
             prezzo_val = 0.0
         else:
-            prezzo_val = self._normalizza_importo(prezzo_text, allow_zero=True)
+            prezzo_val = self._parse_prezzo_litro_latte(
+                prezzo_text,
+                self.var_latte_unita_prezzo.get() if hasattr(self, "var_latte_unita_prezzo") else "EUR/Litro",
+            )
             if prezzo_val is None:
-                messagebox.showerror("Errore", "Prezzo al litro non valido.")
+                messagebox.showerror("Errore", "Prezzo non valido.")
                 return
 
         gruppi_info = self._valida_gruppi_latte_selezionati()
@@ -850,19 +936,46 @@ class LatteTabMixin:
                 ),
             )
 
-    def prepara_modifica_produzione_latte(self, _event=None):
+    def _on_selezione_produzione_latte(self, _event=None):
+        if not hasattr(self, "var_latte_modifica_stato"):
+            return
+
+        if self.produzione_in_modifica_id is not None:
+            return
+
+        selezione = self.tree_produzione.selection() if hasattr(self, "tree_produzione") else []
+        if not selezione:
+            self.var_latte_modifica_stato.set("")
+            return
+
+        self.var_latte_modifica_stato.set(
+            "Produzione selezionata. Premi 'Modifica selezionata' per aggiornare dati e quantita per gruppo."
+        )
+
+    def modifica_produzione_latte_selezionata(self):
+        self.prepara_modifica_produzione_latte(mostra_errori=True)
+
+    def prepara_modifica_produzione_latte(self, _event=None, mostra_errori=False):
         selezione = self.tree_produzione.selection()
         if not selezione:
+            if mostra_errori:
+                messagebox.showwarning("Attenzione", "Seleziona prima una produzione da modificare.")
             return
 
         valori = self.tree_produzione.item(selezione[0], "values")
         if not valori:
+            if mostra_errori:
+                messagebox.showerror("Errore", "Impossibile leggere la produzione selezionata.")
             return
 
         self.produzione_in_modifica_id = int(valori[0])
         self.var_latte_data.set(valori[1] or datetime.now().strftime("%d/%m/%Y"))
         self.var_latte_quintali.set(valori[2] or "")
+        if hasattr(self, "var_latte_unita_quantita"):
+            self.var_latte_unita_quantita.set(self._UNITA_QTA_LATTE[0])
         self.var_latte_prezzo.set(valori[3] or "0,00")
+        if hasattr(self, "var_latte_unita_prezzo"):
+            self.var_latte_unita_prezzo.set(self._UNITA_PREZZO_LATTE[0])
 
         linked_group_ids = []
         group_allocations = {}
@@ -894,18 +1007,34 @@ class LatteTabMixin:
 
         if hasattr(self, "btn_salva_produzione"):
             self.btn_salva_produzione.config(text="Aggiorna Produzione")
+        if hasattr(self, "btn_annulla_modifica_produzione"):
+            self.btn_annulla_modifica_produzione.config(state="normal")
+        if hasattr(self, "var_latte_modifica_stato"):
+            quote_count = len(self._latte_litri_quote_by_group)
+            self.var_latte_modifica_stato.set(
+                f"Modifica produzione ID {self.produzione_in_modifica_id} attiva. "
+                f"Quote gruppi caricate: {quote_count}."
+            )
 
     def annulla_modifica_produzione_latte(self, reset_campi=False):
         self.produzione_in_modifica_id = None
         if hasattr(self, "btn_salva_produzione"):
             self.btn_salva_produzione.config(text="Salva Produzione")
+        if hasattr(self, "btn_annulla_modifica_produzione"):
+            self.btn_annulla_modifica_produzione.config(state="disabled")
+        if hasattr(self, "var_latte_modifica_stato"):
+            self.var_latte_modifica_stato.set("")
         if hasattr(self, "tree_produzione"):
             self.tree_produzione.selection_remove(*self.tree_produzione.selection())
 
         if reset_campi:
             self.var_latte_data.set(datetime.now().strftime("%d/%m/%Y"))
             self.var_latte_quintali.set("")
+            if hasattr(self, "var_latte_unita_quantita"):
+                self.var_latte_unita_quantita.set(self._UNITA_QTA_LATTE[0])
             self.var_latte_prezzo.set("0,00")
+            if hasattr(self, "var_latte_unita_prezzo"):
+                self.var_latte_unita_prezzo.set(self._UNITA_PREZZO_LATTE[0])
             self._latte_litri_quote_by_group = {}
             self.deseleziona_gruppi_latte()
 

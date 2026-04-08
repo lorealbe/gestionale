@@ -860,8 +860,10 @@ class MovimentiTabMixin:
         messagebox.showinfo(
             "Importazione completata",
             "Valori produzione impostati da fattura:\n"
-            f"- Quintali: {self.var_latte_quintali.get()}\n"
-            f"- Prezzo al litro (IVA inclusa): {self.var_latte_prezzo.get()}\n"
+            f"- Quantita: {self.var_latte_quintali.get()} "
+            f"{self.var_latte_unita_quantita.get() if hasattr(self, 'var_latte_unita_quantita') else 'Quintali'}\n"
+            f"- Prezzo (IVA inclusa): {self.var_latte_prezzo.get()} "
+            f"{self.var_latte_unita_prezzo.get() if hasattr(self, 'var_latte_unita_prezzo') else 'EUR/Litro'}\n"
             f"- Aliquota IVA applicata: {iva_label}%",
         )
 
@@ -899,6 +901,12 @@ class MovimentiTabMixin:
             valore = dati.get(chiave)
             if valore:
                 variabile.set(valore)
+
+        # Il parser latte valorizza quintali e prezzo al litro: forziamo le unita coerenti nel form.
+        if hasattr(self, "var_latte_unita_quantita"):
+            self.var_latte_unita_quantita.set("Quintali")
+        if hasattr(self, "var_latte_unita_prezzo"):
+            self.var_latte_unita_prezzo.set("EUR/Litro")
 
     def analizza_fattura_latte_con_parser_fatture(self, pdf_path, file_path):
         parse_invoice_pdf = self._get_parser_fatture_function()
@@ -1073,8 +1081,15 @@ class MovimentiTabMixin:
         if parse_invoice_pdf is not None:
             return parse_invoice_pdf
 
-        parser_src = Path(__file__).resolve().parents[1] / "parserFatture" / "src"
-        if parser_src.exists():
+        parser_src = None
+        current_file = Path(__file__).resolve()
+        for parent in current_file.parents:
+            candidate = parent / "parserFatture" / "src"
+            if candidate.exists():
+                parser_src = candidate
+                break
+
+        if parser_src is not None:
             parser_src_str = str(parser_src)
             if parser_src_str not in sys.path:
                 sys.path.insert(0, parser_src_str)
