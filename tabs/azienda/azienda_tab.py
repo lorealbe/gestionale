@@ -19,6 +19,7 @@ from database import (
     set_azienda_animale_capi,
     set_azienda_animale_finalita,
     set_azienda_animale_group_name,
+    set_azienda_animale_riproduzione,
     save_azienda_info,
 )
 from services.product_parser_utils import (
@@ -1850,6 +1851,7 @@ class AziendaTabMixin:
         self.var_animale_rimuovi_capi = tk.StringVar(value="")
         self.var_animale_modifica_capi = tk.StringVar(value="")
         self.var_animale_modifica_finalita = tk.StringVar(value=self.PURPOSE_OPTIONS[0])
+        self.var_animale_modifica_riproduzione = tk.BooleanVar(value=False)
         self.var_animale_modifica_target = tk.StringVar(value="")
         self.var_animale_modifica_nome_gruppo = tk.StringVar(value="")
         self.var_animale_dividi_target = tk.StringVar(value="")
@@ -1872,6 +1874,7 @@ class AziendaTabMixin:
         self.var_animale_tipo = tk.StringVar(value=self.ANIMAL_TYPE_OPTIONS[0])
         self.var_animale_finalita = tk.StringVar(value=self.PURPOSE_OPTIONS[0])
         self.var_animale_altro = tk.StringVar()
+        self.var_animale_riproduzione = tk.BooleanVar(value=False)
         self.var_animale_capi = tk.StringVar(value="")
         self.var_animale_nome_gruppo = tk.StringVar(value="")
 
@@ -1916,6 +1919,15 @@ class AziendaTabMixin:
         ttk.Label(self.row_animale_capi, text="Numero capi:", width=16).pack(side="left")
         ttk.Entry(self.row_animale_capi, textvariable=self.var_animale_capi, width=12).pack(side="left")
 
+        self.row_animale_riproduzione = ttk.Frame(self.frame_animale_form)
+        self.row_animale_riproduzione.pack(fill="x", padx=20, pady=4, before=self.row_animale_capi)
+        ttk.Label(self.row_animale_riproduzione, text="Riproduzione:", width=16).pack(side="left")
+        ttk.Checkbutton(
+            self.row_animale_riproduzione,
+            text="Destinato alla riproduzione",
+            variable=self.var_animale_riproduzione,
+        ).pack(side="left")
+
         self.row_animale_form_btn = ttk.Frame(self.frame_animale_form)
         self.row_animale_form_btn.pack(fill="x", padx=20, pady=(6, 8))
         ttk.Button(self.row_animale_form_btn, text="Conferma aggiunta", command=self.aggiungi_animale_da_form).pack(side="left")
@@ -1930,7 +1942,7 @@ class AziendaTabMixin:
 
         self.tree_animali_report = ttk.Treeview(
             frame_report,
-            columns=("gruppo", "tipo", "destinazione", "capi"),
+            columns=("gruppo", "tipo", "destinazione", "riproduzione", "capi"),
             show="headings",
             height=10,
             selectmode="browse",
@@ -1938,11 +1950,13 @@ class AziendaTabMixin:
         self.tree_animali_report.heading("gruppo", text="Gruppo")
         self.tree_animali_report.heading("tipo", text="Tipo")
         self.tree_animali_report.heading("destinazione", text="Destinazione")
+        self.tree_animali_report.heading("riproduzione", text="Riproduzione")
         self.tree_animali_report.heading("capi", text="Capi")
 
         self.tree_animali_report.column("gruppo", width=220, anchor="w")
-        self.tree_animali_report.column("tipo", width=260, anchor="w")
+        self.tree_animali_report.column("tipo", width=220, anchor="w")
         self.tree_animali_report.column("destinazione", width=160, anchor="center")
+        self.tree_animali_report.column("riproduzione", width=140, anchor="center")
         self.tree_animali_report.column("capi", width=120, anchor="e")
 
         scroll_report = ttk.Scrollbar(frame_report, orient="vertical", command=self.tree_animali_report.yview)
@@ -2012,6 +2026,19 @@ class AziendaTabMixin:
             self.row_animale_modifica_destinazione,
             text="Salva destinazione",
             command=self.modifica_destinazione_categoria_selezionata,
+        ).pack(side="left")
+
+        self.row_animale_modifica_riproduzione = ttk.Frame(self.frame_modifica_animale)
+        ttk.Label(self.row_animale_modifica_riproduzione, text="Riproduzione:", width=20).pack(side="left")
+        ttk.Checkbutton(
+            self.row_animale_modifica_riproduzione,
+            text="Destinato alla riproduzione",
+            variable=self.var_animale_modifica_riproduzione,
+        ).pack(side="left", padx=(6, 8))
+        ttk.Button(
+            self.row_animale_modifica_riproduzione,
+            text="Salva riproduzione",
+            command=self.modifica_riproduzione_categoria_selezionata,
         ).pack(side="left")
 
         self.row_animale_modifica_elimina = ttk.Frame(self.frame_modifica_animale)
@@ -2177,6 +2204,7 @@ class AziendaTabMixin:
         self.var_animale_tipo.set(self.ANIMAL_TYPE_OPTIONS[0])
         self.var_animale_finalita.set(self.PURPOSE_OPTIONS[0])
         self.var_animale_altro.set("")
+        self.var_animale_riproduzione.set(False)
         self.var_animale_capi.set("")
         self._on_tipo_animale_change()
 
@@ -2381,6 +2409,7 @@ class AziendaTabMixin:
         self.var_animale_rimuovi_capi.set("")
         self.var_animale_modifica_capi.set("")
         self.var_animale_modifica_finalita.set(self.PURPOSE_OPTIONS[0])
+        self.var_animale_modifica_riproduzione.set(False)
         self.var_animale_modifica_nome_gruppo.set("")
         self.var_animale_dividi_target.set("")
         self.var_animale_operazione_gruppo.set("dividi")
@@ -2397,6 +2426,8 @@ class AziendaTabMixin:
         self._animale_dividi_capi_totali = 0
         if self.row_animale_modifica_destinazione.winfo_manager() != "":
             self.row_animale_modifica_destinazione.pack_forget()
+        if self.row_animale_modifica_riproduzione.winfo_manager() != "":
+            self.row_animale_modifica_riproduzione.pack_forget()
         self._on_operazione_gruppo_change()
         self._set_sezione_modifica_animale(False)
 
@@ -2409,11 +2440,13 @@ class AziendaTabMixin:
         values = self.tree_animali_report.item(selection[0], "values") if selection else ()
         categoria_label = values[0] if values else "categoria selezionata"
         destinazione_label = values[2] if len(values) > 2 else "-"
-        capi_label = values[3] if len(values) > 3 else ""
+        riproduzione_label = values[3] if len(values) > 3 else "No"
+        capi_label = values[4] if len(values) > 4 else ""
 
         self.var_animale_modifica_target.set(f"Selezionato: {categoria_label}")
         self.var_animale_rimuovi_capi.set("")
         self.var_animale_modifica_capi.set(self._normalizza_capi_da_testo(capi_label))
+        self.var_animale_modifica_riproduzione.set((riproduzione_label or "").strip().lower() == "si")
         self.var_animale_modifica_nome_gruppo.set(categoria_label if categoria_label != "-" else "")
 
         capi_totali_text = self._normalizza_capi_da_testo(capi_label)
@@ -2438,6 +2471,9 @@ class AziendaTabMixin:
             self.var_animale_modifica_finalita.set(self.PURPOSE_OPTIONS[0])
             if self.row_animale_modifica_destinazione.winfo_manager() != "":
                 self.row_animale_modifica_destinazione.pack_forget()
+
+        if self.row_animale_modifica_riproduzione.winfo_manager() == "":
+            self.row_animale_modifica_riproduzione.pack(fill="x", padx=20, pady=4, before=self.row_animale_modifica_elimina)
 
         self._set_sezione_modifica_animale(True)
 
@@ -2501,6 +2537,7 @@ class AziendaTabMixin:
                 finalita=finalita_db,
                 altro_label=altro_label,
                 group_name=group_name,
+                riproduzione=bool(self.var_animale_riproduzione.get()),
             )
         except (sqlite3.Error, ValueError) as e:
             messagebox.showerror("Errore", str(e))
@@ -2804,6 +2841,36 @@ class AziendaTabMixin:
         if hasattr(self, "aggiorna_categoria_zootecnia"):
             self.aggiorna_categoria_zootecnia()
 
+    def modifica_riproduzione_categoria_selezionata(self):
+        entry_id = self._get_selected_animale_entry_id()
+        if entry_id is None:
+            return
+
+        selection = self.tree_animali_report.selection()
+        values = self.tree_animali_report.item(selection[0], "values") if selection else ()
+        categoria_label = values[0] if values else "categoria selezionata"
+
+        riproduzione_attiva = bool(self.var_animale_modifica_riproduzione.get())
+
+        try:
+            aggiornata = set_azienda_animale_riproduzione(self.user_id, entry_id, riproduzione_attiva)
+        except (sqlite3.Error, ValueError) as e:
+            messagebox.showerror("Errore", str(e))
+            return
+
+        self.carica_report_animali_allevamento(mostra_errori=False)
+        if aggiornata:
+            stato_label = "attivata" if riproduzione_attiva else "disattivata"
+            self.var_animali_stato.set(
+                f"Riproduzione {stato_label} per {categoria_label}."
+            )
+        else:
+            self.var_animali_stato.set(
+                f"Nessuna modifica: riproduzione invariata per {categoria_label}."
+            )
+        if hasattr(self, "aggiorna_categoria_zootecnia"):
+            self.aggiorna_categoria_zootecnia()
+
     def _auto_compila_data_fine_azienda(self, *_args):
         if is_blank(self.var_azienda_data_fine.get()) and not is_blank(self.var_azienda_data_inizio.get()):
             self.var_azienda_data_fine.set(self.var_azienda_data_inizio.get())
@@ -2960,16 +3027,25 @@ class AziendaTabMixin:
 
         totale_capi = 0
         if not entries:
-            self.tree_animali_report.insert("", "end", values=("Nessun gruppo registrato", "-", "-", "0"))
+            self.tree_animali_report.insert("", "end", values=("Nessun gruppo registrato", "-", "-", "-", "0"))
         else:
             for entry in entries:
                 entry_id = int(entry.get("id", 0) or 0)
                 group_name_text = (entry.get("group_name") or "").strip() or "Gruppo senza nome"
                 tipo_text = self._format_tipo_animale_report(entry.get("tipo_animale", ""), entry.get("altro_label", ""))
                 finalita_text = self._format_finalita_report(entry.get("finalita", ""))
+                riproduzione_text = self._format_riproduzione_report(entry.get("riproduzione", False))
                 capi = int(entry.get("capi", 0) or 0)
                 totale_capi += capi
-                insert_kwargs = {"values": (group_name_text, tipo_text, finalita_text, format_number(capi, 0))}
+                insert_kwargs = {
+                    "values": (
+                        group_name_text,
+                        tipo_text,
+                        finalita_text,
+                        riproduzione_text,
+                        format_number(capi, 0),
+                    )
+                }
                 if entry_id > 0:
                     insert_kwargs["iid"] = str(entry_id)
                 self.tree_animali_report.insert("", "end", **insert_kwargs)
@@ -3000,6 +3076,9 @@ class AziendaTabMixin:
         if value == "CARNE":
             return "Da Carne"
         return "-"
+
+    def _format_riproduzione_report(self, riproduzione):
+        return "Si" if bool(riproduzione) else "No"
 
     def mostra_tab_azienda_animali(self):
         if hasattr(self, "azienda_notebook") and hasattr(self, "tab_azienda_dati"):

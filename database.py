@@ -397,6 +397,23 @@ def _to_non_negative_int(value) -> int:
     return number if number >= 0 else 0
 
 
+def _to_bool_int(value) -> int:
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in ("1", "true", "si", "s", "yes", "y", "on"):
+            return 1
+        if text in ("0", "false", "no", "n", "off", ""):
+            return 0
+
+    if isinstance(value, (int, float)):
+        try:
+            return 1 if int(value) != 0 else 0
+        except (TypeError, ValueError):
+            return 0
+
+    return 1 if bool(value) else 0
+
+
 def _normalize_tipo_animale(raw_value: str) -> str:
     return (raw_value or "").strip().upper()
 
@@ -468,10 +485,20 @@ def _migrate_legacy_azienda_animali_to_dettaglio(cursor):
             cursor.execute(
                 '''
                 INSERT OR IGNORE INTO azienda_animali_dettaglio
-                    (user_id, tipo_animale, finalita, altro_label, group_name, capi, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    (
+                        user_id,
+                        tipo_animale,
+                        finalita,
+                        altro_label,
+                        group_name,
+                        riproduzione,
+                        capi,
+                        created_at,
+                        updated_at
+                    )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''',
-                (user_id, tipo, finalita, altro_label, group_name, capi, now_text, now_text),
+                (user_id, tipo, finalita, altro_label, group_name, 0, capi, now_text, now_text),
             )
 
 
@@ -517,6 +544,7 @@ def _ensure_animali_dettaglio_unique_on_group_name(cursor):
 
     merged_into_expr = "COALESCE(merged_into_entry_id, 0)" if "merged_into_entry_id" in colonne else "0"
     merge_date_expr = "COALESCE(merge_date, '')" if "merge_date" in colonne else "''"
+    riproduzione_expr = "COALESCE(riproduzione, 0)" if "riproduzione" in colonne else "0"
 
     cursor.execute(
         f'''
@@ -527,6 +555,7 @@ def _ensure_animali_dettaglio_unique_on_group_name(cursor):
             finalita,
             altro_label,
             group_name,
+            {riproduzione_expr} AS riproduzione,
             capi,
             created_at,
             updated_at,
@@ -548,6 +577,7 @@ def _ensure_animali_dettaglio_unique_on_group_name(cursor):
              finalita TEXT NOT NULL DEFAULT '',
              altro_label TEXT NOT NULL DEFAULT '',
              group_name TEXT NOT NULL DEFAULT '',
+             riproduzione INTEGER NOT NULL DEFAULT 0,
              capi INTEGER NOT NULL DEFAULT 0 CHECK(capi >= 0),
              created_at TEXT NOT NULL DEFAULT '',
              updated_at TEXT NOT NULL DEFAULT '',
@@ -566,6 +596,7 @@ def _ensure_animali_dettaglio_unique_on_group_name(cursor):
         finalita,
         altro_label,
         group_name,
+        riproduzione,
         capi,
         created_at,
         updated_at,
@@ -593,13 +624,14 @@ def _ensure_animali_dettaglio_unique_on_group_name(cursor):
                     finalita,
                     altro_label,
                     group_name,
+                    riproduzione,
                     capi,
                     created_at,
                     updated_at,
                     merged_into_entry_id,
                     merge_date
                 )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''',
             (
                 int(row_id),
@@ -608,6 +640,7 @@ def _ensure_animali_dettaglio_unique_on_group_name(cursor):
                 finalita_norm,
                 altro_clean,
                 group_name_clean,
+                _to_bool_int(riproduzione),
                 _to_non_negative_int(capi),
                 created_at_clean,
                 updated_at_clean,
@@ -630,6 +663,7 @@ def list_azienda_animali_entries(user_id: int, include_merged: bool = False) -> 
                 tipo_animale,
                 finalita,
                 altro_label,
+                COALESCE(riproduzione, 0),
                 capi,
                 group_name,
                 COALESCE(created_at, ''),
@@ -664,6 +698,7 @@ def list_azienda_animali_entries(user_id: int, include_merged: bool = False) -> 
         tipo_animale,
         finalita,
         altro_label,
+        riproduzione,
         capi,
         group_name,
         created_at,
@@ -685,6 +720,7 @@ def list_azienda_animali_entries(user_id: int, include_merged: bool = False) -> 
                 "tipo_animale": (tipo_animale or "").strip().upper(),
                 "finalita": (finalita or "").strip().upper(),
                 "altro_label": (altro_label or "").strip(),
+                "riproduzione": bool(_to_bool_int(riproduzione)),
                 "capi": _to_non_negative_int(capi),
                 "group_name": group_name_clean,
                 "created_at": (created_at or "").strip(),
@@ -1246,6 +1282,20 @@ def list_azienda_animali_storico_entries(user_id: int, limit: int = 300) -> list
     return entries
 
 
+def delete_azienda_animali_storico_entry(user_id: int, storico_id: int) -> bool:
+    storico_id_value = _to_non_negative_int(storico_id)
+    if storico_id_value <= 0:
+        raise ValueError("Operazione storico non valida.")
+
+    with get_conn() as conn:
+        c = conn.cursor()
+        c.execute(
+            "DELETE FROM azienda_animali_storico WHERE id=? AND user_id=?",
+            (storico_id_value, user_id),
+        )
+        return int(c.rowcount or 0) > 0
+
+
 def add_azienda_animale_entry(
     user_id: int,
     tipo_animale: str,
@@ -1253,6 +1303,7 @@ def add_azienda_animale_entry(
     finalita: str = "",
     altro_label: str = "",
     group_name: str = "",
+    riproduzione: bool = False,
 ):
     tipo = _normalize_tipo_animale(tipo_animale)
     if tipo not in ANIMAL_TYPE_OPTIONS:
@@ -1280,6 +1331,8 @@ def add_azienda_animale_entry(
     if not group_name_clean:
         group_name_clean = _default_group_name(tipo, finalita_norm, altro_clean)
 
+    riproduzione_value = _to_bool_int(riproduzione)
+
     now_text = datetime.now().isoformat(timespec="seconds")
     with get_conn() as conn:
         c = conn.cursor()
@@ -1297,13 +1350,38 @@ def add_azienda_animale_entry(
         c.execute(
             '''
             INSERT INTO azienda_animali_dettaglio
-                (user_id, tipo_animale, finalita, altro_label, group_name, capi, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                (
+                    user_id,
+                    tipo_animale,
+                    finalita,
+                    altro_label,
+                    group_name,
+                    riproduzione,
+                    capi,
+                    created_at,
+                    updated_at
+                )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(user_id, tipo_animale, finalita, altro_label, group_name) DO UPDATE SET
                 capi = azienda_animali_dettaglio.capi + excluded.capi,
+                riproduzione = CASE
+                    WHEN COALESCE(azienda_animali_dettaglio.riproduzione, 0) <> 0
+                         OR COALESCE(excluded.riproduzione, 0) <> 0 THEN 1
+                    ELSE 0
+                END,
                 updated_at = excluded.updated_at
         ''',
-            (user_id, tipo, finalita_norm, altro_clean, group_name_clean, capi_value, now_text, now_text),
+            (
+                user_id,
+                tipo,
+                finalita_norm,
+                altro_clean,
+                group_name_clean,
+                riproduzione_value,
+                capi_value,
+                now_text,
+                now_text,
+            ),
         )
 
         c.execute(
@@ -1556,7 +1634,7 @@ def set_azienda_animale_finalita(user_id: int, entry_id: int, nuova_finalita: st
         c = conn.cursor()
         c.execute(
             '''
-            SELECT id, tipo_animale, finalita, altro_label, capi, group_name
+            SELECT id, tipo_animale, finalita, altro_label, capi, group_name, COALESCE(riproduzione, 0)
             FROM azienda_animali_dettaglio
             WHERE id=? AND user_id=?
         ''',
@@ -1573,6 +1651,7 @@ def set_azienda_animale_finalita(user_id: int, entry_id: int, nuova_finalita: st
         altro_label = (row[3] or "").strip()
         capi_value = _to_non_negative_int(row[4])
         current_group_name = (row[5] or "").strip()
+        current_riproduzione = _to_bool_int(row[6])
         if not current_group_name:
             current_group_name = _default_group_name(tipo_animale, current_finalita, altro_label)
 
@@ -1584,7 +1663,7 @@ def set_azienda_animale_finalita(user_id: int, entry_id: int, nuova_finalita: st
 
         c.execute(
             '''
-            SELECT id, capi, group_name
+            SELECT id, capi, group_name, COALESCE(riproduzione, 0)
             FROM azienda_animali_dettaglio
             WHERE user_id=? AND tipo_animale=? AND finalita=? AND altro_label=? AND group_name=?
         ''',
@@ -1596,20 +1675,22 @@ def set_azienda_animale_finalita(user_id: int, entry_id: int, nuova_finalita: st
             conflict_id = int(conflict[0])
             conflict_capi = _to_non_negative_int(conflict[1])
             conflict_group_name = (conflict[2] or "").strip()
+            conflict_riproduzione = _to_bool_int(conflict[3])
             merged_group_name = conflict_group_name or current_group_name or _default_group_name(
                 tipo_animale,
                 finalita_norm,
                 altro_label,
             )
             capi_dopo = conflict_capi + capi_value
+            riproduzione_dopo = 1 if (conflict_riproduzione or current_riproduzione) else 0
 
             c.execute(
                 '''
                 UPDATE azienda_animali_dettaglio
-                SET capi=?, group_name=?, updated_at=?
+                SET capi=?, group_name=?, riproduzione=?, updated_at=?
                 WHERE id=? AND user_id=?
             ''',
-                (capi_dopo, merged_group_name, now_text, conflict_id, user_id),
+                (capi_dopo, merged_group_name, riproduzione_dopo, now_text, conflict_id, user_id),
             )
             c.execute(
                 "DELETE FROM azienda_animali_dettaglio WHERE id=? AND user_id=?",
@@ -1664,6 +1745,65 @@ def set_azienda_animale_finalita(user_id: int, entry_id: int, nuova_finalita: st
             ),
         )
     return False
+
+
+def set_azienda_animale_riproduzione(user_id: int, entry_id: int, destinato_riproduzione) -> bool:
+    entry_id_value = _to_non_negative_int(entry_id)
+    if entry_id_value <= 0:
+        raise ValueError("Categoria animale non valida.")
+
+    riproduzione_nuova = _to_bool_int(destinato_riproduzione)
+    now_text = datetime.now().isoformat(timespec="seconds")
+
+    with get_conn() as conn:
+        c = conn.cursor()
+        c.execute(
+            '''
+            SELECT tipo_animale, finalita, group_name, capi, COALESCE(riproduzione, 0)
+            FROM azienda_animali_dettaglio
+            WHERE id=? AND user_id=?
+        ''',
+            (entry_id_value, user_id),
+        )
+        row = c.fetchone()
+        if not row:
+            raise ValueError("Categoria animale non trovata.")
+
+        tipo_animale = (row[0] or "").strip().upper()
+        finalita = (row[1] or "").strip().upper()
+        group_name = (row[2] or "").strip()
+        capi_attuali = _to_non_negative_int(row[3])
+        riproduzione_attuale = _to_bool_int(row[4])
+
+        if riproduzione_attuale == riproduzione_nuova:
+            return False
+
+        c.execute(
+            '''
+            UPDATE azienda_animali_dettaglio
+            SET riproduzione=?, updated_at=?
+            WHERE id=? AND user_id=?
+        ''',
+            (riproduzione_nuova, now_text, entry_id_value, user_id),
+        )
+
+        stato_label = "attivata" if riproduzione_nuova else "disattivata"
+        _log_azienda_animali_storico(
+            c,
+            user_id=user_id,
+            event_type="CAMBIO_RIPRODUZIONE",
+            event_time=now_text,
+            gruppo_entry_id=entry_id_value,
+            gruppo_nome=group_name,
+            tipo_animale=tipo_animale,
+            finalita=finalita,
+            capi_prima=capi_attuali,
+            capi_variazione=0,
+            capi_dopo=capi_attuali,
+            note=f"Destinazione riproduzione {stato_label}.",
+        )
+
+    return True
 
 
 def set_azienda_animale_group_name(user_id: int, entry_id: int, nuovo_group_name: str) -> bool:
@@ -1738,7 +1878,7 @@ def split_azienda_animale_group(user_id: int, entry_id: int, capi_nuovo_gruppo: 
         c = conn.cursor()
         c.execute(
             '''
-            SELECT tipo_animale, finalita, altro_label, group_name, capi
+            SELECT tipo_animale, finalita, altro_label, group_name, capi, COALESCE(riproduzione, 0)
             FROM azienda_animali_dettaglio
             WHERE id=? AND user_id=?
         ''',
@@ -1754,6 +1894,7 @@ def split_azienda_animale_group(user_id: int, entry_id: int, capi_nuovo_gruppo: 
         altro_label = (row[2] or "").strip()
         current_group_name = (row[3] or "").strip()
         capi_attuali = _to_non_negative_int(row[4])
+        riproduzione = _to_bool_int(row[5])
         if not current_group_name:
             current_group_name = _default_group_name(tipo_animale, finalita, altro_label)
 
@@ -1781,8 +1922,18 @@ def split_azienda_animale_group(user_id: int, entry_id: int, capi_nuovo_gruppo: 
             c.execute(
                 '''
                 INSERT INTO azienda_animali_dettaglio
-                    (user_id, tipo_animale, finalita, altro_label, group_name, capi, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    (
+                        user_id,
+                        tipo_animale,
+                        finalita,
+                        altro_label,
+                        group_name,
+                        riproduzione,
+                        capi,
+                        created_at,
+                        updated_at
+                    )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''',
                 (
                     user_id,
@@ -1790,6 +1941,7 @@ def split_azienda_animale_group(user_id: int, entry_id: int, capi_nuovo_gruppo: 
                     finalita,
                     altro_label,
                     new_group_name_clean,
+                    riproduzione,
                     capi_nuovo_value,
                     now_text,
                     now_text,
@@ -1886,7 +2038,7 @@ def merge_azienda_animale_groups(
 
         c.execute(
             '''
-            SELECT id, tipo_animale, finalita, altro_label, group_name, capi,
+            SELECT id, tipo_animale, finalita, altro_label, group_name, COALESCE(riproduzione, 0), capi,
                    COALESCE(merged_into_entry_id, 0)
             FROM azienda_animali_dettaglio
             WHERE id IN (?, ?) AND user_id=?
@@ -1907,15 +2059,17 @@ def merge_azienda_animale_groups(
         finalita_principale = (principale[2] or "").strip().upper()
         altro_principale = (principale[3] or "").strip()
         group_name_principale = (principale[4] or "").strip()
-        capi_principale = _to_non_negative_int(principale[5])
-        merged_principale = _to_non_negative_int(principale[6])
+        riproduzione_principale = _to_bool_int(principale[5])
+        capi_principale = _to_non_negative_int(principale[6])
+        merged_principale = _to_non_negative_int(principale[7])
 
         tipo_secondario = (secondario[1] or "").strip().upper()
         finalita_secondario = (secondario[2] or "").strip().upper()
         altro_secondario = (secondario[3] or "").strip()
         group_name_secondario = (secondario[4] or "").strip()
-        capi_secondario = _to_non_negative_int(secondario[5])
-        merged_secondario = _to_non_negative_int(secondario[6])
+        riproduzione_secondario = _to_bool_int(secondario[5])
+        capi_secondario = _to_non_negative_int(secondario[6])
+        merged_secondario = _to_non_negative_int(secondario[7])
 
         if not group_name_principale:
             group_name_principale = _default_group_name(tipo_principale, finalita_principale, altro_principale)
@@ -2040,10 +2194,17 @@ def merge_azienda_animale_groups(
             c.execute(
                 '''
                 UPDATE azienda_animali_dettaglio
-                SET capi=?, group_name=?, updated_at=?
+                SET capi=?, group_name=?, riproduzione=?, updated_at=?
                 WHERE id=? AND user_id=?
             ''',
-                (capi_totali, new_group_name_clean, now_text, entry_id_principale_value, user_id),
+                (
+                    capi_totali,
+                    new_group_name_clean,
+                    1 if (riproduzione_principale or riproduzione_secondario) else 0,
+                    now_text,
+                    entry_id_principale_value,
+                    user_id,
+                ),
             )
         except sqlite3.IntegrityError:
             raise ValueError("Esiste gia un gruppo con questo nome per la stessa categoria.")
@@ -2814,6 +2975,7 @@ def init_db():
                  finalita TEXT NOT NULL DEFAULT '',
                  altro_label TEXT NOT NULL DEFAULT '',
                  group_name TEXT NOT NULL DEFAULT '',
+                 riproduzione INTEGER NOT NULL DEFAULT 0,
                  capi INTEGER NOT NULL DEFAULT 0 CHECK(capi >= 0),
                  created_at TEXT NOT NULL DEFAULT '',
                  updated_at TEXT NOT NULL DEFAULT '',
@@ -2832,6 +2994,8 @@ def init_db():
             c.execute("ALTER TABLE azienda_animali_dettaglio ADD COLUMN altro_label TEXT NOT NULL DEFAULT ''")
         if colonne_animali_det and "group_name" not in colonne_animali_det:
             c.execute("ALTER TABLE azienda_animali_dettaglio ADD COLUMN group_name TEXT NOT NULL DEFAULT ''")
+        if colonne_animali_det and "riproduzione" not in colonne_animali_det:
+            c.execute("ALTER TABLE azienda_animali_dettaglio ADD COLUMN riproduzione INTEGER NOT NULL DEFAULT 0")
         if colonne_animali_det and "capi" not in colonne_animali_det:
             c.execute("ALTER TABLE azienda_animali_dettaglio ADD COLUMN capi INTEGER NOT NULL DEFAULT 0")
         if colonne_animali_det and "created_at" not in colonne_animali_det:

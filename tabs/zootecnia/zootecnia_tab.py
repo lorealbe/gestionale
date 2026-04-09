@@ -2,10 +2,15 @@ import re
 import sqlite3
 import tkinter as tk
 from datetime import datetime
-from tkinter import ttk
+from tkinter import messagebox, ttk
 
 from app_utils import clear_treeview, format_eur, format_number, parse_decimal
-from database import get_conn, list_azienda_animali_entries, list_azienda_animali_storico_entries
+from database import (
+    delete_azienda_animali_storico_entry,
+    get_conn,
+    list_azienda_animali_entries,
+    list_azienda_animali_storico_entries,
+)
 from services.latte_group_metrics import (
     calcola_metriche_latte_da_totali as svc_calcola_metriche_latte_da_totali,
     costruisci_quote_litri_produzioni as svc_costruisci_quote_litri_produzioni,
@@ -74,6 +79,7 @@ class ZootecniaTabMixin:
             "DIVISIONE_GRUPPO": "Divisione gruppo",
             "UNIONE_GRUPPI": "Unione gruppi",
             "CAMBIO_DESTINAZIONE": "Cambio destinazione",
+            "CAMBIO_RIPRODUZIONE": "Cambio riproduzione",
         }
         if evento in mapping:
             return mapping[evento]
@@ -97,6 +103,7 @@ class ZootecniaTabMixin:
             return
 
         clear_treeview(self.tree_zootecnia_storico_gruppi)
+        self._zootecnia_storico_item_to_entry_id = {}
 
         try:
             entries = list_azienda_animali_storico_entries(self.user_id, limit=300)
@@ -142,7 +149,7 @@ class ZootecniaTabMixin:
                 dettaglio_parts.append(note)
             dettaglio = " | ".join(dettaglio_parts) if dettaglio_parts else "-"
 
-            self.tree_zootecnia_storico_gruppi.insert(
+            item_id = self.tree_zootecnia_storico_gruppi.insert(
                 "",
                 "end",
                 values=(
@@ -154,6 +161,89 @@ class ZootecniaTabMixin:
                     dettaglio,
                 ),
             )
+
+            entry_id = int(entry.get("id") or 0)
+            if entry_id > 0:
+                self._zootecnia_storico_item_to_entry_id[item_id] = entry_id
+
+    def elimina_operazioni_storico_gruppi_selezionate(self):
+        if not hasattr(self, "tree_zootecnia_storico_gruppi"):
+            return
+
+        selected_items = list(self.tree_zootecnia_storico_gruppi.selection())
+        if not selected_items:
+            messagebox.showwarning("Attenzione", "Seleziona prima almeno un'operazione dallo storico.")
+            return
+
+        item_to_entry = getattr(self, "_zootecnia_storico_item_to_entry_id", {}) or {}
+
+        selected_entry_ids = []
+        selected_preview = []
+        seen = set()
+        for item_id in selected_items:
+            entry_id = int(item_to_entry.get(item_id) or 0)
+            if entry_id <= 0 or entry_id in seen:
+                continue
+
+            seen.add(entry_id)
+            selected_entry_ids.append(entry_id)
+
+            values = self.tree_zootecnia_storico_gruppi.item(item_id, "values") or ()
+            data_text = str(values[0] or "-") if len(values) > 0 else "-"
+            evento_text = str(values[1] or "-") if len(values) > 1 else "-"
+            gruppo_text = str(values[2] or "-") if len(values) > 2 else "-"
+            selected_preview.append(f"{data_text} | {evento_text} | {gruppo_text}")
+
+        if not selected_entry_ids:
+            messagebox.showwarning("Attenzione", "La selezione corrente non contiene operazioni eliminabili.")
+            return
+
+        if len(selected_entry_ids) == 1:
+            conferma_msg = (
+                "Vuoi eliminare l'operazione selezionata dallo storico gruppi?\n\n"
+                f"{selected_preview[0]}"
+            )
+        else:
+            preview_text = "\n".join(selected_preview[:3])
+            extra = len(selected_preview) - 3
+            if extra > 0:
+                preview_text += f"\n... e altre {extra} operazioni"
+
+            conferma_msg = (
+                f"Vuoi eliminare {len(selected_entry_ids)} operazioni dallo storico gruppi?\n\n"
+                f"{preview_text}"
+            )
+
+        conferma = messagebox.askyesno("Conferma eliminazione", conferma_msg)
+        if not conferma:
+            return
+
+        eliminati = 0
+        try:
+            for entry_id in selected_entry_ids:
+                if delete_azienda_animali_storico_entry(self.user_id, entry_id):
+                    eliminati += 1
+        except ValueError as e:
+            messagebox.showerror("Errore", str(e))
+            return
+        except sqlite3.Error as e:
+            messagebox.showerror("Errore DB", f"Errore database: {e}")
+            return
+
+        self._carica_storico_gruppi_zootecnia(mostra_errori=False)
+
+        if eliminati <= 0:
+            messagebox.showwarning(
+                "Nessuna operazione eliminata",
+                "Le operazioni selezionate potrebbero essere gia state eliminate.",
+            )
+            return
+
+        if eliminati == 1:
+            msg = "Operazione eliminata dallo storico gruppi."
+        else:
+            msg = f"Operazioni eliminate dallo storico gruppi: {eliminati}."
+        messagebox.showinfo("Eliminazione completata", msg)
 
     def _is_entry_latte_attiva(self, entry):
         finalita = (entry.get("finalita") or "").strip().upper()
@@ -1707,6 +1797,11 @@ class ZootecniaTabMixin:
         ttk.Label(frame_storico_azioni, text="Mostra le ultime 300 operazioni sui gruppi.").pack(side="left")
         ttk.Button(
             frame_storico_azioni,
+            text="Elimina selezionate",
+            command=self.elimina_operazioni_storico_gruppi_selezionate,
+        ).pack(side="right", padx=(0, 6))
+        ttk.Button(
+            frame_storico_azioni,
             text="Aggiorna storico",
             command=lambda: self._carica_storico_gruppi_zootecnia(mostra_errori=True),
         ).pack(side="right")
@@ -1715,6 +1810,7 @@ class ZootecniaTabMixin:
             frame_storico_gruppi,
             columns=("data", "evento", "gruppo", "delta", "capi_dopo", "dettaglio"),
             show="headings",
+            selectmode="extended",
             height=10,
         )
         self.tree_zootecnia_storico_gruppi.heading("data", text="Data")
@@ -1740,6 +1836,10 @@ class ZootecniaTabMixin:
 
         self.tree_zootecnia_storico_gruppi.pack(side="left", fill="both", expand=True, padx=(8, 0), pady=8)
         scroll_storico.pack(side="right", fill="y", padx=(0, 8), pady=8)
+        self.tree_zootecnia_storico_gruppi.bind(
+            "<Delete>",
+            lambda _event: self.elimina_operazioni_storico_gruppi_selezionate(),
+        )
 
         if hasattr(self, "abilita_a_capo_treeview"):
             self.abilita_a_capo_treeview(self.tree_zootecnia_storico_gruppi, max_lines=3)
