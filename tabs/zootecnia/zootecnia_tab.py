@@ -5,7 +5,7 @@ from datetime import datetime
 from tkinter import ttk
 
 from app_utils import clear_treeview, format_eur, format_number, parse_decimal
-from database import get_conn, list_azienda_animali_entries
+from database import get_conn, list_azienda_animali_entries, list_azienda_animali_storico_entries
 from services.latte_group_metrics import (
     calcola_metriche_latte_da_totali as svc_calcola_metriche_latte_da_totali,
     costruisci_quote_litri_produzioni as svc_costruisci_quote_litri_produzioni,
@@ -65,6 +65,95 @@ class ZootecniaTabMixin:
         if finalita == "CARNE":
             return "Da Carne"
         return "-"
+
+    def _zootecnia_label_evento_storico(self, event_type: str) -> str:
+        evento = (event_type or "").strip().upper()
+        mapping = {
+            "AGGIUNTA_CAPI": "Aggiunta capi",
+            "RIMOZIONE_CAPI": "Rimozione capi",
+            "DIVISIONE_GRUPPO": "Divisione gruppo",
+            "UNIONE_GRUPPI": "Unione gruppi",
+            "CAMBIO_DESTINAZIONE": "Cambio destinazione",
+        }
+        if evento in mapping:
+            return mapping[evento]
+        return evento.replace("_", " ").title() if evento else "Evento"
+
+    def _zootecnia_data_evento_storico(self, event_time: str) -> str:
+        testo = (event_time or "").strip()
+        if not testo:
+            return "-"
+
+        for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+            try:
+                return datetime.strptime(testo, fmt).strftime("%d/%m/%Y %H:%M")
+            except ValueError:
+                continue
+
+        return testo
+
+    def _carica_storico_gruppi_zootecnia(self, mostra_errori=False):
+        if not hasattr(self, "tree_zootecnia_storico_gruppi"):
+            return
+
+        clear_treeview(self.tree_zootecnia_storico_gruppi)
+
+        try:
+            entries = list_azienda_animali_storico_entries(self.user_id, limit=300)
+        except sqlite3.Error:
+            entries = []
+
+        if not entries:
+            self.tree_zootecnia_storico_gruppi.insert(
+                "",
+                "end",
+                values=("-", "-", "Nessun evento registrato", "-", "-", "-"),
+            )
+            return
+
+        for entry in entries:
+            gruppo_nome = (entry.get("gruppo_nome") or "").strip() or "Gruppo"
+            tipo = (entry.get("tipo_animale") or "").strip().upper()
+            finalita = (entry.get("finalita") or "").strip().upper()
+
+            gruppo_label = gruppo_nome
+            dettagli_tipo = []
+            if tipo:
+                dettagli_tipo.append(tipo.title())
+            if finalita == "LATTE":
+                dettagli_tipo.append("Da Latte")
+            elif finalita == "CARNE":
+                dettagli_tipo.append("Da Carne")
+            if dettagli_tipo:
+                gruppo_label = f"{gruppo_label} ({', '.join(dettagli_tipo)})"
+
+            delta = int(entry.get("capi_variazione") or 0)
+            delta_label = f"+{delta}" if delta > 0 else str(delta)
+
+            capi_dopo = entry.get("capi_dopo")
+            capi_dopo_label = "-" if capi_dopo is None else format_number(int(capi_dopo), 0)
+
+            correlato = (entry.get("gruppo_correlato_nome") or "").strip()
+            note = (entry.get("note") or "").strip()
+            dettaglio_parts = []
+            if correlato:
+                dettaglio_parts.append(f"Correlato: {correlato}")
+            if note:
+                dettaglio_parts.append(note)
+            dettaglio = " | ".join(dettaglio_parts) if dettaglio_parts else "-"
+
+            self.tree_zootecnia_storico_gruppi.insert(
+                "",
+                "end",
+                values=(
+                    self._zootecnia_data_evento_storico(entry.get("event_time") or ""),
+                    self._zootecnia_label_evento_storico(entry.get("event_type") or ""),
+                    gruppo_label,
+                    delta_label,
+                    capi_dopo_label,
+                    dettaglio,
+                ),
+            )
 
     def _is_entry_latte_attiva(self, entry):
         finalita = (entry.get("finalita") or "").strip().upper()
@@ -1548,13 +1637,18 @@ class ZootecniaTabMixin:
         if pagina is not None and pagina.winfo_exists():
             return pagina
 
-        self.tab_zootecnia_info_generali = ttk.Frame(self.zootecnia_notebook, padding=12)
+        self.tab_zootecnia_info_generali = ttk.Frame(self.zootecnia_notebook)
+        content = self.crea_container_scorribile(
+            self.tab_zootecnia_info_generali,
+            padding=12,
+            stretch_to_viewport=True,
+        )
 
-        self._crea_filtro_periodo_report_latte(self.tab_zootecnia_info_generali, titolo="Periodo report Latte")
+        self._crea_filtro_periodo_report_latte(content, titolo="Periodo report Latte")
 
         self._imposta_periodo_report_latte_default(aggiorna=False)
 
-        frame_report_affiancati = ttk.Frame(self.tab_zootecnia_info_generali)
+        frame_report_affiancati = ttk.Frame(content)
         frame_report_affiancati.pack(fill="both", expand=True)
 
         frame_info = ttk.LabelFrame(frame_report_affiancati, text="Riepilogo zootecnia")
@@ -1587,7 +1681,7 @@ class ZootecniaTabMixin:
         self.tree_zootecnia_info_latte.column("valore", width=220, anchor="e")
         self.tree_zootecnia_info_latte.pack(fill="both", expand=True, padx=8, pady=8)
 
-        frame_carne = ttk.LabelFrame(self.tab_zootecnia_info_generali, text="Calcoli carne (riepilogo generale)")
+        frame_carne = ttk.LabelFrame(content, text="Calcoli carne (riepilogo generale)")
         frame_carne.pack(fill="both", expand=True, pady=(10, 0))
 
         self.tree_zootecnia_info_carne = ttk.Treeview(
@@ -1602,7 +1696,55 @@ class ZootecniaTabMixin:
         self.tree_zootecnia_info_carne.column("valore", width=280, anchor="e")
         self.tree_zootecnia_info_carne.pack(fill="both", expand=True, padx=8, pady=8)
 
-        frame_azioni = ttk.Frame(self.tab_zootecnia_info_generali)
+        frame_storico_gruppi = ttk.LabelFrame(
+            content,
+            text="Storico gruppi (unioni, divisioni, aggiunte/rimozioni capi)",
+        )
+        frame_storico_gruppi.pack(fill="both", expand=True, pady=(10, 0))
+
+        frame_storico_azioni = ttk.Frame(frame_storico_gruppi)
+        frame_storico_azioni.pack(fill="x", padx=8, pady=(8, 0))
+        ttk.Label(frame_storico_azioni, text="Mostra le ultime 300 operazioni sui gruppi.").pack(side="left")
+        ttk.Button(
+            frame_storico_azioni,
+            text="Aggiorna storico",
+            command=lambda: self._carica_storico_gruppi_zootecnia(mostra_errori=True),
+        ).pack(side="right")
+
+        self.tree_zootecnia_storico_gruppi = ttk.Treeview(
+            frame_storico_gruppi,
+            columns=("data", "evento", "gruppo", "delta", "capi_dopo", "dettaglio"),
+            show="headings",
+            height=10,
+        )
+        self.tree_zootecnia_storico_gruppi.heading("data", text="Data")
+        self.tree_zootecnia_storico_gruppi.heading("evento", text="Evento")
+        self.tree_zootecnia_storico_gruppi.heading("gruppo", text="Gruppo")
+        self.tree_zootecnia_storico_gruppi.heading("delta", text="Delta capi")
+        self.tree_zootecnia_storico_gruppi.heading("capi_dopo", text="Capi dopo")
+        self.tree_zootecnia_storico_gruppi.heading("dettaglio", text="Dettaglio")
+
+        self.tree_zootecnia_storico_gruppi.column("data", width=130, anchor="center")
+        self.tree_zootecnia_storico_gruppi.column("evento", width=150, anchor="center")
+        self.tree_zootecnia_storico_gruppi.column("gruppo", width=280, anchor="w")
+        self.tree_zootecnia_storico_gruppi.column("delta", width=90, anchor="e")
+        self.tree_zootecnia_storico_gruppi.column("capi_dopo", width=100, anchor="e")
+        self.tree_zootecnia_storico_gruppi.column("dettaglio", width=430, anchor="w")
+
+        scroll_storico = ttk.Scrollbar(
+            frame_storico_gruppi,
+            orient="vertical",
+            command=self.tree_zootecnia_storico_gruppi.yview,
+        )
+        self.tree_zootecnia_storico_gruppi.configure(yscrollcommand=scroll_storico.set)
+
+        self.tree_zootecnia_storico_gruppi.pack(side="left", fill="both", expand=True, padx=(8, 0), pady=8)
+        scroll_storico.pack(side="right", fill="y", padx=(0, 8), pady=8)
+
+        if hasattr(self, "abilita_a_capo_treeview"):
+            self.abilita_a_capo_treeview(self.tree_zootecnia_storico_gruppi, max_lines=3)
+
+        frame_azioni = ttk.Frame(content)
         frame_azioni.pack(anchor="w", pady=(10, 0))
         ttk.Button(
             frame_azioni,
@@ -1700,6 +1842,8 @@ class ZootecniaTabMixin:
 
         for metrica, valore in righe_carne:
             self.tree_zootecnia_info_carne.insert("", "end", values=(metrica, valore))
+
+        self._carica_storico_gruppi_zootecnia(mostra_errori=False)
 
     def apri_configurazione_allevamento(self):
         self.mostra_categoria(self.CATEGORIA_AZIENDA)

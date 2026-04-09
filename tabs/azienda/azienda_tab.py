@@ -173,6 +173,42 @@ class AziendaTabMixin:
 
         return testo
 
+    def _calcola_totali_manutenzioni_azienda(
+        self,
+        data_da_db: str | None = None,
+        data_a_db: str | None = None,
+        mostra_errori=True,
+    ):
+        params = [self.user_id]
+        where_clause = "WHERE user_id=?"
+
+        if data_da_db and data_a_db:
+            where_clause += " AND data_manutenzione BETWEEN ? AND ?"
+            params.extend([data_da_db, data_a_db])
+
+        try:
+            with get_conn() as conn:
+                c = conn.cursor()
+                c.execute(
+                    f'''
+                    SELECT
+                        COALESCE(SUM(COALESCE(costo, 0)), 0),
+                        COUNT(id)
+                    FROM manutenzioni_macchinari
+                    {where_clause}
+                ''',
+                    tuple(params),
+                )
+                row = c.fetchone()
+        except sqlite3.Error as e:
+            if mostra_errori:
+                messagebox.showerror("Errore DB", f"Errore database: {e}")
+            return 0.0, 0
+
+        totale = float((row[0] if row else 0) or 0)
+        numero = int((row[1] if row else 0) or 0)
+        return totale, numero
+
     def _calcola_totali_annuali_azienda_info(self, anno: int, mostra_errori=True):
         data_da = f"{anno:04d}-01-01"
         data_a = f"{anno:04d}-12-31"
@@ -199,7 +235,13 @@ class AziendaTabMixin:
 
         movimenti = int((row[0] if row else 0) or 0)
         entrate = float((row[1] if row else 0) or 0)
-        uscite = float((row[2] if row else 0) or 0)
+        uscite_movimenti = float((row[2] if row else 0) or 0)
+        uscite_manutenzioni, _ = self._calcola_totali_manutenzioni_azienda(
+            data_da_db=data_da,
+            data_a_db=data_a,
+            mostra_errori=mostra_errori,
+        )
+        uscite = uscite_movimenti + uscite_manutenzioni
         return {
             "movimenti": movimenti,
             "entrate": entrate,
@@ -2793,6 +2835,8 @@ class AziendaTabMixin:
             return
 
         use_filter = bool(self.var_azienda_report_usa_filtro.get())
+        data_inizio_db = None
+        data_fine_db = None
         params = [self.user_id]
         where_clause = "WHERE user_id=?"
         periodo_label = "Storico completo"
@@ -2856,7 +2900,13 @@ class AziendaTabMixin:
 
         numero_movimenti = int((row[0] if row else 0) or 0)
         tot_entrate = float((row[1] if row else 0) or 0)
-        tot_uscite = float((row[2] if row else 0) or 0)
+        tot_uscite_movimenti = float((row[2] if row else 0) or 0)
+        tot_uscite_manutenzioni, numero_manutenzioni = self._calcola_totali_manutenzioni_azienda(
+            data_da_db=data_inizio_db,
+            data_a_db=data_fine_db,
+            mostra_errori=mostra_errori,
+        )
+        tot_uscite = tot_uscite_movimenti + tot_uscite_manutenzioni
         tot_iva = float((row[3] if row else 0) or 0)
         saldo = tot_entrate - tot_uscite
 
@@ -2868,10 +2918,14 @@ class AziendaTabMixin:
             ("Periodo", periodo_label),
             ("Movimenti totali", str(numero_movimenti)),
             ("Totale Entrate", format_eur(tot_entrate)),
+            ("Uscite manutenzioni", format_eur(tot_uscite_manutenzioni)),
             ("Totale Uscite", format_eur(tot_uscite)),
             ("Totale IVA", format_eur(tot_iva)),
             ("Saldo Netto", format_eur(saldo)),
         ]
+
+        self.tree_azienda_report.configure(height=max(1, len(righe_riepilogo)))
+
         for metrica, valore in righe_riepilogo:
             self.tree_azienda_report.insert("", "end", values=(metrica, valore))
 
@@ -2880,6 +2934,18 @@ class AziendaTabMixin:
                 "",
                 "end",
                 values=(tipo, categoria, format_eur(float(totale)), format_number(int(qta), 0)),
+            )
+
+        if numero_manutenzioni > 0 or abs(tot_uscite_manutenzioni) > 1e-9:
+            self.tree_azienda_categorie.insert(
+                "",
+                "end",
+                values=(
+                    "USCITA",
+                    "Manutenzioni macchinari",
+                    format_eur(tot_uscite_manutenzioni),
+                    format_number(int(numero_manutenzioni), 0),
+                ),
             )
 
     def carica_report_animali_allevamento(self, mostra_errori=True):

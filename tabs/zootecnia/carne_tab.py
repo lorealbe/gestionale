@@ -6,7 +6,13 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
 from app_utils import clear_treeview, format_eur, format_number, is_blank, parse_decimal
-from database import get_conn
+from database import (
+    get_conn,
+    get_movimento_animali_entry_ids,
+    list_azienda_animali_entries,
+    remove_azienda_animale_capi,
+    set_movimento_animali_links,
+)
 
 
 class CarneTabMixin:
@@ -26,6 +32,11 @@ class CarneTabMixin:
         self.var_carne_unita_prezzo = tk.StringVar(value=self._UNITA_PREZZO[0])
         self.var_nome_fattura_carne = tk.StringVar(value="Nessuna fattura caricata")
         self.var_carne_modifica_stato = tk.StringVar(value="")
+        self.var_carne_rimuovi_capi = tk.BooleanVar(value=False)
+        self.var_carne_capi_da_rimuovere = tk.StringVar(value="")
+        self.var_carne_gruppi_stato = tk.StringVar(value="")
+        self._carne_gruppi_entry_ids = []
+        self._carne_gruppi_entries_by_id = {}
 
         if not hasattr(self, "produzione_carne_in_modifica_id"):
             self.produzione_carne_in_modifica_id = None
@@ -68,6 +79,70 @@ class CarneTabMixin:
             content,
             text="Salvataggio automatico in Kg e EUR/Kg (conversione da Quintali automatica).",
         ).pack(anchor="w", padx=20, pady=(0, 6))
+
+        frame_gruppi = ttk.LabelFrame(content, text="Gruppi da carne")
+        frame_gruppi.pack(fill="x", padx=20, pady=(6, 6))
+
+        corpo_gruppi = ttk.Frame(frame_gruppi)
+        corpo_gruppi.pack(fill="x", padx=8, pady=8)
+
+        frame_list_gruppi = ttk.Frame(corpo_gruppi)
+        frame_list_gruppi.pack(side="left", fill="x", expand=True)
+
+        self.listbox_carne_gruppi = tk.Listbox(
+            frame_list_gruppi,
+            selectmode=tk.EXTENDED,
+            exportselection=False,
+            height=5,
+        )
+        scroll_carne_gruppi = ttk.Scrollbar(frame_list_gruppi, orient="vertical", command=self.listbox_carne_gruppi.yview)
+        self.listbox_carne_gruppi.configure(yscrollcommand=scroll_carne_gruppi.set)
+        self.listbox_carne_gruppi.pack(side="left", fill="x", expand=True)
+        scroll_carne_gruppi.pack(side="right", fill="y")
+        self.listbox_carne_gruppi.bind("<<ListboxSelect>>", self._on_selezione_gruppi_carne)
+
+        frame_gruppi_btn = ttk.Frame(corpo_gruppi)
+        frame_gruppi_btn.pack(side="left", padx=(8, 0))
+        ttk.Button(
+            frame_gruppi_btn,
+            text="Seleziona tutti",
+            command=self.seleziona_tutti_gruppi_carne,
+        ).pack(fill="x", pady=(0, 4))
+        ttk.Button(
+            frame_gruppi_btn,
+            text="Deseleziona",
+            command=self.deseleziona_gruppi_carne,
+        ).pack(fill="x")
+
+        frame_rimozione = ttk.Frame(frame_gruppi)
+        frame_rimozione.pack(fill="x", padx=8, pady=(0, 4))
+
+        self.chk_carne_rimuovi_capi = ttk.Checkbutton(
+            frame_rimozione,
+            text="Rimuovi capi dai gruppi selezionati durante il salvataggio",
+            variable=self.var_carne_rimuovi_capi,
+            command=self._on_toggle_rimozione_capi_carne,
+        )
+        self.chk_carne_rimuovi_capi.pack(side="left")
+
+        ttk.Label(frame_rimozione, text="Capi da rimuovere:").pack(side="left", padx=(14, 4))
+        self.entry_carne_capi_da_rimuovere = ttk.Entry(
+            frame_rimozione,
+            textvariable=self.var_carne_capi_da_rimuovere,
+            width=10,
+        )
+        self.entry_carne_capi_da_rimuovere.pack(side="left")
+
+        self.var_carne_capi_da_rimuovere.trace_add(
+            "write",
+            lambda *_args: self._aggiorna_stato_gruppi_carne(),
+        )
+
+        ttk.Label(frame_gruppi, textvariable=self.var_carne_gruppi_stato, wraplength=860, justify="left").pack(
+            anchor="w",
+            padx=8,
+            pady=(0, 6),
+        )
 
         frame_actions = ttk.Frame(content)
         frame_actions.pack(pady=10)
@@ -145,6 +220,8 @@ class CarneTabMixin:
         self.tree_produzione_carne.bind("<Double-1>", lambda _event: self.modifica_produzione_carne_selezionata())
         self.tree_produzione_carne.bind("<Delete>", lambda _event: self.elimina_produzione_carne_selezionata())
 
+        self.aggiorna_lista_gruppi_carne()
+        self._on_toggle_rimozione_capi_carne()
         self.carica_produzioni_carne(mostra_errori=False)
 
     def _normalizza_unita_quantita_carne(self, raw_value):
@@ -178,6 +255,342 @@ class CarneTabMixin:
         if unita_norm == self._UNITA_PREZZO[1]:
             return float(prezzo) / self.KG_PER_QUINTALE
         return float(prezzo)
+
+    def _label_gruppo_carne(self, entry):
+        if hasattr(self, "_label_gruppo_animale_movimento"):
+            return self._label_gruppo_animale_movimento(entry)
+
+        entry_id = int(entry.get("id", 0) or 0)
+        group_name = (entry.get("group_name") or "").strip() or f"Gruppo {entry_id}"
+        tipo = (entry.get("tipo_animale") or "").strip().upper()
+        altro = (entry.get("altro_label") or "").strip()
+
+        if tipo == "ALTRO":
+            tipo_label = f"Altro ({altro})" if altro else "Altro"
+        else:
+            tipo_label = tipo.title() if tipo else "Tipo"
+
+        capi = int(entry.get("capi", 0) or 0)
+        return f"{group_name} | {tipo_label} | Da Carne | {format_number(capi, 0)} capi"
+
+    def _carica_gruppi_carne_attivi(self):
+        try:
+            entries = list_azienda_animali_entries(self.user_id)
+        except sqlite3.Error:
+            return []
+
+        gruppi_attivi = []
+        for entry in entries:
+            entry_id = int(entry.get("id", 0) or 0)
+            capi = int(entry.get("capi", 0) or 0)
+            finalita = (entry.get("finalita") or "").strip().upper()
+
+            if entry_id <= 0 or capi <= 0 or finalita != "CARNE":
+                continue
+
+            gruppi_attivi.append(entry)
+
+        gruppi_attivi.sort(
+            key=lambda item: (
+                (item.get("group_name") or "").strip().lower(),
+                int(item.get("id", 0) or 0),
+            )
+        )
+        return gruppi_attivi
+
+    def aggiorna_lista_gruppi_carne(self, selected_entry_ids=None):
+        if not hasattr(self, "listbox_carne_gruppi"):
+            return
+
+        if selected_entry_ids is None:
+            selected_entry_ids = self.get_gruppi_carne_selezionati_ids()
+
+        selected_ids = set()
+        for raw in selected_entry_ids or []:
+            try:
+                entry_id = int(raw)
+            except (TypeError, ValueError):
+                continue
+            if entry_id > 0:
+                selected_ids.add(entry_id)
+
+        entries = self._carica_gruppi_carne_attivi()
+        self._carne_gruppi_entry_ids = []
+        self._carne_gruppi_entries_by_id = {}
+
+        self.listbox_carne_gruppi.delete(0, tk.END)
+
+        labels_seen = set()
+        listbox_idx = 0
+        for entry in entries:
+            entry_id = int(entry.get("id", 0) or 0)
+            if entry_id <= 0:
+                continue
+
+            self._carne_gruppi_entries_by_id[entry_id] = entry
+            self._carne_gruppi_entry_ids.append(entry_id)
+
+            label = self._label_gruppo_carne(entry)
+            if label in labels_seen:
+                label = f"{label} [ID {entry_id}]"
+            labels_seen.add(label)
+
+            self.listbox_carne_gruppi.insert(tk.END, label)
+            if entry_id in selected_ids:
+                self.listbox_carne_gruppi.selection_set(listbox_idx)
+            listbox_idx += 1
+
+        self._aggiorna_stato_gruppi_carne()
+
+    def _on_selezione_gruppi_carne(self, _event=None):
+        self._aggiorna_stato_gruppi_carne()
+
+    def get_gruppi_carne_selezionati_ids(self):
+        if not hasattr(self, "listbox_carne_gruppi"):
+            return []
+
+        selected_ids = []
+        for idx in self.listbox_carne_gruppi.curselection():
+            if 0 <= idx < len(self._carne_gruppi_entry_ids):
+                entry_id = int(self._carne_gruppi_entry_ids[idx] or 0)
+                if entry_id > 0:
+                    selected_ids.append(entry_id)
+        return selected_ids
+
+    def imposta_gruppi_carne_selezionati(self, entry_ids):
+        self.aggiorna_lista_gruppi_carne(selected_entry_ids=entry_ids)
+
+    def deseleziona_gruppi_carne(self):
+        if not hasattr(self, "listbox_carne_gruppi"):
+            return
+
+        self.listbox_carne_gruppi.selection_clear(0, tk.END)
+        self._aggiorna_stato_gruppi_carne()
+
+    def seleziona_tutti_gruppi_carne(self):
+        if not hasattr(self, "listbox_carne_gruppi"):
+            return
+        if not self._carne_gruppi_entry_ids:
+            return
+
+        self.listbox_carne_gruppi.selection_clear(0, tk.END)
+        self.listbox_carne_gruppi.selection_set(0, tk.END)
+        self._aggiorna_stato_gruppi_carne()
+
+    def _parse_capi_da_rimuovere_carne(self, raw_value):
+        value = parse_decimal(raw_value, allow_zero=False, allow_negative=False)
+        if value is None or value <= 0:
+            return None
+
+        value_float = float(value)
+        value_int = int(round(value_float))
+        if abs(value_float - value_int) > 1e-9:
+            return None
+
+        if value_int <= 0:
+            return None
+        return value_int
+
+    def _valida_gruppi_carne_selezionati(self):
+        selected_ids = []
+        seen = set()
+        for entry_id in self.get_gruppi_carne_selezionati_ids():
+            if entry_id <= 0 or entry_id in seen:
+                continue
+            seen.add(entry_id)
+            selected_ids.append(entry_id)
+
+        entries = self._carica_gruppi_carne_attivi()
+        entries_by_id = {int(entry.get("id", 0) or 0): entry for entry in entries}
+
+        missing_ids = [entry_id for entry_id in selected_ids if entry_id not in entries_by_id]
+        if missing_ids:
+            messagebox.showerror(
+                "Errore",
+                "Uno o piu gruppi da carne selezionati non sono piu disponibili. Aggiorna e riprova.",
+            )
+            self.aggiorna_lista_gruppi_carne()
+            return None
+
+        group_names = []
+        for entry_id in selected_ids:
+            entry = entries_by_id[entry_id]
+            group_name = (entry.get("group_name") or "").strip() or f"Gruppo {entry_id}"
+            group_names.append(group_name)
+
+        return {
+            "entry_ids": selected_ids,
+            "group_names": group_names,
+            "entries_by_id": entries_by_id,
+        }
+
+    def _calcola_piano_rimozione_capi_carne(self, gruppi_ids, entries_by_id, capi_da_rimuovere):
+        capi_target = int(capi_da_rimuovere or 0)
+        if capi_target <= 0:
+            return {}
+
+        capi_by_group = {}
+        for entry_id in gruppi_ids:
+            entry = entries_by_id.get(int(entry_id), {})
+            capi = int(entry.get("capi", 0) or 0)
+            if capi <= 0:
+                continue
+            capi_by_group[int(entry_id)] = capi
+
+        if not capi_by_group:
+            raise ValueError("Non ci sono capi disponibili nei gruppi selezionati.")
+
+        totale_capi_disponibili = sum(capi_by_group.values())
+        if capi_target > totale_capi_disponibili:
+            raise ValueError(
+                "I capi da rimuovere superano i capi disponibili nei gruppi da carne selezionati."
+            )
+
+        if len(capi_by_group) == 1:
+            only_id = next(iter(capi_by_group))
+            return {only_id: capi_target}
+
+        piano = {entry_id: 0 for entry_id in capi_by_group}
+        metriche = []
+        assegnati = 0
+
+        for entry_id in gruppi_ids:
+            if entry_id not in capi_by_group:
+                continue
+
+            capi_correnti = capi_by_group[entry_id]
+            quota = (capi_target * capi_correnti) / totale_capi_disponibili
+            base = min(int(quota), capi_correnti)
+            piano[entry_id] = base
+            assegnati += base
+
+            metriche.append(
+                {
+                    "entry_id": entry_id,
+                    "resto": quota - base,
+                    "capi": capi_correnti,
+                }
+            )
+
+        residuo = capi_target - assegnati
+        metriche.sort(
+            key=lambda item: (item["resto"], item["capi"], -item["entry_id"]),
+            reverse=True,
+        )
+
+        while residuo > 0:
+            assegnato = False
+            for item in metriche:
+                entry_id = int(item["entry_id"])
+                if piano[entry_id] >= capi_by_group[entry_id]:
+                    continue
+
+                piano[entry_id] += 1
+                residuo -= 1
+                assegnato = True
+                if residuo <= 0:
+                    break
+
+            if not assegnato:
+                break
+
+        if residuo > 0:
+            raise ValueError("Impossibile distribuire la rimozione capi sui gruppi selezionati.")
+
+        return {entry_id: qty for entry_id, qty in piano.items() if int(qty or 0) > 0}
+
+    def _valida_rimozione_capi_carne(self, gruppi_info):
+        attiva = bool(self.var_carne_rimuovi_capi.get()) and self.produzione_carne_in_modifica_id is None
+        if not attiva:
+            return {
+                "attiva": False,
+                "totale": 0,
+                "piano": {},
+            }
+
+        gruppi_ids = list(gruppi_info.get("entry_ids") or [])
+        if not gruppi_ids:
+            messagebox.showerror(
+                "Errore",
+                "Per rimuovere capi seleziona almeno un gruppo con destinazione Da Carne.",
+            )
+            return None
+
+        capi_da_rimuovere = self._parse_capi_da_rimuovere_carne(self.var_carne_capi_da_rimuovere.get())
+        if capi_da_rimuovere is None:
+            messagebox.showerror(
+                "Errore",
+                "Inserisci un numero intero valido di capi da rimuovere.",
+            )
+            return None
+
+        try:
+            piano_rimozione = self._calcola_piano_rimozione_capi_carne(
+                gruppi_ids,
+                gruppi_info.get("entries_by_id") or {},
+                capi_da_rimuovere,
+            )
+        except ValueError as e:
+            messagebox.showerror("Errore", str(e))
+            return None
+
+        return {
+            "attiva": True,
+            "totale": capi_da_rimuovere,
+            "piano": piano_rimozione,
+        }
+
+    def _on_toggle_rimozione_capi_carne(self):
+        in_modifica = self.produzione_carne_in_modifica_id is not None
+        attiva = bool(self.var_carne_rimuovi_capi.get()) and not in_modifica
+
+        if in_modifica and bool(self.var_carne_rimuovi_capi.get()):
+            self.var_carne_rimuovi_capi.set(False)
+            attiva = False
+
+        if hasattr(self, "chk_carne_rimuovi_capi"):
+            self.chk_carne_rimuovi_capi.config(state="disabled" if in_modifica else "normal")
+        if hasattr(self, "entry_carne_capi_da_rimuovere"):
+            self.entry_carne_capi_da_rimuovere.config(state="normal" if attiva else "disabled")
+
+        if not attiva and hasattr(self, "var_carne_capi_da_rimuovere"):
+            self.var_carne_capi_da_rimuovere.set("")
+
+        self._aggiorna_stato_gruppi_carne()
+
+    def _aggiorna_stato_gruppi_carne(self):
+        if not hasattr(self, "var_carne_gruppi_stato") or not hasattr(self, "listbox_carne_gruppi"):
+            return
+
+        totale = int(self.listbox_carne_gruppi.size())
+        if totale <= 0:
+            self.var_carne_gruppi_stato.set(
+                "Nessun gruppo da carne disponibile. Configurali in Azienda > Tipi Allevamento."
+            )
+            return
+
+        selected_ids = self.get_gruppi_carne_selezionati_ids()
+        msg = f"Gruppi selezionati: {len(selected_ids)} su {totale}."
+
+        in_modifica = self.produzione_carne_in_modifica_id is not None
+        if in_modifica:
+            self.var_carne_gruppi_stato.set(msg + " In modifica la rimozione capi e disattivata.")
+            return
+
+        if bool(self.var_carne_rimuovi_capi.get()):
+            capi_text = (self.var_carne_capi_da_rimuovere.get() or "").strip()
+            if not selected_ids:
+                msg += " Seleziona almeno un gruppo per poter rimuovere capi."
+            elif not capi_text:
+                msg += " Inserisci il numero capi da rimuovere."
+            else:
+                capi_value = self._parse_capi_da_rimuovere_carne(capi_text)
+                if capi_value is None:
+                    msg += " Numero capi non valido (usa un intero maggiore di zero)."
+                else:
+                    msg += f" Rimozione attiva: {format_number(capi_value, 0)} capi."
+
+        self.var_carne_gruppi_stato.set(msg)
 
     def _on_selezione_produzione_carne(self, _event=None):
         if not hasattr(self, "var_carne_modifica_stato"):
@@ -221,6 +634,27 @@ class CarneTabMixin:
         self.var_carne_prezzo.set(valori[3] or "0,00")
         self.var_carne_unita_prezzo.set(self._UNITA_PREZZO[0])
 
+        linked_group_ids = []
+        try:
+            with get_conn() as conn:
+                c = conn.cursor()
+                c.execute(
+                    "SELECT movimento_id FROM produzione_carne WHERE id=? AND user_id=?",
+                    (self.produzione_carne_in_modifica_id, self.user_id),
+                )
+                row = c.fetchone()
+
+            movimento_id = int((row[0] if row else 0) or 0)
+            if movimento_id > 0:
+                linked_group_ids = get_movimento_animali_entry_ids(self.user_id, movimento_id)
+        except (sqlite3.Error, ValueError):
+            linked_group_ids = []
+
+        self.imposta_gruppi_carne_selezionati(linked_group_ids)
+        self.var_carne_rimuovi_capi.set(False)
+        self.var_carne_capi_da_rimuovere.set("")
+        self._on_toggle_rimozione_capi_carne()
+
         if hasattr(self, "btn_salva_produzione_carne"):
             self.btn_salva_produzione_carne.config(text="Aggiorna Produzione Carne")
         if hasattr(self, "btn_annulla_modifica_produzione_carne"):
@@ -241,12 +675,19 @@ class CarneTabMixin:
         if hasattr(self, "tree_produzione_carne"):
             self.tree_produzione_carne.selection_remove(*self.tree_produzione_carne.selection())
 
+        self.var_carne_rimuovi_capi.set(False)
+        self.var_carne_capi_da_rimuovere.set("")
+        self._on_toggle_rimozione_capi_carne()
+
         if reset_campi:
             self.var_carne_data.set(datetime.now().strftime("%d/%m/%Y"))
             self.var_carne_quantita.set("")
             self.var_carne_unita_quantita.set(self._UNITA_QTA[0])
             self.var_carne_prezzo.set("0,00")
             self.var_carne_unita_prezzo.set(self._UNITA_PREZZO[0])
+            self.deseleziona_gruppi_carne()
+
+        self.aggiorna_lista_gruppi_carne()
 
     def salva_produzione_carne(self):
         if is_blank(self.var_carne_data.get()):
@@ -279,12 +720,29 @@ class CarneTabMixin:
             messagebox.showerror("Errore", "Prezzo non valido.")
             return
 
+        gruppi_info = self._valida_gruppi_carne_selezionati()
+        if gruppi_info is None:
+            return
+
+        gruppi_ids = list(gruppi_info.get("entry_ids") or [])
+        gruppi_text = ", ".join(gruppi_info.get("group_names") or [])
+
+        rimozione_info = self._valida_rimozione_capi_carne(gruppi_info)
+        if rimozione_info is None:
+            return
+        rimozione_attiva = bool(rimozione_info.get("attiva"))
+        capi_da_rimuovere = int(rimozione_info.get("totale") or 0)
+
         quintali_val = kg_val / self.KG_PER_QUINTALE
         importo_entrata = kg_val * prezzo_kg_val
         descrizione_mov = (
             f"Produzione carne: {format_number(kg_val, 2)} Kg "
             f"({format_number(quintali_val, 2)} q) x {format_eur(prezzo_kg_val, 4)}/Kg"
         )
+        if gruppi_ids:
+            descrizione_mov += f" | Gruppi: {gruppi_text}"
+        if rimozione_attiva and capi_da_rimuovere > 0:
+            descrizione_mov += f" | Capi rimossi: {format_number(capi_da_rimuovere, 0)}"
 
         parser_data = getattr(self, "pending_parser_carne_data", None)
         parser_values = None
@@ -320,6 +778,7 @@ class CarneTabMixin:
                 iva_importo_movimento = parser_vat
                 importo_movimento = max(importo_entrata - iva_importo_movimento, 0.0)
 
+        rimozioni_effettuate = []
         try:
             with get_conn() as conn:
                 c = conn.cursor()
@@ -471,6 +930,31 @@ class CarneTabMixin:
 
                     msg_ok = "Produzione carne aggiornata"
 
+                if movimento_id is not None:
+                    set_movimento_animali_links(self.user_id, movimento_id, gruppi_ids, cursor=c)
+
+                if self.produzione_carne_in_modifica_id is None and rimozione_attiva:
+                    piano_rimozione = rimozione_info.get("piano") or {}
+                    entries_by_id = gruppi_info.get("entries_by_id") or {}
+
+                    for entry_id in gruppi_ids:
+                        capi_rimossi = int(piano_rimozione.get(entry_id) or 0)
+                        if capi_rimossi <= 0:
+                            continue
+
+                        remove_azienda_animale_capi(
+                            self.user_id,
+                            entry_id,
+                            capi_rimossi,
+                            cursor=c,
+                        )
+
+                        entry = entries_by_id.get(entry_id, {})
+                        group_name = (entry.get("group_name") or "").strip() or f"Gruppo {entry_id}"
+                        rimozioni_effettuate.append(
+                            f"{group_name}: -{format_number(capi_rimossi, 0)} capi"
+                        )
+
                 if self.pending_fattura_carne_id is not None and movimento_id is not None:
                     c.execute(
                         '''
@@ -480,6 +964,9 @@ class CarneTabMixin:
                     ''',
                         (movimento_id, self.pending_fattura_carne_id, self.user_id),
                     )
+        except ValueError as e:
+            messagebox.showerror("Errore", str(e))
+            return
         except sqlite3.Error as e:
             messagebox.showerror("Errore DB", f"Errore database: {e}")
             return
@@ -491,9 +978,14 @@ class CarneTabMixin:
             self.carica_movimenti()
         if hasattr(self, "aggiorna_categoria_zootecnia"):
             self.aggiorna_categoria_zootecnia()
+
+        msg_successo = f"{msg_ok}! Entrata automatica: {format_eur(importo_entrata)}"
+        if rimozioni_effettuate:
+            msg_successo += "\nCapi rimossi dai gruppi da carne: " + ", ".join(rimozioni_effettuate)
+
         messagebox.showinfo(
             "Successo",
-            f"{msg_ok}! Entrata automatica: {format_eur(importo_entrata)}",
+            msg_successo,
         )
 
     def carica_produzioni_carne(self, mostra_errori=True):
