@@ -258,7 +258,14 @@ class FormHelpersMixin:
         rowheight = (line_px * max_lines) + 6
         style.configure(style_name, rowheight=rowheight)
 
-    def crea_container_scorribile(self, parent, *, padding=0, stretch_to_viewport=False):
+    def crea_container_scorribile(
+        self,
+        parent,
+        *,
+        padding=0,
+        stretch_to_viewport=False,
+        prefer_external_scroll=True,
+    ):
         container = ttk.Frame(parent)
         container.pack(fill="both", expand=True)
 
@@ -334,22 +341,34 @@ class FormHelpersMixin:
                 current = getattr(current, "master", None)
             return None
 
+        def _scroll_widget(widget, step):
+            if widget is None:
+                return False
+
+            try:
+                widget.yview_scroll(step, "units")
+                return True
+            except tk.TclError:
+                return False
+
         def _on_mousewheel(event):
             step = _mousewheel_step(event)
             if step == 0:
                 return "break"
 
-            # If the pointer is over a scrollable widget, scroll it instead of the page.
             scrollable_widget = _find_ancestor_scrollable_widget(getattr(event, "widget", None))
-            if scrollable_widget is not None:
-                try:
-                    scrollable_widget.yview_scroll(step, "units")
-                except tk.TclError:
-                    pass
-                return "break"
 
             _refresh_scrollregion_and_clamp()
-            if not _has_vertical_overflow():
+            has_outer_overflow = _has_vertical_overflow()
+
+            if prefer_external_scroll and has_outer_overflow:
+                canvas.yview_scroll(step, "units")
+                return "break"
+
+            if scrollable_widget is not None and _scroll_widget(scrollable_widget, step):
+                return "break"
+
+            if not has_outer_overflow:
                 return "break"
 
             canvas.yview_scroll(step, "units")

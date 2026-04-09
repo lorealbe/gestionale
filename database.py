@@ -1296,6 +1296,51 @@ def delete_azienda_animali_storico_entry(user_id: int, storico_id: int) -> bool:
         return int(c.rowcount or 0) > 0
 
 
+def add_azienda_animali_storico_entry(
+    user_id: int,
+    event_type: str,
+    event_time: str | None = None,
+    gruppo_entry_id=None,
+    gruppo_nome: str = "",
+    tipo_animale: str = "",
+    finalita: str = "",
+    capi_prima=None,
+    capi_variazione=0,
+    capi_dopo=None,
+    gruppo_correlato_entry_id=None,
+    gruppo_correlato_nome: str = "",
+    note: str = "",
+    cursor: sqlite3.Cursor | None = None,
+):
+    event_time_clean = (event_time or "").strip() or datetime.now().isoformat(timespec="seconds")
+
+    def _apply(target_cursor: sqlite3.Cursor):
+        _log_azienda_animali_storico(
+            target_cursor,
+            user_id=user_id,
+            event_type=event_type,
+            event_time=event_time_clean,
+            gruppo_entry_id=gruppo_entry_id,
+            gruppo_nome=gruppo_nome,
+            tipo_animale=tipo_animale,
+            finalita=finalita,
+            capi_prima=capi_prima,
+            capi_variazione=capi_variazione,
+            capi_dopo=capi_dopo,
+            gruppo_correlato_entry_id=gruppo_correlato_entry_id,
+            gruppo_correlato_nome=gruppo_correlato_nome,
+            note=note,
+        )
+
+    if cursor is not None:
+        _apply(cursor)
+        return
+
+    with get_conn() as conn:
+        c = conn.cursor()
+        _apply(c)
+
+
 def add_azienda_animale_entry(
     user_id: int,
     tipo_animale: str,
@@ -1304,6 +1349,7 @@ def add_azienda_animale_entry(
     altro_label: str = "",
     group_name: str = "",
     riproduzione: bool = False,
+    cursor: sqlite3.Cursor | None = None,
 ):
     tipo = _normalize_tipo_animale(tipo_animale)
     if tipo not in ANIMAL_TYPE_OPTIONS:
@@ -1334,10 +1380,8 @@ def add_azienda_animale_entry(
     riproduzione_value = _to_bool_int(riproduzione)
 
     now_text = datetime.now().isoformat(timespec="seconds")
-    with get_conn() as conn:
-        c = conn.cursor()
-
-        c.execute(
+    def _apply(target_cursor: sqlite3.Cursor):
+        target_cursor.execute(
             '''
             SELECT id, capi, group_name
             FROM azienda_animali_dettaglio
@@ -1345,9 +1389,9 @@ def add_azienda_animale_entry(
         ''',
             (user_id, tipo, finalita_norm, altro_clean, group_name_clean),
         )
-        existing_row = c.fetchone()
+        existing_row = target_cursor.fetchone()
 
-        c.execute(
+        target_cursor.execute(
             '''
             INSERT INTO azienda_animali_dettaglio
                 (
@@ -1384,7 +1428,7 @@ def add_azienda_animale_entry(
             ),
         )
 
-        c.execute(
+        target_cursor.execute(
             '''
             SELECT id, capi, group_name
             FROM azienda_animali_dettaglio
@@ -1392,7 +1436,7 @@ def add_azienda_animale_entry(
         ''',
             (user_id, tipo, finalita_norm, altro_clean, group_name_clean),
         )
-        saved_row = c.fetchone()
+        saved_row = target_cursor.fetchone()
 
         if saved_row:
             saved_entry_id = _to_non_negative_int(saved_row[0])
@@ -1405,7 +1449,7 @@ def add_azienda_animale_entry(
             if delta_capi != 0:
                 note = "Creato nuovo gruppo." if not existing_row else "Aggiunti capi al gruppo."
                 _log_azienda_animali_storico(
-                    c,
+                    target_cursor,
                     user_id=user_id,
                     event_type="AGGIUNTA_CAPI",
                     event_time=now_text,
@@ -1418,6 +1462,14 @@ def add_azienda_animale_entry(
                     capi_dopo=capi_dopo,
                     note=note,
                 )
+
+    if cursor is not None:
+        _apply(cursor)
+        return
+
+    with get_conn() as conn:
+        c = conn.cursor()
+        _apply(c)
 
 
 def remove_azienda_animale_capi(

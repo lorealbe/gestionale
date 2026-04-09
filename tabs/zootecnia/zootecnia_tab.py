@@ -6,10 +6,13 @@ from tkinter import messagebox, ttk
 
 from app_utils import clear_treeview, format_eur, format_number, parse_decimal
 from database import (
+    add_azienda_animale_entry,
+    add_azienda_animali_storico_entry,
     delete_azienda_animali_storico_entry,
     get_conn,
     list_azienda_animali_entries,
     list_azienda_animali_storico_entries,
+    remove_azienda_animale_capi,
 )
 from services.latte_group_metrics import (
     calcola_metriche_latte_da_totali as svc_calcola_metriche_latte_da_totali,
@@ -37,6 +40,13 @@ class ZootecniaTabMixin:
             text="Configura tipi allevamento",
             command=self.apri_configurazione_allevamento,
         ).pack(side="left", padx=(0, 6))
+        self.btn_zootecnia_riporta_nascita = ttk.Button(
+            frame_btn,
+            text="Riporta nascita",
+            command=self.apri_popup_riporta_nascita,
+            state="disabled",
+        )
+        self.btn_zootecnia_riporta_nascita.pack(side="left", padx=(0, 6))
         ttk.Button(frame_btn, text="Aggiorna", command=self.aggiorna_categoria_zootecnia).pack(side="left")
 
         self.frame_zootecnia_pagine = ttk.Frame(container)
@@ -80,6 +90,7 @@ class ZootecniaTabMixin:
             "UNIONE_GRUPPI": "Unione gruppi",
             "CAMBIO_DESTINAZIONE": "Cambio destinazione",
             "CAMBIO_RIPRODUZIONE": "Cambio riproduzione",
+            "RIPORTA_NASCITA": "Riporta nascita",
         }
         if evento in mapping:
             return mapping[evento]
@@ -97,6 +108,16 @@ class ZootecniaTabMixin:
                 continue
 
         return testo
+
+    def _zootecnia_adatta_altezza_tree(self, tree, righe_count: int, min_rows: int = 1):
+        if tree is None:
+            return
+
+        rows = max(int(righe_count or 0), int(min_rows or 1))
+        try:
+            tree.configure(height=rows)
+        except tk.TclError:
+            pass
 
     def _carica_storico_gruppi_zootecnia(self, mostra_errori=False):
         if not hasattr(self, "tree_zootecnia_storico_gruppi"):
@@ -116,6 +137,7 @@ class ZootecniaTabMixin:
                 "end",
                 values=("-", "-", "Nessun evento registrato", "-", "-", "-"),
             )
+            self._zootecnia_adatta_altezza_tree(self.tree_zootecnia_storico_gruppi, 1)
             return
 
         for entry in entries:
@@ -165,6 +187,8 @@ class ZootecniaTabMixin:
             entry_id = int(entry.get("id") or 0)
             if entry_id > 0:
                 self._zootecnia_storico_item_to_entry_id[item_id] = entry_id
+
+        self._zootecnia_adatta_altezza_tree(self.tree_zootecnia_storico_gruppi, len(entries))
 
     def elimina_operazioni_storico_gruppi_selezionate(self):
         if not hasattr(self, "tree_zootecnia_storico_gruppi"):
@@ -254,6 +278,509 @@ class ZootecniaTabMixin:
         finalita = (entry.get("finalita") or "").strip().upper()
         capi = int(entry.get("capi") or 0)
         return finalita == "CARNE" and capi > 0
+
+    def _is_entry_riproduzione_attiva(self, entry):
+        capi = int(entry.get("capi") or 0)
+        return bool(entry.get("riproduzione")) and capi > 0
+
+    def _zootecnia_parse_positive_int(self, raw_value, label: str) -> int:
+        testo = str(raw_value or "").strip()
+        if not testo:
+            raise ValueError(f"Inserisci un valore per '{label}'.")
+
+        try:
+            value = int(testo)
+        except ValueError:
+            raise ValueError(f"Valore non valido per '{label}'.")
+
+        if value <= 0:
+            raise ValueError(f"Il valore per '{label}' deve essere maggiore di zero.")
+        return value
+
+    def _zootecnia_finalita_label_to_db(self, finalita_label: str) -> str:
+        label = (finalita_label or "").strip()
+        if label == "Da Latte":
+            return "LATTE"
+        if label == "Da Carne":
+            return "CARNE"
+        return ""
+
+    def _zootecnia_label_gruppo_riporta_nascita(self, entry: dict) -> str:
+        group_name = (entry.get("group_name") or "").strip() or "Gruppo"
+        tipo = self._zootecnia_label_tipo(entry)
+        destinazione = self._zootecnia_label_destinazione(entry)
+        riproduzione = "Si" if bool(entry.get("riproduzione")) else "No"
+        capi = format_number(int(entry.get("capi") or 0), 0)
+        return f"{group_name} ({tipo}, Dest: {destinazione}, Ripro: {riproduzione}, {capi} capi)"
+
+    def apri_popup_riporta_nascita(self):
+        try:
+            entries = list_azienda_animali_entries(self.user_id)
+        except sqlite3.Error as e:
+            messagebox.showerror("Errore DB", f"Errore database: {e}")
+            return
+
+        entries_attivi = [entry for entry in entries if int(entry.get("capi") or 0) > 0]
+        gruppi_riproduzione = [entry for entry in entries_attivi if self._is_entry_riproduzione_attiva(entry)]
+
+        if not gruppi_riproduzione:
+            messagebox.showwarning(
+                "Nessun gruppo disponibile",
+                "Per usare 'Riporta nascita' serve almeno un gruppo con flag Riproduzione attivo.",
+            )
+            return
+
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Riporta nascita")
+        dialog.resizable(False, False)
+        dialog.transient(self.root)
+        dialog.grab_set()
+
+        frame = ttk.Frame(dialog, padding=12)
+        frame.pack(fill="both", expand=True)
+
+        var_gruppo_origine = tk.StringVar(value="")
+        var_numero_genitori = tk.StringVar(value="")
+
+        var_genitori_nuovo_gruppo = tk.BooleanVar(value=False)
+        var_genitori_nome_gruppo = tk.StringVar(value="")
+        var_genitori_gruppo_esistente = tk.StringVar(value="")
+
+        var_numero_nascite = tk.StringVar(value="")
+        var_nascite_nuovo_gruppo = tk.BooleanVar(value=False)
+        var_nascite_nome_gruppo = tk.StringVar(value="")
+        var_nascite_destinazione = tk.StringVar(value="Da Latte")
+        var_nascite_riproduzione = tk.StringVar(value="No")
+        var_nascite_gruppo_esistente = tk.StringVar(value="")
+
+        map_gruppi_origine = {}
+        map_gruppi_destinazione_genitori = {}
+        map_gruppi_destinazione_nascite = {}
+
+        def _entry_id(entry: dict) -> int:
+            try:
+                return int(entry.get("id") or 0)
+            except (TypeError, ValueError):
+                return 0
+
+        def _entry_tipo_key(entry: dict):
+            return (
+                (entry.get("tipo_animale") or "").strip().upper(),
+                (entry.get("altro_label") or "").strip().lower(),
+            )
+
+        def _set_combo_values(combo: ttk.Combobox, text_var: tk.StringVar, labels: list[str]):
+            combo.configure(values=tuple(labels))
+            selected = text_var.get().strip()
+            if labels:
+                if selected not in labels:
+                    text_var.set(labels[0])
+            else:
+                text_var.set("")
+
+        row_origine = ttk.Frame(frame)
+        row_origine.pack(fill="x", pady=(0, 6))
+        ttk.Label(row_origine, text="Gruppo di origine genitore:", width=30).pack(side="left")
+        combo_gruppo_origine = ttk.Combobox(
+            row_origine,
+            textvariable=var_gruppo_origine,
+            state="readonly",
+            width=78,
+        )
+        combo_gruppo_origine.pack(side="left", fill="x", expand=True)
+
+        row_numero_genitori = ttk.Frame(frame)
+        row_numero_genitori.pack(fill="x", pady=6)
+        ttk.Label(row_numero_genitori, text="Numero:", width=30).pack(side="left")
+        ttk.Entry(row_numero_genitori, textvariable=var_numero_genitori, width=12).pack(side="left")
+
+        frame_dest_genitori = ttk.LabelFrame(frame, text="Gruppo destinazione genitore")
+        frame_dest_genitori.pack(fill="x", pady=(8, 6))
+
+        row_genitori_toggle = ttk.Frame(frame_dest_genitori)
+        row_genitori_toggle.pack(fill="x", padx=10, pady=(8, 4))
+        ttk.Checkbutton(
+            row_genitori_toggle,
+            text="Nuovo gruppo",
+            variable=var_genitori_nuovo_gruppo,
+        ).pack(side="left")
+
+        frame_genitori_gruppo_nuovo = ttk.Frame(frame_dest_genitori)
+        row_genitori_nome = ttk.Frame(frame_genitori_gruppo_nuovo)
+        row_genitori_nome.pack(fill="x", pady=4)
+        ttk.Label(row_genitori_nome, text="Nome nuovo gruppo:", width=30).pack(side="left")
+        ttk.Entry(row_genitori_nome, textvariable=var_genitori_nome_gruppo).pack(side="left", fill="x", expand=True)
+
+        frame_genitori_gruppo_esistente = ttk.Frame(frame_dest_genitori)
+        row_genitori_esistente = ttk.Frame(frame_genitori_gruppo_esistente)
+        row_genitori_esistente.pack(fill="x", pady=4)
+        ttk.Label(row_genitori_esistente, text="Scegli gruppo:", width=30).pack(side="left")
+        combo_genitori_esistente = ttk.Combobox(
+            row_genitori_esistente,
+            textvariable=var_genitori_gruppo_esistente,
+            state="readonly",
+            width=78,
+        )
+        combo_genitori_esistente.pack(side="left", fill="x", expand=True)
+
+        row_numero_nascite = ttk.Frame(frame)
+        row_numero_nascite.pack(fill="x", pady=(10, 6))
+        ttk.Label(row_numero_nascite, text="Numero nascite:", width=30).pack(side="left")
+        ttk.Entry(row_numero_nascite, textvariable=var_numero_nascite, width=12).pack(side="left")
+
+        frame_dest_nascite = ttk.LabelFrame(frame, text="Gruppo destinazione nascite")
+        frame_dest_nascite.pack(fill="x", pady=(8, 6))
+
+        row_nascite_toggle = ttk.Frame(frame_dest_nascite)
+        row_nascite_toggle.pack(fill="x", padx=10, pady=(8, 4))
+        ttk.Checkbutton(
+            row_nascite_toggle,
+            text="Nuovo gruppo nascite",
+            variable=var_nascite_nuovo_gruppo,
+        ).pack(side="left")
+
+        frame_nascite_gruppo_nuovo = ttk.Frame(frame_dest_nascite)
+        row_nascite_nome = ttk.Frame(frame_nascite_gruppo_nuovo)
+        row_nascite_nome.pack(fill="x", pady=4)
+        ttk.Label(row_nascite_nome, text="Nome nuovo gruppo:", width=30).pack(side="left")
+        ttk.Entry(row_nascite_nome, textvariable=var_nascite_nome_gruppo).pack(side="left", fill="x", expand=True)
+
+        row_nascite_dest = ttk.Frame(frame_nascite_gruppo_nuovo)
+        row_nascite_dest.pack(fill="x", pady=4)
+        ttk.Label(row_nascite_dest, text="Destinazione:", width=30).pack(side="left")
+        ttk.Combobox(
+            row_nascite_dest,
+            textvariable=var_nascite_destinazione,
+            values=("Da Latte", "Da Carne"),
+            state="readonly",
+            width=16,
+        ).pack(side="left")
+
+        row_nascite_ripro = ttk.Frame(frame_nascite_gruppo_nuovo)
+        row_nascite_ripro.pack(fill="x", pady=4)
+        ttk.Label(row_nascite_ripro, text="Riproduzione:", width=30).pack(side="left")
+        ttk.Combobox(
+            row_nascite_ripro,
+            textvariable=var_nascite_riproduzione,
+            values=("Si", "No"),
+            state="readonly",
+            width=16,
+        ).pack(side="left")
+
+        frame_nascite_gruppo_esistente = ttk.Frame(frame_dest_nascite)
+        row_nascite_esistente = ttk.Frame(frame_nascite_gruppo_esistente)
+        row_nascite_esistente.pack(fill="x", pady=4)
+        ttk.Label(row_nascite_esistente, text="Scegli gruppo:", width=30).pack(side="left")
+        combo_nascite_esistente = ttk.Combobox(
+            row_nascite_esistente,
+            textvariable=var_nascite_gruppo_esistente,
+            state="readonly",
+            width=78,
+        )
+        combo_nascite_esistente.pack(side="left", fill="x", expand=True)
+
+        def _toggle_destinazione_genitori():
+            if var_genitori_nuovo_gruppo.get():
+                if frame_genitori_gruppo_esistente.winfo_manager() != "":
+                    frame_genitori_gruppo_esistente.pack_forget()
+                if frame_genitori_gruppo_nuovo.winfo_manager() == "":
+                    frame_genitori_gruppo_nuovo.pack(fill="x", padx=10, pady=(0, 8))
+            else:
+                if frame_genitori_gruppo_nuovo.winfo_manager() != "":
+                    frame_genitori_gruppo_nuovo.pack_forget()
+                if frame_genitori_gruppo_esistente.winfo_manager() == "":
+                    frame_genitori_gruppo_esistente.pack(fill="x", padx=10, pady=(0, 8))
+
+        def _toggle_destinazione_nascite():
+            if var_nascite_nuovo_gruppo.get():
+                if frame_nascite_gruppo_esistente.winfo_manager() != "":
+                    frame_nascite_gruppo_esistente.pack_forget()
+                if frame_nascite_gruppo_nuovo.winfo_manager() == "":
+                    frame_nascite_gruppo_nuovo.pack(fill="x", padx=10, pady=(0, 8))
+            else:
+                if frame_nascite_gruppo_nuovo.winfo_manager() != "":
+                    frame_nascite_gruppo_nuovo.pack_forget()
+                if frame_nascite_gruppo_esistente.winfo_manager() == "":
+                    frame_nascite_gruppo_esistente.pack(fill="x", padx=10, pady=(0, 8))
+
+        def _aggiorna_gruppi_origine():
+            map_gruppi_origine.clear()
+            labels = []
+
+            def _sort_key(item):
+                return ((item.get("group_name") or "").strip().lower(), _entry_id(item))
+
+            for entry in sorted(gruppi_riproduzione, key=_sort_key):
+                label = self._zootecnia_label_gruppo_riporta_nascita(entry)
+                if label in map_gruppi_origine:
+                    label = f"{label} [ID {_entry_id(entry)}]"
+                map_gruppi_origine[label] = entry
+                labels.append(label)
+
+            _set_combo_values(combo_gruppo_origine, var_gruppo_origine, labels)
+
+        def _aggiorna_gruppi_destinazione():
+            map_gruppi_destinazione_genitori.clear()
+            map_gruppi_destinazione_nascite.clear()
+
+            origine = map_gruppi_origine.get(var_gruppo_origine.get().strip())
+            labels_genitori = []
+            labels_nascite = []
+
+            if origine:
+                origine_id = _entry_id(origine)
+                tipo_key = _entry_tipo_key(origine)
+
+                for entry in entries_attivi:
+                    entry_id = _entry_id(entry)
+                    if entry_id <= 0:
+                        continue
+                    if _entry_tipo_key(entry) != tipo_key:
+                        continue
+
+                    label_base = self._zootecnia_label_gruppo_riporta_nascita(entry)
+                    label_nascite = label_base
+                    if label_nascite in map_gruppi_destinazione_nascite:
+                        label_nascite = f"{label_nascite} [ID {entry_id}]"
+                    map_gruppi_destinazione_nascite[label_nascite] = entry
+                    labels_nascite.append(label_nascite)
+
+                    if entry_id == origine_id:
+                        continue
+
+                    label_genitori = label_base
+                    if label_genitori in map_gruppi_destinazione_genitori:
+                        label_genitori = f"{label_genitori} [ID {entry_id}]"
+                    map_gruppi_destinazione_genitori[label_genitori] = entry
+                    labels_genitori.append(label_genitori)
+
+            _set_combo_values(combo_genitori_esistente, var_genitori_gruppo_esistente, labels_genitori)
+            _set_combo_values(combo_nascite_esistente, var_nascite_gruppo_esistente, labels_nascite)
+
+            if not labels_genitori and not var_genitori_nuovo_gruppo.get():
+                var_genitori_nuovo_gruppo.set(True)
+            if not labels_nascite and not var_nascite_nuovo_gruppo.get():
+                var_nascite_nuovo_gruppo.set(True)
+
+            _toggle_destinazione_genitori()
+            _toggle_destinazione_nascite()
+
+        def _conferma_operazione():
+            origine = map_gruppi_origine.get(var_gruppo_origine.get().strip())
+            if not origine:
+                messagebox.showerror("Errore", "Seleziona un gruppo di origine valido.")
+                return
+
+            try:
+                numero_genitori = self._zootecnia_parse_positive_int(var_numero_genitori.get(), "Numero")
+                numero_nascite = self._zootecnia_parse_positive_int(var_numero_nascite.get(), "Numero nascite")
+            except ValueError as e:
+                messagebox.showerror("Errore", str(e))
+                return
+
+            capi_origine = int(origine.get("capi") or 0)
+            if numero_genitori > capi_origine:
+                messagebox.showerror(
+                    "Errore",
+                    "Il numero capi da rimuovere non puo superare i capi presenti nel gruppo di origine.",
+                )
+                return
+
+            dest_genitori_nome = ""
+            dest_genitori_entry = None
+            if var_genitori_nuovo_gruppo.get():
+                dest_genitori_nome = var_genitori_nome_gruppo.get().strip()
+                if not dest_genitori_nome:
+                    messagebox.showerror("Errore", "Inserisci il nome del nuovo gruppo destinazione genitore.")
+                    return
+            else:
+                dest_genitori_entry = map_gruppi_destinazione_genitori.get(var_genitori_gruppo_esistente.get().strip())
+                if not dest_genitori_entry:
+                    messagebox.showerror("Errore", "Seleziona un gruppo esistente per la destinazione genitore.")
+                    return
+
+            dest_nascite_nome = ""
+            dest_nascite_finalita = ""
+            dest_nascite_riproduzione = False
+            dest_nascite_entry = None
+            dest_nascite_finalita_label = "-"
+            dest_nascite_riproduzione_label = "No"
+            if var_nascite_nuovo_gruppo.get():
+                dest_nascite_nome = var_nascite_nome_gruppo.get().strip()
+                if not dest_nascite_nome:
+                    messagebox.showerror("Errore", "Inserisci il nome del nuovo gruppo nascite.")
+                    return
+
+                tipo_origine = (origine.get("tipo_animale") or "").strip().upper()
+                if tipo_origine in ("BOVINI", "OVINI"):
+                    dest_nascite_finalita = self._zootecnia_finalita_label_to_db(var_nascite_destinazione.get())
+                    if dest_nascite_finalita not in ("LATTE", "CARNE"):
+                        messagebox.showerror("Errore", "Seleziona una destinazione valida per il gruppo nascite.")
+                        return
+                else:
+                    dest_nascite_finalita = ""
+
+                dest_nascite_riproduzione = (var_nascite_riproduzione.get().strip().lower() == "si")
+                dest_nascite_finalita_label = var_nascite_destinazione.get().strip() or "-"
+                if not dest_nascite_finalita:
+                    dest_nascite_finalita_label = "-"
+                dest_nascite_riproduzione_label = "Si" if dest_nascite_riproduzione else "No"
+            else:
+                dest_nascite_entry = map_gruppi_destinazione_nascite.get(var_nascite_gruppo_esistente.get().strip())
+                if not dest_nascite_entry:
+                    messagebox.showerror("Errore", "Seleziona un gruppo esistente per la destinazione nascite.")
+                    return
+                dest_nascite_finalita_label = self._zootecnia_label_destinazione(dest_nascite_entry)
+                dest_nascite_riproduzione_label = "Si" if bool(dest_nascite_entry.get("riproduzione")) else "No"
+
+            origine_nome = (origine.get("group_name") or "").strip() or "Gruppo origine"
+            dest_genitori_nome_effettivo = (
+                dest_genitori_nome
+                if var_genitori_nuovo_gruppo.get()
+                else (dest_genitori_entry.get("group_name") or "").strip() or "Gruppo"
+            )
+            dest_nascite_nome_effettivo = (
+                dest_nascite_nome
+                if var_nascite_nuovo_gruppo.get()
+                else (dest_nascite_entry.get("group_name") or "").strip() or "Gruppo"
+            )
+            riepilogo_genitori = (
+                f"Nuovo gruppo '{dest_genitori_nome}'"
+                if var_genitori_nuovo_gruppo.get()
+                else f"Gruppo esistente '{(dest_genitori_entry.get('group_name') or '').strip() or 'Gruppo'}'"
+            )
+            if var_nascite_nuovo_gruppo.get():
+                finalita_label = var_nascite_destinazione.get().strip() or "-"
+                ripro_label = var_nascite_riproduzione.get().strip() or "No"
+                riepilogo_nascite = (
+                    f"Nuovo gruppo '{dest_nascite_nome}' "
+                    f"(Destinazione: {finalita_label}, Riproduzione: {ripro_label})"
+                )
+            else:
+                riepilogo_nascite = (
+                    f"Gruppo esistente '{(dest_nascite_entry.get('group_name') or '').strip() or 'Gruppo'}'"
+                )
+
+            conferma = messagebox.askyesno(
+                "Conferma operazione",
+                "Riepilogo operazione:\n"
+                f"- Gruppo origine genitore: {origine_nome}\n"
+                f"- Capi da spostare (genitori): {format_number(numero_genitori, 0)}\n"
+                f"- Destinazione genitore: {riepilogo_genitori}\n"
+                f"- Numero nascite: {format_number(numero_nascite, 0)}\n"
+                f"- Destinazione nascite: {riepilogo_nascite}\n\n"
+                "Confermi?",
+            )
+            if not conferma:
+                return
+
+            try:
+                with get_conn() as conn:
+                    c = conn.cursor()
+
+                    remove_azienda_animale_capi(
+                        self.user_id,
+                        _entry_id(origine),
+                        numero_genitori,
+                        cursor=c,
+                    )
+
+                    if var_genitori_nuovo_gruppo.get():
+                        add_azienda_animale_entry(
+                            user_id=self.user_id,
+                            tipo_animale=(origine.get("tipo_animale") or "").strip().upper(),
+                            capi=numero_genitori,
+                            finalita=(origine.get("finalita") or "").strip().upper(),
+                            altro_label=(origine.get("altro_label") or "").strip(),
+                            group_name=dest_genitori_nome,
+                            riproduzione=True,
+                            cursor=c,
+                        )
+                    else:
+                        add_azienda_animale_entry(
+                            user_id=self.user_id,
+                            tipo_animale=(dest_genitori_entry.get("tipo_animale") or "").strip().upper(),
+                            capi=numero_genitori,
+                            finalita=(dest_genitori_entry.get("finalita") or "").strip().upper(),
+                            altro_label=(dest_genitori_entry.get("altro_label") or "").strip(),
+                            group_name=(dest_genitori_entry.get("group_name") or "").strip(),
+                            riproduzione=bool(dest_genitori_entry.get("riproduzione")),
+                            cursor=c,
+                        )
+
+                    if var_nascite_nuovo_gruppo.get():
+                        add_azienda_animale_entry(
+                            user_id=self.user_id,
+                            tipo_animale=(origine.get("tipo_animale") or "").strip().upper(),
+                            capi=numero_nascite,
+                            finalita=dest_nascite_finalita,
+                            altro_label=(origine.get("altro_label") or "").strip(),
+                            group_name=dest_nascite_nome,
+                            riproduzione=dest_nascite_riproduzione,
+                            cursor=c,
+                        )
+                    else:
+                        add_azienda_animale_entry(
+                            user_id=self.user_id,
+                            tipo_animale=(dest_nascite_entry.get("tipo_animale") or "").strip().upper(),
+                            capi=numero_nascite,
+                            finalita=(dest_nascite_entry.get("finalita") or "").strip().upper(),
+                            altro_label=(dest_nascite_entry.get("altro_label") or "").strip(),
+                            group_name=(dest_nascite_entry.get("group_name") or "").strip(),
+                            riproduzione=bool(dest_nascite_entry.get("riproduzione")),
+                            cursor=c,
+                        )
+
+                    capi_dopo_origine = capi_origine - numero_genitori
+                    entry_id_correlato = 0
+                    if dest_genitori_entry is not None:
+                        entry_id_correlato = _entry_id(dest_genitori_entry)
+                    elif dest_nascite_entry is not None:
+                        entry_id_correlato = _entry_id(dest_nascite_entry)
+
+                    add_azienda_animali_storico_entry(
+                        user_id=self.user_id,
+                        event_type="RIPORTA_NASCITA",
+                        gruppo_entry_id=_entry_id(origine),
+                        gruppo_nome=origine_nome,
+                        tipo_animale=(origine.get("tipo_animale") or "").strip().upper(),
+                        finalita=(origine.get("finalita") or "").strip().upper(),
+                        capi_prima=capi_origine,
+                        capi_variazione=0,
+                        capi_dopo=max(capi_dopo_origine, 0),
+                        gruppo_correlato_entry_id=entry_id_correlato,
+                        gruppo_correlato_nome=dest_genitori_nome_effettivo,
+                        note=(
+                            f"Genitori spostati: {format_number(numero_genitori, 0)} -> {dest_genitori_nome_effettivo}. "
+                            f"Nascite: {format_number(numero_nascite, 0)} -> {dest_nascite_nome_effettivo} "
+                            f"(Destinazione: {dest_nascite_finalita_label}, Riproduzione: {dest_nascite_riproduzione_label})."
+                        ),
+                        cursor=c,
+                    )
+            except ValueError as e:
+                messagebox.showerror("Errore", str(e))
+                return
+            except sqlite3.Error as e:
+                messagebox.showerror("Errore DB", f"Errore database: {e}")
+                return
+
+            dialog.destroy()
+            self.aggiorna_categoria_zootecnia()
+            messagebox.showinfo("Successo", "Operazione 'Riporta nascita' completata.")
+
+        frame_btn = ttk.Frame(frame)
+        frame_btn.pack(fill="x", pady=(12, 0))
+        ttk.Button(frame_btn, text="Conferma", command=_conferma_operazione).pack(side="left")
+        ttk.Button(frame_btn, text="Annulla", command=dialog.destroy).pack(side="left", padx=6)
+
+        var_gruppo_origine.trace_add("write", lambda *_args: _aggiorna_gruppi_destinazione())
+        var_genitori_nuovo_gruppo.trace_add("write", lambda *_args: _toggle_destinazione_genitori())
+        var_nascite_nuovo_gruppo.trace_add("write", lambda *_args: _toggle_destinazione_nascite())
+
+        _aggiorna_gruppi_origine()
+        _aggiorna_gruppi_destinazione()
+        _toggle_destinazione_genitori()
+        _toggle_destinazione_nascite()
 
     def _prima_data_produzione_latte_con_fattura(self):
         try:
@@ -1681,7 +2208,7 @@ class ZootecniaTabMixin:
         fill_mode = "x"
         expand_mode = False
         if side in ("left", "right"):
-            fill_mode = "both"
+            fill_mode = "x"
             expand_mode = True
 
         frame_tabella.pack(side=side, fill=fill_mode, expand=expand_mode, padx=padx, pady=(10, 0))
@@ -1700,7 +2227,8 @@ class ZootecniaTabMixin:
         for metrica, valore in righe:
             tree.insert("", "end", values=(metrica, valore))
 
-        tree.pack(fill="both", expand=True, padx=8, pady=8)
+        tree.pack(fill="x", expand=True, padx=8, pady=8)
+        self._zootecnia_adatta_altezza_tree(tree, len(righe))
 
     def _ensure_tab_zootecnia_latte(self):
         pagina = getattr(self, "tab_zootecnia_latte", None)
@@ -1739,58 +2267,58 @@ class ZootecniaTabMixin:
         self._imposta_periodo_report_latte_default(aggiorna=False)
 
         frame_report_affiancati = ttk.Frame(content)
-        frame_report_affiancati.pack(fill="both", expand=True)
+        frame_report_affiancati.pack(fill="x")
 
         frame_info = ttk.LabelFrame(frame_report_affiancati, text="Riepilogo zootecnia")
-        frame_info.pack(side="left", fill="both", expand=True, padx=(0, 6))
+        frame_info.pack(side="left", fill="x", expand=True, padx=(0, 6))
 
         self.tree_zootecnia_info_generali = ttk.Treeview(
             frame_info,
             columns=("metrica", "valore"),
             show="headings",
-            height=8,
+            height=1,
         )
         self.tree_zootecnia_info_generali.heading("metrica", text="Metrica")
         self.tree_zootecnia_info_generali.heading("valore", text="Valore")
         self.tree_zootecnia_info_generali.column("metrica", width=250, anchor="w")
         self.tree_zootecnia_info_generali.column("valore", width=220, anchor="e")
-        self.tree_zootecnia_info_generali.pack(fill="both", expand=True, padx=8, pady=8)
+        self.tree_zootecnia_info_generali.pack(fill="x", expand=True, padx=8, pady=8)
 
         frame_latte = ttk.LabelFrame(frame_report_affiancati, text="Calcoli latte (riepilogo generale)")
-        frame_latte.pack(side="left", fill="both", expand=True, padx=(6, 0))
+        frame_latte.pack(side="left", fill="x", expand=True, padx=(6, 0))
 
         self.tree_zootecnia_info_latte = ttk.Treeview(
             frame_latte,
             columns=("metrica", "valore"),
             show="headings",
-            height=8,
+            height=1,
         )
         self.tree_zootecnia_info_latte.heading("metrica", text="Metrica")
         self.tree_zootecnia_info_latte.heading("valore", text="Valore")
         self.tree_zootecnia_info_latte.column("metrica", width=250, anchor="w")
         self.tree_zootecnia_info_latte.column("valore", width=220, anchor="e")
-        self.tree_zootecnia_info_latte.pack(fill="both", expand=True, padx=8, pady=8)
+        self.tree_zootecnia_info_latte.pack(fill="x", expand=True, padx=8, pady=8)
 
         frame_carne = ttk.LabelFrame(content, text="Calcoli carne (riepilogo generale)")
-        frame_carne.pack(fill="both", expand=True, pady=(10, 0))
+        frame_carne.pack(fill="x", pady=(10, 0))
 
         self.tree_zootecnia_info_carne = ttk.Treeview(
             frame_carne,
             columns=("metrica", "valore"),
             show="headings",
-            height=12,
+            height=1,
         )
         self.tree_zootecnia_info_carne.heading("metrica", text="Metrica")
         self.tree_zootecnia_info_carne.heading("valore", text="Valore")
         self.tree_zootecnia_info_carne.column("metrica", width=330, anchor="w")
         self.tree_zootecnia_info_carne.column("valore", width=280, anchor="e")
-        self.tree_zootecnia_info_carne.pack(fill="both", expand=True, padx=8, pady=8)
+        self.tree_zootecnia_info_carne.pack(fill="x", expand=True, padx=8, pady=8)
 
         frame_storico_gruppi = ttk.LabelFrame(
             content,
             text="Storico gruppi (unioni, divisioni, aggiunte/rimozioni capi)",
         )
-        frame_storico_gruppi.pack(fill="both", expand=True, pady=(10, 0))
+        frame_storico_gruppi.pack(fill="x", pady=(10, 0))
 
         frame_storico_azioni = ttk.Frame(frame_storico_gruppi)
         frame_storico_azioni.pack(fill="x", padx=8, pady=(8, 0))
@@ -1811,7 +2339,7 @@ class ZootecniaTabMixin:
             columns=("data", "evento", "gruppo", "delta", "capi_dopo", "dettaglio"),
             show="headings",
             selectmode="extended",
-            height=10,
+            height=1,
         )
         self.tree_zootecnia_storico_gruppi.heading("data", text="Data")
         self.tree_zootecnia_storico_gruppi.heading("evento", text="Evento")
@@ -1827,15 +2355,7 @@ class ZootecniaTabMixin:
         self.tree_zootecnia_storico_gruppi.column("capi_dopo", width=100, anchor="e")
         self.tree_zootecnia_storico_gruppi.column("dettaglio", width=430, anchor="w")
 
-        scroll_storico = ttk.Scrollbar(
-            frame_storico_gruppi,
-            orient="vertical",
-            command=self.tree_zootecnia_storico_gruppi.yview,
-        )
-        self.tree_zootecnia_storico_gruppi.configure(yscrollcommand=scroll_storico.set)
-
-        self.tree_zootecnia_storico_gruppi.pack(side="left", fill="both", expand=True, padx=(8, 0), pady=8)
-        scroll_storico.pack(side="right", fill="y", padx=(0, 8), pady=8)
+        self.tree_zootecnia_storico_gruppi.pack(fill="x", expand=True, padx=8, pady=8)
         self.tree_zootecnia_storico_gruppi.bind(
             "<Delete>",
             lambda _event: self.elimina_operazioni_storico_gruppi_selezionate(),
@@ -1886,6 +2406,7 @@ class ZootecniaTabMixin:
 
         for metrica, valore in righe_generali:
             self.tree_zootecnia_info_generali.insert("", "end", values=(metrica, valore))
+        self._zootecnia_adatta_altezza_tree(self.tree_zootecnia_info_generali, len(righe_generali))
 
         try:
             metriche_latte = self._calcola_metriche_latte_report_operativa()
@@ -1911,6 +2432,7 @@ class ZootecniaTabMixin:
 
         for metrica, valore in righe_latte:
             self.tree_zootecnia_info_latte.insert("", "end", values=(metrica, valore))
+        self._zootecnia_adatta_altezza_tree(self.tree_zootecnia_info_latte, len(righe_latte))
 
         try:
             metriche_carne = self._calcola_metriche_carne_report_operativa()
@@ -1942,6 +2464,7 @@ class ZootecniaTabMixin:
 
         for metrica, valore in righe_carne:
             self.tree_zootecnia_info_carne.insert("", "end", values=(metrica, valore))
+        self._zootecnia_adatta_altezza_tree(self.tree_zootecnia_info_carne, len(righe_carne))
 
         self._carica_storico_gruppi_zootecnia(mostra_errori=False)
 
@@ -1977,6 +2500,7 @@ class ZootecniaTabMixin:
         gruppi_attivi = []
         gruppi_latte_attivi = []
         gruppi_carne_attivi = []
+        gruppi_riproduzione_attivi = []
 
         for entry in entries:
             try:
@@ -1999,6 +2523,8 @@ class ZootecniaTabMixin:
                 gruppi_latte_attivi.append(entry_active_view)
             if self._is_entry_carne_attiva(entry_active_view):
                 gruppi_carne_attivi.append(entry_active_view)
+            if self._is_entry_riproduzione_attiva(entry_active_view):
+                gruppi_riproduzione_attivi.append(entry_active_view)
 
             group_name = (entry.get("group_name") or "").strip()
             if not group_name:
@@ -2013,6 +2539,10 @@ class ZootecniaTabMixin:
                     "capi": capi,
                 }
             )
+
+        if hasattr(self, "btn_zootecnia_riporta_nascita"):
+            nuovo_stato = "normal" if gruppi_riproduzione_attivi else "disabled"
+            self.btn_zootecnia_riporta_nascita.config(state=nuovo_stato)
 
         if self.lbl_zootecnia_vuoto.winfo_manager() != "":
             self.lbl_zootecnia_vuoto.pack_forget()
@@ -2072,7 +2602,7 @@ class ZootecniaTabMixin:
                     )
 
                     frame_report_affiancati = ttk.Frame(pagina)
-                    frame_report_affiancati.pack(fill="both", expand=True)
+                    frame_report_affiancati.pack(fill="x")
 
                     self._crea_tabella_report_gruppo(
                         frame_report_affiancati,

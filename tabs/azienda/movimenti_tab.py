@@ -44,6 +44,16 @@ class MovimentiTabMixin:
         "fields_view",
     )
 
+    def _movimenti_adatta_altezza_tree(self, tree, righe_count: int, min_rows: int = 1):
+        if tree is None:
+            return
+
+        rows = max(int(righe_count or 0), int(min_rows or 1))
+        try:
+            tree.configure(height=rows)
+        except tk.TclError:
+            pass
+
     def setup_tab_movimenti(self):
         content = self.crea_container_scorribile(self.tab_movimenti)
 
@@ -122,7 +132,7 @@ class MovimentiTabMixin:
             "natura_costo",
             "gruppi_imputazione",
         )
-        self.tree_fattura_prodotti_mov = ttk.Treeview(frame_table, columns=cols, show="headings", height=6)
+        self.tree_fattura_prodotti_mov = ttk.Treeview(frame_table, columns=cols, show="headings", height=1)
 
         self.tree_fattura_prodotti_mov.heading("n", text="#")
         self.tree_fattura_prodotti_mov.heading("descrizione", text="Descrizione")
@@ -149,11 +159,8 @@ class MovimentiTabMixin:
         self._fattura_prodotti_gruppi_popup_bind_id = None
         self.tree_fattura_prodotti_mov.bind("<Double-1>", self._on_doppio_click_tabella_prodotti_mov)
 
-        scroll = ttk.Scrollbar(frame_table, orient="vertical", command=self.tree_fattura_prodotti_mov.yview)
-        self.tree_fattura_prodotti_mov.configure(yscrollcommand=scroll.set)
-
         self.tree_fattura_prodotti_mov.pack(side="left", fill="both", expand=True)
-        scroll.pack(side="right", fill="y")
+        self._movimenti_adatta_altezza_tree(self.tree_fattura_prodotti_mov, 1)
 
     def _aggiorna_tabella_prodotti_fattura_movimento(self, parser_data):
         if not hasattr(self, "tree_fattura_prodotti_mov"):
@@ -175,6 +182,7 @@ class MovimentiTabMixin:
         if not righe:
             if hasattr(self, "var_fattura_prodotti_mov_stato"):
                 self.var_fattura_prodotti_mov_stato.set("Nessun prodotto rilevato nella fattura selezionata.")
+            self._movimenti_adatta_altezza_tree(self.tree_fattura_prodotti_mov, 1)
             return
 
         for idx, riga in enumerate(righe, start=1):
@@ -209,6 +217,8 @@ class MovimentiTabMixin:
 
         if hasattr(self, "var_fattura_prodotti_mov_stato"):
             self.var_fattura_prodotti_mov_stato.set(f"Prodotti rilevati: {len(righe)}")
+
+        self._movimenti_adatta_altezza_tree(self.tree_fattura_prodotti_mov, len(righe))
 
     def _normalizza_tipo_costo_prodotto(self, raw_value):
         return normalize_cost_type(raw_value)

@@ -12,6 +12,16 @@ from database import get_conn, get_movimento_animali_entry_ids, get_movimento_an
 
 
 class StoricoTabMixin:
+    def _storico_adatta_altezza_tree(self, tree, righe_count: int, min_rows: int = 1):
+        if tree is None:
+            return
+
+        rows = max(int(righe_count or 0), int(min_rows or 1))
+        try:
+            tree.configure(height=rows)
+        except tk.TclError:
+            pass
+
     def setup_tab_storico(self):
         content = self.crea_container_scorribile(self.tab_storico)
 
@@ -74,10 +84,10 @@ class StoricoTabMixin:
         ttk.Button(riga_filtri_2, text="Pulisci", command=self.pulisci_filtri_movimenti).pack(side="left")
 
         frame_table = ttk.Frame(content)
-        frame_table.pack(fill="both", expand=True, padx=12, pady=6)
+        frame_table.pack(fill="x", padx=12, pady=6)
 
         cols = ("id", "data", "tipo", "categoria", "descrizione", "importo", "iva")
-        self.tree_movimenti = ttk.Treeview(frame_table, columns=cols, show="headings", height=9)
+        self.tree_movimenti = ttk.Treeview(frame_table, columns=cols, show="headings", height=1)
 
         self.tree_movimenti.heading("id", text="ID")
         self.tree_movimenti.heading("data", text="Data")
@@ -95,15 +105,14 @@ class StoricoTabMixin:
         self.tree_movimenti.column("importo", width=90, anchor="e")
         self.tree_movimenti.column("iva", width=90, anchor="e")
 
-        scroll_y = ttk.Scrollbar(frame_table, orient="vertical", command=self.tree_movimenti.yview)
         scroll_x = ttk.Scrollbar(frame_table, orient="horizontal", command=self.tree_movimenti.xview)
-        self.tree_movimenti.configure(yscrollcommand=scroll_y.set, xscrollcommand=scroll_x.set)
+        self.tree_movimenti.configure(xscrollcommand=scroll_x.set)
 
         self.tree_movimenti.grid(row=0, column=0, sticky="nsew")
-        scroll_y.grid(row=0, column=1, sticky="ns")
         scroll_x.grid(row=1, column=0, sticky="ew")
         frame_table.grid_rowconfigure(0, weight=1)
         frame_table.grid_columnconfigure(0, weight=1)
+        self._storico_adatta_altezza_tree(self.tree_movimenti, 1)
 
         self.tree_movimenti.bind("<<TreeviewSelect>>", self._on_selezione_movimento_storico)
         self.tree_movimenti.bind("<Double-1>", lambda _event: self.prepara_modifica_movimento())
@@ -118,26 +127,23 @@ class StoricoTabMixin:
         ttk.Button(frame_btn, text="Elimina selezionato", command=self.elimina_movimento_selezionato).pack(side="left", padx=6)
 
         frame_dettagli = ttk.LabelFrame(content, text="Dati fattura del movimento selezionato")
-        frame_dettagli.pack(fill="both", expand=True, padx=12, pady=(0, 6))
+        frame_dettagli.pack(fill="x", padx=12, pady=(0, 6))
 
         self.tree_fattura_dettagli = ttk.Treeview(
             frame_dettagli,
             columns=("campo", "valore"),
             show="headings",
-            height=9,
+            height=1,
         )
         self.tree_fattura_dettagli.heading("campo", text="Campo")
         self.tree_fattura_dettagli.heading("valore", text="Valore")
         self.tree_fattura_dettagli.column("campo", width=220, anchor="w")
         self.tree_fattura_dettagli.column("valore", width=620, anchor="w")
 
-        dettagli_scroll_y = ttk.Scrollbar(frame_dettagli, orient="vertical", command=self.tree_fattura_dettagli.yview)
-        self.tree_fattura_dettagli.configure(yscrollcommand=dettagli_scroll_y.set)
-
         self.tree_fattura_dettagli.grid(row=0, column=0, sticky="nsew")
-        dettagli_scroll_y.grid(row=0, column=1, sticky="ns")
         frame_dettagli.grid_rowconfigure(0, weight=1)
         frame_dettagli.grid_columnconfigure(0, weight=1)
+        self._storico_adatta_altezza_tree(self.tree_fattura_dettagli, 1)
 
         self._fattura_dettaglio_corrente = None
         self._azzera_dettagli_fattura()
@@ -263,6 +269,8 @@ class StoricoTabMixin:
                 ),
             )
 
+        self._storico_adatta_altezza_tree(self.tree_movimenti, len(rows))
+
         self._azzera_dettagli_fattura()
         self.carica_categorie_salvate(mostra_errori=False)
 
@@ -273,6 +281,7 @@ class StoricoTabMixin:
 
         clear_treeview(self.tree_fattura_dettagli)
         self.tree_fattura_dettagli.insert("", "end", values=("Info", testo))
+        self._storico_adatta_altezza_tree(self.tree_fattura_dettagli, 1)
 
     def _on_selezione_movimento_storico(self, _event=None):
         self.carica_dettagli_fattura_movimento_selezionato()
@@ -428,6 +437,8 @@ class StoricoTabMixin:
 
         for campo, valore in righe:
             self.tree_fattura_dettagli.insert("", "end", values=(campo, valore or ""))
+
+        self._storico_adatta_altezza_tree(self.tree_fattura_dettagli, len(righe))
 
     def _format_data_caricamento(self, raw_value):
         testo = (raw_value or "").strip()

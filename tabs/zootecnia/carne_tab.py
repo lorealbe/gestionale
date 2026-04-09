@@ -20,6 +20,26 @@ class CarneTabMixin:
     _UNITA_QTA = ("Kg", "Quintali")
     _UNITA_PREZZO = ("EUR/Kg", "EUR/Quintale")
 
+    def _carne_adatta_altezza_tree(self, tree, righe_count: int, min_rows: int = 1):
+        if tree is None:
+            return
+
+        rows = max(int(righe_count or 0), int(min_rows or 1))
+        try:
+            tree.configure(height=rows)
+        except tk.TclError:
+            pass
+
+    def _carne_adatta_altezza_listbox(self, listbox, righe_count: int, min_rows: int = 1):
+        if listbox is None:
+            return
+
+        rows = max(int(righe_count or 0), int(min_rows or 1))
+        try:
+            listbox.configure(height=rows)
+        except tk.TclError:
+            pass
+
     def setup_tab_carne(self):
         content = self.crea_container_scorribile(self.tab_carne, stretch_to_viewport=True)
 
@@ -93,12 +113,10 @@ class CarneTabMixin:
             frame_list_gruppi,
             selectmode=tk.EXTENDED,
             exportselection=False,
-            height=5,
+            height=1,
         )
-        scroll_carne_gruppi = ttk.Scrollbar(frame_list_gruppi, orient="vertical", command=self.listbox_carne_gruppi.yview)
-        self.listbox_carne_gruppi.configure(yscrollcommand=scroll_carne_gruppi.set)
         self.listbox_carne_gruppi.pack(side="left", fill="x", expand=True)
-        scroll_carne_gruppi.pack(side="right", fill="y")
+        self._carne_adatta_altezza_listbox(self.listbox_carne_gruppi, 1)
         self.listbox_carne_gruppi.bind("<<ListboxSelect>>", self._on_selezione_gruppi_carne)
 
         frame_gruppi_btn = ttk.Frame(corpo_gruppi)
@@ -193,10 +211,10 @@ class CarneTabMixin:
         ttk.Button(frame_fattura, text="Rimuovi", command=self.rimuovi_fattura_carne).pack(side="right", padx=(0, 5))
 
         frame_table = ttk.Frame(content)
-        frame_table.pack(fill="both", expand=True, padx=12, pady=8)
+        frame_table.pack(fill="x", padx=12, pady=8)
 
         cols = ("id", "data", "kg", "prezzo_kg", "totale")
-        self.tree_produzione_carne = ttk.Treeview(frame_table, columns=cols, show="headings", height=10)
+        self.tree_produzione_carne = ttk.Treeview(frame_table, columns=cols, show="headings", height=1)
 
         self.tree_produzione_carne.heading("id", text="ID")
         self.tree_produzione_carne.heading("data", text="Data")
@@ -210,11 +228,8 @@ class CarneTabMixin:
         self.tree_produzione_carne.column("prezzo_kg", width=140, anchor="e")
         self.tree_produzione_carne.column("totale", width=140, anchor="e")
 
-        scroll = ttk.Scrollbar(frame_table, orient="vertical", command=self.tree_produzione_carne.yview)
-        self.tree_produzione_carne.configure(yscrollcommand=scroll.set)
-
-        self.tree_produzione_carne.pack(side="left", fill="both", expand=True)
-        scroll.pack(side="right", fill="y")
+        self.tree_produzione_carne.pack(side="left", fill="x", expand=True)
+        self._carne_adatta_altezza_tree(self.tree_produzione_carne, 1)
 
         self.tree_produzione_carne.bind("<<TreeviewSelect>>", self._on_selezione_produzione_carne)
         self.tree_produzione_carne.bind("<Double-1>", lambda _event: self.modifica_produzione_carne_selezionata())
@@ -339,6 +354,8 @@ class CarneTabMixin:
             if entry_id in selected_ids:
                 self.listbox_carne_gruppi.selection_set(listbox_idx)
             listbox_idx += 1
+
+        self._carne_adatta_altezza_listbox(self.listbox_carne_gruppi, listbox_idx)
 
         self._aggiorna_stato_gruppi_carne()
 
@@ -1033,6 +1050,8 @@ class CarneTabMixin:
                     format_number(totale, 2),
                 ),
             )
+
+        self._carne_adatta_altezza_tree(self.tree_produzione_carne, len(rows))
 
     def elimina_produzione_carne_selezionata(self):
         if not hasattr(self, "tree_produzione_carne"):

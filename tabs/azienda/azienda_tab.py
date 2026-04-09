@@ -43,6 +43,16 @@ class AziendaTabMixin:
     PURPOSE_OPTIONS = ("Da Latte", "Da Carne")
     PURPOSE_TO_DB = {"Da Latte": "LATTE", "Da Carne": "CARNE"}
 
+    def _azienda_adatta_altezza_tree(self, tree, righe_count: int, min_rows: int = 1):
+        if tree is None:
+            return
+
+        rows = max(int(righe_count or 0), int(min_rows or 1))
+        try:
+            tree.configure(height=rows)
+        except tk.TclError:
+            pass
+
     def _normalizza_piva(self, raw_value: str) -> str:
         value = (raw_value or "").strip().upper()
         if value.startswith("IT"):
@@ -142,24 +152,21 @@ class AziendaTabMixin:
         ).pack(side="left")
 
         frame_andamento = ttk.LabelFrame(content, text="Andamento economico annuale")
-        frame_andamento.pack(fill="both", expand=True, padx=12, pady=(0, 10))
+        frame_andamento.pack(fill="x", padx=12, pady=(0, 10))
 
         self.tree_azienda_info_andamento = ttk.Treeview(
             frame_andamento,
             columns=("metrica", "valore"),
             show="headings",
-            height=8,
+            height=1,
         )
         self.tree_azienda_info_andamento.heading("metrica", text="Metrica")
         self.tree_azienda_info_andamento.heading("valore", text="Valore")
         self.tree_azienda_info_andamento.column("metrica", width=320, anchor="w")
         self.tree_azienda_info_andamento.column("valore", width=220, anchor="e")
 
-        scroll_info = ttk.Scrollbar(frame_andamento, orient="vertical", command=self.tree_azienda_info_andamento.yview)
-        self.tree_azienda_info_andamento.configure(yscrollcommand=scroll_info.set)
-
-        self.tree_azienda_info_andamento.pack(side="left", fill="both", expand=True)
-        scroll_info.pack(side="right", fill="y")
+        self.tree_azienda_info_andamento.pack(side="left", fill="x", expand=True)
+        self._azienda_adatta_altezza_tree(self.tree_azienda_info_andamento, 1)
 
     def _format_data_info_azienda(self, raw_value, fallback="-"):
         testo = (raw_value or "").strip()
@@ -302,6 +309,8 @@ class AziendaTabMixin:
         for metrica, valore in righe:
             self.tree_azienda_info_andamento.insert("", "end", values=(metrica, valore))
 
+        self._azienda_adatta_altezza_tree(self.tree_azienda_info_andamento, len(righe))
+
     def apri_dialog_modifica_info_azienda(self):
         info = get_azienda_info(self.user_id)
 
@@ -442,27 +451,24 @@ class AziendaTabMixin:
             frame_riepilogo,
             columns=("metrica", "valore"),
             show="headings",
-            height=7,
+            height=1,
         )
         self.tree_azienda_report.heading("metrica", text="Metrica")
         self.tree_azienda_report.heading("valore", text="Valore")
         self.tree_azienda_report.column("metrica", width=300, anchor="w")
         self.tree_azienda_report.column("valore", width=240, anchor="e")
 
-        scroll_report = ttk.Scrollbar(frame_riepilogo, orient="vertical", command=self.tree_azienda_report.yview)
-        self.tree_azienda_report.configure(yscrollcommand=scroll_report.set)
-
         self.tree_azienda_report.pack(side="left", fill="x", expand=True)
-        scroll_report.pack(side="right", fill="y")
+        self._azienda_adatta_altezza_tree(self.tree_azienda_report, 1)
 
         frame_categorie = ttk.LabelFrame(content, text="Dettaglio per categoria")
-        frame_categorie.pack(fill="both", expand=True, padx=12, pady=(0, 10))
+        frame_categorie.pack(fill="x", padx=12, pady=(0, 10))
 
         self.tree_azienda_categorie = ttk.Treeview(
             frame_categorie,
             columns=("tipo", "categoria", "totale", "movimenti"),
             show="headings",
-            height=8,
+            height=1,
         )
         self.tree_azienda_categorie.heading("tipo", text="Tipo")
         self.tree_azienda_categorie.heading("categoria", text="Categoria")
@@ -474,11 +480,8 @@ class AziendaTabMixin:
         self.tree_azienda_categorie.column("totale", width=150, anchor="e")
         self.tree_azienda_categorie.column("movimenti", width=120, anchor="e")
 
-        scroll_categorie = ttk.Scrollbar(frame_categorie, orient="vertical", command=self.tree_azienda_categorie.yview)
-        self.tree_azienda_categorie.configure(yscrollcommand=scroll_categorie.set)
-
-        self.tree_azienda_categorie.pack(side="left", fill="both", expand=True)
-        scroll_categorie.pack(side="right", fill="y")
+        self.tree_azienda_categorie.pack(side="left", fill="x", expand=True)
+        self._azienda_adatta_altezza_tree(self.tree_azienda_categorie, 1)
 
     def _setup_pagina_fatture_azienda(self):
         content = self.crea_container_scorribile(self.tab_azienda_fatture)
@@ -771,10 +774,10 @@ class AziendaTabMixin:
         ttk.Button(riga_filtri_2, text="Pulisci", command=self.pulisci_filtri_movimenti_azienda).pack(side="left")
 
         frame_table = ttk.Frame(container)
-        frame_table.pack(fill="both", expand=True, padx=12, pady=6)
+        frame_table.pack(fill="x", padx=12, pady=6)
 
         cols = ("id", "data", "tipo", "categoria", "descrizione", "importo", "iva")
-        self.tree_movimenti_azienda = ttk.Treeview(frame_table, columns=cols, show="headings", height=10)
+        self.tree_movimenti_azienda = ttk.Treeview(frame_table, columns=cols, show="headings", height=1)
 
         self.tree_movimenti_azienda.heading("id", text="ID")
         self.tree_movimenti_azienda.heading("data", text="Data")
@@ -792,15 +795,14 @@ class AziendaTabMixin:
         self.tree_movimenti_azienda.column("importo", width=90, anchor="e")
         self.tree_movimenti_azienda.column("iva", width=90, anchor="e")
 
-        scroll_y = ttk.Scrollbar(frame_table, orient="vertical", command=self.tree_movimenti_azienda.yview)
         scroll_x = ttk.Scrollbar(frame_table, orient="horizontal", command=self.tree_movimenti_azienda.xview)
-        self.tree_movimenti_azienda.configure(yscrollcommand=scroll_y.set, xscrollcommand=scroll_x.set)
+        self.tree_movimenti_azienda.configure(xscrollcommand=scroll_x.set)
 
         self.tree_movimenti_azienda.grid(row=0, column=0, sticky="nsew")
-        scroll_y.grid(row=0, column=1, sticky="ns")
         scroll_x.grid(row=1, column=0, sticky="ew")
         frame_table.grid_rowconfigure(0, weight=1)
         frame_table.grid_columnconfigure(0, weight=1)
+        self._azienda_adatta_altezza_tree(self.tree_movimenti_azienda, 1)
 
         self.tree_movimenti_azienda.bind(
             "<Double-1>",
@@ -836,30 +838,23 @@ class AziendaTabMixin:
         ).pack(side="left", padx=6)
 
         frame_dettagli = ttk.LabelFrame(container, text="Dati fattura del movimento selezionato")
-        frame_dettagli.pack(fill="both", expand=True, padx=12, pady=(0, 6))
+        frame_dettagli.pack(fill="x", padx=12, pady=(0, 6))
 
         self.tree_fattura_dettagli_azienda = ttk.Treeview(
             frame_dettagli,
             columns=("campo", "valore"),
             show="headings",
-            height=9,
+            height=1,
         )
         self.tree_fattura_dettagli_azienda.heading("campo", text="Campo")
         self.tree_fattura_dettagli_azienda.heading("valore", text="Valore")
         self.tree_fattura_dettagli_azienda.column("campo", width=220, anchor="w")
         self.tree_fattura_dettagli_azienda.column("valore", width=620, anchor="w")
 
-        dettagli_scroll_y = ttk.Scrollbar(
-            frame_dettagli,
-            orient="vertical",
-            command=self.tree_fattura_dettagli_azienda.yview,
-        )
-        self.tree_fattura_dettagli_azienda.configure(yscrollcommand=dettagli_scroll_y.set)
-
         self.tree_fattura_dettagli_azienda.grid(row=0, column=0, sticky="nsew")
-        dettagli_scroll_y.grid(row=0, column=1, sticky="ns")
         frame_dettagli.grid_rowconfigure(0, weight=1)
         frame_dettagli.grid_columnconfigure(0, weight=1)
+        self._azienda_adatta_altezza_tree(self.tree_fattura_dettagli_azienda, 1)
 
         self._fattura_dettaglio_corrente_azienda = None
         self._azzera_dettagli_fattura_azienda()
@@ -984,7 +979,7 @@ class AziendaTabMixin:
         ).pack(side="left")
 
         frame_table = ttk.Frame(container)
-        frame_table.pack(fill="both", expand=True, padx=12, pady=(0, 10))
+        frame_table.pack(fill="x", padx=12, pady=(0, 10))
 
         cols = (
             "data",
@@ -997,7 +992,7 @@ class AziendaTabMixin:
             "gruppi",
             "movimento_id",
         )
-        self.tree_storico_prodotti_azienda = ttk.Treeview(frame_table, columns=cols, show="headings", height=14)
+        self.tree_storico_prodotti_azienda = ttk.Treeview(frame_table, columns=cols, show="headings", height=1)
 
         self.tree_storico_prodotti_azienda.heading("data", text="Data")
         self.tree_storico_prodotti_azienda.heading("numero_fattura", text="N. fattura")
@@ -1019,15 +1014,14 @@ class AziendaTabMixin:
         self.tree_storico_prodotti_azienda.column("gruppi", width=260, anchor="w")
         self.tree_storico_prodotti_azienda.column("movimento_id", width=95, anchor="center")
 
-        scroll_y = ttk.Scrollbar(frame_table, orient="vertical", command=self.tree_storico_prodotti_azienda.yview)
         scroll_x = ttk.Scrollbar(frame_table, orient="horizontal", command=self.tree_storico_prodotti_azienda.xview)
-        self.tree_storico_prodotti_azienda.configure(yscrollcommand=scroll_y.set, xscrollcommand=scroll_x.set)
+        self.tree_storico_prodotti_azienda.configure(xscrollcommand=scroll_x.set)
 
         self.tree_storico_prodotti_azienda.grid(row=0, column=0, sticky="nsew")
-        scroll_y.grid(row=0, column=1, sticky="ns")
         scroll_x.grid(row=1, column=0, sticky="ew")
         frame_table.grid_rowconfigure(0, weight=1)
         frame_table.grid_columnconfigure(0, weight=1)
+        self._azienda_adatta_altezza_tree(self.tree_storico_prodotti_azienda, 1)
 
     def _apri_calendario_filtro_azienda_prodotti(self, text_var):
         date_text = text_var.get().strip()
@@ -1289,6 +1283,8 @@ class AziendaTabMixin:
                     f"Prodotti trovati: {righe_prodotti} | Movimenti con fattura: {len(movimenti_con_prodotti)}{suffix}"
                 )
 
+        self._azienda_adatta_altezza_tree(self.tree_storico_prodotti_azienda, righe_prodotti)
+
     def _apri_calendario_filtro_azienda_movimenti(self, text_var):
         date_text = text_var.get().strip()
         if date_text:
@@ -1534,6 +1530,8 @@ class AziendaTabMixin:
                 ),
             )
 
+        self._azienda_adatta_altezza_tree(self.tree_movimenti_azienda, len(rows))
+
         self._azzera_dettagli_fattura_azienda()
         self._carica_categorie_filtro_azienda_movimenti(mostra_errori=False)
         self._carica_gruppi_filtro_azienda_movimenti(mostra_errori=False)
@@ -1549,6 +1547,7 @@ class AziendaTabMixin:
 
         clear_treeview(self.tree_fattura_dettagli_azienda)
         self.tree_fattura_dettagli_azienda.insert("", "end", values=("Info", testo))
+        self._azienda_adatta_altezza_tree(self.tree_fattura_dettagli_azienda, 1)
 
     def _on_selezione_movimento_storico_azienda(self, _event=None):
         self.carica_dettagli_fattura_movimento_selezionato_azienda()
@@ -1699,6 +1698,8 @@ class AziendaTabMixin:
 
         for campo, valore in righe:
             self.tree_fattura_dettagli_azienda.insert("", "end", values=(campo, valore or ""))
+
+        self._azienda_adatta_altezza_tree(self.tree_fattura_dettagli_azienda, len(righe))
 
     def apri_fattura_movimento_selezionato_azienda(self):
         dettagli = getattr(self, "_fattura_dettaglio_corrente_azienda", None)
@@ -1938,13 +1939,13 @@ class AziendaTabMixin:
         self._reset_form_aggiungi_animale()
 
         frame_report = ttk.LabelFrame(content, text="Report animali presenti in azienda")
-        frame_report.pack(fill="both", expand=True, padx=12, pady=(0, 8))
+        frame_report.pack(fill="x", padx=12, pady=(0, 8))
 
         self.tree_animali_report = ttk.Treeview(
             frame_report,
             columns=("gruppo", "tipo", "destinazione", "riproduzione", "capi"),
             show="headings",
-            height=10,
+            height=1,
             selectmode="browse",
         )
         self.tree_animali_report.heading("gruppo", text="Gruppo")
@@ -1959,11 +1960,8 @@ class AziendaTabMixin:
         self.tree_animali_report.column("riproduzione", width=140, anchor="center")
         self.tree_animali_report.column("capi", width=120, anchor="e")
 
-        scroll_report = ttk.Scrollbar(frame_report, orient="vertical", command=self.tree_animali_report.yview)
-        self.tree_animali_report.configure(yscrollcommand=scroll_report.set)
-
-        self.tree_animali_report.pack(side="left", fill="both", expand=True)
-        scroll_report.pack(side="right", fill="y")
+        self.tree_animali_report.pack(side="left", fill="x", expand=True)
+        self._azienda_adatta_altezza_tree(self.tree_animali_report, 1)
 
         frame_azioni_lista = ttk.Frame(content)
         frame_azioni_lista.pack(fill="x", padx=12, pady=(0, 6))
@@ -2991,7 +2989,7 @@ class AziendaTabMixin:
             ("Saldo Netto", format_eur(saldo)),
         ]
 
-        self.tree_azienda_report.configure(height=max(1, len(righe_riepilogo)))
+        self._azienda_adatta_altezza_tree(self.tree_azienda_report, len(righe_riepilogo))
 
         for metrica, valore in righe_riepilogo:
             self.tree_azienda_report.insert("", "end", values=(metrica, valore))
@@ -3014,6 +3012,11 @@ class AziendaTabMixin:
                     format_number(int(numero_manutenzioni), 0),
                 ),
             )
+
+        self._azienda_adatta_altezza_tree(
+            self.tree_azienda_categorie,
+            len(self.tree_azienda_categorie.get_children("")),
+        )
 
     def carica_report_animali_allevamento(self, mostra_errori=True):
         try:
@@ -3049,6 +3052,11 @@ class AziendaTabMixin:
                 if entry_id > 0:
                     insert_kwargs["iid"] = str(entry_id)
                 self.tree_animali_report.insert("", "end", **insert_kwargs)
+
+        self._azienda_adatta_altezza_tree(
+            self.tree_animali_report,
+            len(self.tree_animali_report.get_children("")),
+        )
 
         self.var_animali_report_totale.set(f"Totale capi registrati: {format_number(totale_capi, 0)}")
         if hasattr(self, "aggiorna_lista_gruppi_animali_movimento"):
