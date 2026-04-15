@@ -19,26 +19,6 @@ class LatteTabMixin:
     _UNITA_QTA_LATTE = ("Quintali", "Litri")
     _UNITA_PREZZO_LATTE = ("EUR/Litro", "EUR/Quintale")
 
-    def _latte_adatta_altezza_tree(self, tree, righe_count: int, min_rows: int = 1):
-        if tree is None:
-            return
-
-        rows = max(int(righe_count or 0), int(min_rows or 1))
-        try:
-            tree.configure(height=rows)
-        except tk.TclError:
-            pass
-
-    def _latte_adatta_altezza_listbox(self, listbox, righe_count: int, min_rows: int = 1):
-        if listbox is None:
-            return
-
-        rows = max(int(righe_count or 0), int(min_rows or 1))
-        try:
-            listbox.configure(height=rows)
-        except tk.TclError:
-            pass
-
     def setup_tab_latte(self):
         content = self.crea_container_scorribile(self.tab_latte, stretch_to_viewport=True)
 
@@ -97,10 +77,12 @@ class LatteTabMixin:
             frame_list_gruppi,
             selectmode=tk.EXTENDED,
             exportselection=False,
-            height=1,
+            height=5,
         )
+        scroll_latte_gruppi = ttk.Scrollbar(frame_list_gruppi, orient="vertical", command=self.listbox_latte_gruppi.yview)
+        self.listbox_latte_gruppi.configure(yscrollcommand=scroll_latte_gruppi.set)
         self.listbox_latte_gruppi.pack(side="left", fill="x", expand=True)
-        self._latte_adatta_altezza_listbox(self.listbox_latte_gruppi, 1)
+        scroll_latte_gruppi.pack(side="right", fill="y")
 
         self.listbox_latte_gruppi.bind("<<ListboxSelect>>", self._on_selezione_gruppi_latte)
 
@@ -163,10 +145,10 @@ class LatteTabMixin:
         ttk.Button(frame_fattura, text="Rimuovi", command=self.rimuovi_fattura_latte).pack(side="right", padx=(0, 5))
 
         frame_table = ttk.Frame(content)
-        frame_table.pack(fill="x", padx=12, pady=8)
+        frame_table.pack(fill="both", expand=True, padx=12, pady=8)
 
         cols = ("id", "data", "quintali", "prezzo")
-        self.tree_produzione = ttk.Treeview(frame_table, columns=cols, show="headings", height=1)
+        self.tree_produzione = ttk.Treeview(frame_table, columns=cols, show="headings", height=10)
 
         self.tree_produzione.heading("id", text="ID")
         self.tree_produzione.heading("data", text="Data")
@@ -178,8 +160,11 @@ class LatteTabMixin:
         self.tree_produzione.column("quintali", width=140, anchor="e")
         self.tree_produzione.column("prezzo", width=140, anchor="e")
 
-        self.tree_produzione.pack(side="left", fill="x", expand=True)
-        self._latte_adatta_altezza_tree(self.tree_produzione, 1)
+        scroll = ttk.Scrollbar(frame_table, orient="vertical", command=self.tree_produzione.yview)
+        self.tree_produzione.configure(yscrollcommand=scroll.set)
+
+        self.tree_produzione.pack(side="left", fill="both", expand=True)
+        scroll.pack(side="right", fill="y")
 
         self.aggiorna_lista_gruppi_latte()
         self.tree_produzione.bind("<<TreeviewSelect>>", self._on_selezione_produzione_latte)
@@ -269,8 +254,6 @@ class LatteTabMixin:
             if entry_id in selected_ids:
                 self.listbox_latte_gruppi.selection_set(listbox_idx)
             listbox_idx += 1
-
-        self._latte_adatta_altezza_listbox(self.listbox_latte_gruppi, listbox_idx)
 
         self._aggiorna_stato_gruppi_latte()
 
@@ -952,8 +935,6 @@ class LatteTabMixin:
                     format_number(float(prezzo_litro), 4),
                 ),
             )
-
-        self._latte_adatta_altezza_tree(self.tree_produzione, len(rows))
 
     def _on_selezione_produzione_latte(self, _event=None):
         if not hasattr(self, "var_latte_modifica_stato"):

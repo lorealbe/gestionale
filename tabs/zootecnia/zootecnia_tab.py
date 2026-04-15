@@ -10,15 +10,18 @@ from database import (
     add_azienda_animali_storico_entry,
     delete_azienda_animali_storico_entry,
     get_conn,
+    list_azienda_animali_nascite_media,
     list_azienda_animali_entries,
     list_azienda_animali_storico_entries,
     remove_azienda_animale_capi,
+    upsert_azienda_animali_nascite_media,
 )
 from services.latte_group_metrics import (
     calcola_metriche_latte_da_totali as svc_calcola_metriche_latte_da_totali,
     costruisci_quote_litri_produzioni as svc_costruisci_quote_litri_produzioni,
     ripartizione_litri_produzione_per_gruppo as svc_ripartizione_litri_produzione_per_gruppo,
 )
+from services.product_parser_utils import PRODUCT_CATEGORY_OPTIONS, normalize_product_category
 
 
 class ZootecniaTabMixin:
@@ -118,6 +121,19 @@ class ZootecniaTabMixin:
             tree.configure(height=rows)
         except tk.TclError:
             pass
+
+    def _righe_media_nascite_per_tipo_animale(self):
+        try:
+            medie = list_azienda_animali_nascite_media(self.user_id)
+        except sqlite3.Error:
+            medie = []
+
+        righe = []
+        for media in medie:
+            tipo_label = self._zootecnia_label_tipo(media)
+            valore = format_number(media.get("media_nascite_per_capo", 0), 2)
+            righe.append((f"Media nascite per capo ({tipo_label})", valore))
+        return righe
 
     def _carica_storico_gruppi_zootecnia(self, mostra_errori=False):
         if not hasattr(self, "tree_zootecnia_storico_gruppi"):
@@ -731,6 +747,15 @@ class ZootecniaTabMixin:
                             cursor=c,
                         )
 
+                    rapporto_nascite_genitori = float(numero_nascite) / float(numero_genitori)
+                    upsert_azienda_animali_nascite_media(
+                        user_id=self.user_id,
+                        tipo_animale=(origine.get("tipo_animale") or "").strip().upper(),
+                        altro_label=(origine.get("altro_label") or "").strip(),
+                        rapporto_nascite_genitori=rapporto_nascite_genitori,
+                        cursor=c,
+                    )
+
                     capi_dopo_origine = capi_origine - numero_genitori
                     entry_id_correlato = 0
                     if dest_genitori_entry is not None:
@@ -927,8 +952,239 @@ class ZootecniaTabMixin:
             self.var_zootecnia_latte_data_inizio.trace_add("write", self._auto_compila_data_fine_report_latte)
             self._zootecnia_latte_periodo_trace_attivo = True
 
+    def _ensure_categorie_report_latte_state(self):
+        if not hasattr(self, "_zootecnia_latte_categorie_report"):
+            self._zootecnia_latte_categorie_report = set(PRODUCT_CATEGORY_OPTIONS)
+            return
+
+        if isinstance(self._zootecnia_latte_categorie_report, str):
+            valori_raw = [self._zootecnia_latte_categorie_report]
+        elif isinstance(self._zootecnia_latte_categorie_report, (set, list, tuple)):
+            valori_raw = list(self._zootecnia_latte_categorie_report)
+        else:
+            valori_raw = []
+
+        categorie_normalizzate = set()
+        for categoria in valori_raw:
+            categoria_norm = normalize_product_category(categoria)
+            if categoria_norm in PRODUCT_CATEGORY_OPTIONS:
+                categorie_normalizzate.add(categoria_norm)
+
+        self._zootecnia_latte_categorie_report = categorie_normalizzate
+
+    def _categorie_report_latte_selezionate(self):
+        self._ensure_categorie_report_latte_state()
+        categorie_set = set(self._zootecnia_latte_categorie_report)
+        return tuple(c for c in PRODUCT_CATEGORY_OPTIONS if c in categorie_set)
+
+    def _normalizza_categorie_report_latte(self, categorie=None):
+        if categorie is None:
+            categorie = self._categorie_report_latte_selezionate()
+
+        if isinstance(categorie, str):
+            valori_raw = [categorie]
+        elif isinstance(categorie, (set, list, tuple)):
+            valori_raw = list(categorie)
+        else:
+            valori_raw = []
+
+        categorie_normalizzate = set()
+        for categoria in valori_raw:
+            categoria_norm = normalize_product_category(categoria)
+            if categoria_norm in PRODUCT_CATEGORY_OPTIONS:
+                categorie_normalizzate.add(categoria_norm)
+
+        return categorie_normalizzate
+
+    def _format_categorie_report_latte_compatte(self, categorie):
+        categorie_set = self._normalizza_categorie_report_latte(categorie)
+        categorie_norm = [c for c in PRODUCT_CATEGORY_OPTIONS if c in categorie_set]
+        totale_opzioni = len(PRODUCT_CATEGORY_OPTIONS)
+        totale_selezionate = len(categorie_norm)
+
+        if totale_selezionate <= 0:
+            return "Nessuna"
+        if totale_selezionate >= totale_opzioni > 0:
+            return "Tutte"
+        if totale_selezionate <= 2:
+            return ", ".join(categorie_norm)
+
+        prime = ", ".join(categorie_norm[:2])
+        restanti = totale_selezionate - 2
+        return f"{prime} (+{restanti})"
+
+    def _applica_selezione_categorie_report_latte_su_listbox(self, listbox_widget):
+        if listbox_widget is None:
+            return
+
+        categorie_selezionate = set(self._categorie_report_latte_selezionate())
+        self._zootecnia_sync_categorie_report_latte = True
+        try:
+            listbox_widget.selection_clear(0, tk.END)
+            for idx, categoria in enumerate(PRODUCT_CATEGORY_OPTIONS):
+                if categoria in categorie_selezionate:
+                    listbox_widget.selection_set(idx)
+        finally:
+            self._zootecnia_sync_categorie_report_latte = False
+
+    def _on_categorie_report_latte_selection_change(self, listbox_widget):
+        if getattr(self, "_zootecnia_sync_categorie_report_latte", False):
+            return
+        if listbox_widget is None:
+            return
+
+        nuove_categorie = set()
+        for idx_raw in listbox_widget.curselection():
+            try:
+                idx = int(idx_raw)
+            except (TypeError, ValueError):
+                continue
+            if 0 <= idx < len(PRODUCT_CATEGORY_OPTIONS):
+                nuove_categorie.add(PRODUCT_CATEGORY_OPTIONS[idx])
+
+        correnti = set(self._categorie_report_latte_selezionate())
+        if nuove_categorie == correnti:
+            return
+
+        self._zootecnia_latte_categorie_report = nuove_categorie
+        self._sincronizza_listbox_categorie_report_latte(exclude_widget=listbox_widget)
+        self._aggiorna_report_latte_dinamico()
+
+    def _seleziona_tutte_categorie_report_latte(self, listbox_widget=None):
+        self._zootecnia_latte_categorie_report = set(PRODUCT_CATEGORY_OPTIONS)
+        if listbox_widget is not None:
+            self._applica_selezione_categorie_report_latte_su_listbox(listbox_widget)
+        self._sincronizza_listbox_categorie_report_latte(exclude_widget=listbox_widget)
+        self._aggiorna_report_latte_dinamico()
+
+    def _deseleziona_tutte_categorie_report_latte(self, listbox_widget=None):
+        self._zootecnia_latte_categorie_report = set()
+        if listbox_widget is not None:
+            self._applica_selezione_categorie_report_latte_su_listbox(listbox_widget)
+        self._sincronizza_listbox_categorie_report_latte(exclude_widget=listbox_widget)
+        self._aggiorna_report_latte_dinamico()
+
+    def _registra_listbox_categorie_report_latte(self, listbox_widget):
+        if listbox_widget is None:
+            return
+
+        listboxes = []
+        for widget in getattr(self, "_zootecnia_latte_categorie_listboxes", []):
+            if widget is None or widget is listbox_widget:
+                continue
+            try:
+                if widget.winfo_exists():
+                    listboxes.append(widget)
+            except tk.TclError:
+                continue
+
+        listboxes.append(listbox_widget)
+        self._zootecnia_latte_categorie_listboxes = listboxes
+
+    def _sincronizza_listbox_categorie_report_latte(self, exclude_widget=None):
+        listboxes_validi = []
+        for widget in getattr(self, "_zootecnia_latte_categorie_listboxes", []):
+            if widget is None:
+                continue
+            try:
+                if widget.winfo_exists():
+                    listboxes_validi.append(widget)
+            except tk.TclError:
+                continue
+
+        self._zootecnia_latte_categorie_listboxes = listboxes_validi
+        for widget in listboxes_validi:
+            if widget is exclude_widget:
+                continue
+            self._applica_selezione_categorie_report_latte_su_listbox(widget)
+
+    def _aggiorna_righe_tabella_report_gruppo(self, tree, righe):
+        if tree is None:
+            return
+
+        try:
+            if not tree.winfo_exists():
+                return
+        except tk.TclError:
+            return
+
+        clear_treeview(tree)
+        for metrica, valore in righe:
+            tree.insert("", "end", values=(metrica, valore))
+        self._zootecnia_adatta_altezza_tree(tree, len(righe))
+
+    def _aggiorna_report_latte_dinamico(self):
+        gruppi_attivi = getattr(self, "_zootecnia_gruppi_attivi_cache", None)
+        gruppi_latte_attivi = getattr(self, "_zootecnia_gruppi_latte_attivi_cache", None)
+
+        if not isinstance(gruppi_attivi, list) or not isinstance(gruppi_latte_attivi, list):
+            self.aggiorna_categoria_zootecnia()
+            return
+
+        self._aggiorna_tab_zootecnia_info_generali(
+            gruppi_attivi,
+            gruppi_latte_attivi,
+            aggiorna_storico=False,
+        )
+
+        report_widgets = getattr(self, "_zootecnia_gruppi_report_widgets", {})
+        if not isinstance(report_widgets, dict) or not report_widgets:
+            return
+
+        categorie_latte_attive = self._categorie_report_latte_selezionate()
+
+        capi_overrides = {}
+        for raw_entry_id, data_view in report_widgets.items():
+            try:
+                entry_id = int(raw_entry_id or 0)
+            except (TypeError, ValueError):
+                continue
+            if entry_id <= 0 or not isinstance(data_view, dict):
+                continue
+            capi_overrides[entry_id] = max(int(data_view.get("totale_capi") or 0), 0)
+
+        shared_metriche_gruppi = None
+        try:
+            shared_metriche_gruppi = self._prepara_dati_metriche_latte_per_gruppi(capi_overrides=capi_overrides)
+        except Exception:
+            shared_metriche_gruppi = None
+
+        for raw_entry_id, data_view in report_widgets.items():
+            if not isinstance(data_view, dict):
+                continue
+
+            try:
+                entry_id = int(raw_entry_id or 0)
+            except (TypeError, ValueError):
+                continue
+            if entry_id <= 0:
+                continue
+
+            tree_generale = data_view.get("tree_generale")
+            tree_indici = data_view.get("tree_indici")
+            totale_capi = max(int(data_view.get("totale_capi") or 0), 0)
+
+            try:
+                metriche = self._calcola_metriche_latte_report_operativa_per_gruppo(
+                    entry_id,
+                    totale_capi=totale_capi,
+                    shared_data=shared_metriche_gruppi,
+                    categorie_prodotti=categorie_latte_attive,
+                )
+                righe_generali = self._righe_report_generale_gruppo(metriche)
+                righe_indici = self._righe_report_indici_gruppo(metriche)
+            except Exception:
+                righe_generali = [
+                    ("Report gruppo", "Calcoli non disponibili per questo gruppo (errore durante il calcolo)."),
+                ]
+                righe_indici = []
+
+            self._aggiorna_righe_tabella_report_gruppo(tree_generale, righe_generali)
+            self._aggiorna_righe_tabella_report_gruppo(tree_indici, righe_indici)
+
     def _crea_filtro_periodo_report_latte(self, parent, titolo="Periodo report Latte", pady=(0, 10)):
         self._ensure_periodo_report_latte_vars()
+        self._ensure_categorie_report_latte_state()
 
         frame_filtri_latte = ttk.LabelFrame(parent, text=titolo)
         frame_filtri_latte.pack(fill="x", pady=pady)
@@ -936,12 +1192,52 @@ class ZootecniaTabMixin:
         self.crea_campo_data(frame_filtri_latte, "Data INIZIO:", self.var_zootecnia_latte_data_inizio)
         self.crea_campo_data(frame_filtri_latte, "Data FINE:", self.var_zootecnia_latte_data_fine)
 
+        frame_filtro_categorie = ttk.Frame(frame_filtri_latte)
+        frame_filtro_categorie.pack(fill="x", padx=20, pady=(0, 8))
+        ttk.Label(frame_filtro_categorie, text="Categorie prodotti che incidono sul costo/litro:").pack(anchor="w")
+
+        frame_categorie_controls = ttk.Frame(frame_filtro_categorie)
+        frame_categorie_controls.pack(fill="x", pady=(4, 0))
+
+        listbox_categorie = tk.Listbox(
+            frame_categorie_controls,
+            selectmode="multiple",
+            exportselection=False,
+            height=len(PRODUCT_CATEGORY_OPTIONS),
+            selectbackground="#E8F0F7",
+            selectforeground="#000000",
+            activestyle="none",
+        )
+        for categoria in PRODUCT_CATEGORY_OPTIONS:
+            listbox_categorie.insert(tk.END, categoria)
+        listbox_categorie.pack(side="left", fill="x", expand=True)
+
+        frame_categorie_btn = ttk.Frame(frame_categorie_controls)
+        frame_categorie_btn.pack(side="left", padx=(8, 0))
+        ttk.Button(
+            frame_categorie_btn,
+            text="Tutte",
+            command=lambda lb=listbox_categorie: self._seleziona_tutte_categorie_report_latte(lb),
+        ).pack(fill="x")
+        ttk.Button(
+            frame_categorie_btn,
+            text="Nessuna",
+            command=lambda lb=listbox_categorie: self._deseleziona_tutte_categorie_report_latte(lb),
+        ).pack(fill="x", pady=(6, 0))
+
+        self._applica_selezione_categorie_report_latte_su_listbox(listbox_categorie)
+        self._registra_listbox_categorie_report_latte(listbox_categorie)
+        listbox_categorie.bind(
+            "<<ListboxSelect>>",
+            lambda _event, lb=listbox_categorie: self._on_categorie_report_latte_selection_change(lb),
+        )
+
         frame_btn_filtri_latte = ttk.Frame(frame_filtri_latte)
         frame_btn_filtri_latte.pack(fill="x", padx=20, pady=(0, 8))
         ttk.Button(
             frame_btn_filtri_latte,
             text="Applica periodo report",
-            command=self.aggiorna_categoria_zootecnia,
+            command=self._aggiorna_report_latte_dinamico,
         ).pack(side="left")
         ttk.Button(
             frame_btn_filtri_latte,
@@ -973,7 +1269,7 @@ class ZootecniaTabMixin:
             self.var_zootecnia_latte_data_fine.set(data_fine.strftime("%d/%m/%Y"))
 
         if aggiorna:
-            self.aggiorna_categoria_zootecnia()
+            self._aggiorna_report_latte_dinamico()
 
     def _periodo_report_corrente_db(self):
         oggi = datetime.now()
@@ -1685,6 +1981,7 @@ class ZootecniaTabMixin:
         animale_entry_id,
         movimento_link_ids,
         lookup_gruppi,
+        categorie_prodotti_ammesse=None,
         quote_ratio_entrate_per_movimento=None,
         merge_rules=None,
         active_parent_map=None,
@@ -1706,6 +2003,9 @@ class ZootecniaTabMixin:
             merge_rules = {}
         if not isinstance(active_parent_map, dict):
             active_parent_map = {}
+
+        categorie_ammesse = self._normalizza_categorie_report_latte(categorie_prodotti_ammesse)
+        include_senza_parser = "Altro" in categorie_ammesse
 
         linked_ids = []
         linked_seen = set()
@@ -1762,6 +2062,10 @@ class ZootecniaTabMixin:
                     if totale_riga is None or totale_riga <= 0:
                         continue
 
+                    categoria_riga = normalize_product_category(riga.get("category"))
+                    if categoria_riga not in categorie_ammesse:
+                        continue
+
                     totale_righe += totale_riga
                     ids_riga = self._risolvi_ids_gruppo_da_testo_parser(
                         riga.get("groups"),
@@ -1810,6 +2114,11 @@ class ZootecniaTabMixin:
                     ratio_iva = max(0.0, min(1.0, ratio_iva))
                     return quota_gruppo, iva_importo * ratio_iva, quota_costi_fissi, quota_costi_variabili, True
 
+                return 0.0, 0.0, 0.0, 0.0, False
+
+        if tipo_mov == "USCITA" and not include_senza_parser:
+            return 0.0, 0.0, 0.0, 0.0, False
+
         quota_base = 1.0 / len(linked_ids) if linked_ids else 0.0
         if quota_base <= 0:
             return 0.0, 0.0, 0.0, 0.0, False
@@ -1849,30 +2158,23 @@ class ZootecniaTabMixin:
             totale_costi_variabili=totale_costi_variabili,
         )
 
-    def _calcola_metriche_latte_report_operativa(self):
+    def _calcola_metriche_latte_report_operativa(self, categorie_prodotti=None):
         periodo = self._periodo_report_corrente_db()
         inizio_db = periodo["inizio_db"]
         fine_db = periodo["fine_db"]
+        categorie_ammesse = self._normalizza_categorie_report_latte(categorie_prodotti)
+        include_senza_parser = "Altro" in categorie_ammesse
 
         with get_conn() as conn:
             c = conn.cursor()
 
             c.execute(
                 '''
-                SELECT tipo, COALESCE(SUM(importo), 0), COUNT(id)
-                FROM movimenti
-                WHERE user_id=?
-                  AND data_op BETWEEN ? AND ?
-                  AND UPPER(TRIM(COALESCE(categoria, '')))='LATTE'
-                GROUP BY tipo
-            ''',
-                (self.user_id, inizio_db, fine_db),
-            )
-            risultati_movimenti = c.fetchall()
-
-            c.execute(
-                '''
-                SELECT COALESCE(SUM(iva_importo), 0)
+                SELECT id,
+                       tipo,
+                       COALESCE(importo, 0),
+                       COALESCE(iva_importo, 0),
+                       COALESCE(parser_products, '')
                 FROM movimenti
                 WHERE user_id=?
                   AND data_op BETWEEN ? AND ?
@@ -1880,7 +2182,7 @@ class ZootecniaTabMixin:
             ''',
                 (self.user_id, inizio_db, fine_db),
             )
-            row_iva = c.fetchone()
+            movimenti_rows = c.fetchall()
 
             c.execute(
                 '''
@@ -1897,14 +2199,63 @@ class ZootecniaTabMixin:
         tot_entrate = 0.0
         tot_uscite = 0.0
         movimenti_estratti = 0
-        for tipo, totale, qta in risultati_movimenti:
-            movimenti_estratti += int(qta or 0)
-            if tipo == "ENTRATA":
-                tot_entrate = float(totale or 0)
-            elif tipo == "USCITA":
-                tot_uscite = float(totale or 0)
+        totale_iva = 0.0
 
-        totale_iva = float((row_iva[0] if row_iva else 0) or 0)
+        for movimento_id_raw, tipo_raw, importo_raw, iva_raw, parser_products in movimenti_rows:
+            try:
+                movimento_id = int(movimento_id_raw or 0)
+            except (TypeError, ValueError):
+                movimento_id = 0
+
+            tipo_mov = str(tipo_raw or "").strip().upper()
+            importo = float(importo_raw or 0)
+            iva_importo = float(iva_raw or 0)
+
+            if tipo_mov == "ENTRATA":
+                movimenti_estratti += 1
+                tot_entrate += importo
+                totale_iva += iva_importo
+                continue
+
+            if tipo_mov != "USCITA":
+                continue
+
+            quota_importo = importo
+            quota_iva = iva_importo
+
+            righe_prodotti = []
+            if parser_products and hasattr(self, "_estrai_righe_prodotti_da_parser_text"):
+                righe_prodotti = self._estrai_righe_prodotti_da_parser_text(parser_products)
+
+            if righe_prodotti:
+                totale_righe = 0.0
+                totale_righe_filtrate = 0.0
+
+                for riga in righe_prodotti:
+                    totale_riga = parse_decimal(riga.get("line_total"), allow_zero=True, allow_negative=False)
+                    if totale_riga is None or totale_riga <= 0:
+                        continue
+
+                    totale_righe += totale_riga
+                    categoria_riga = normalize_product_category(riga.get("category"))
+                    if categoria_riga in categorie_ammesse:
+                        totale_righe_filtrate += totale_riga
+
+                if totale_righe <= 0 or totale_righe_filtrate <= 0:
+                    continue
+
+                ratio = totale_righe_filtrate / totale_righe
+                ratio = max(0.0, min(1.0, ratio))
+                quota_importo = importo * ratio
+                quota_iva = iva_importo * ratio
+            elif not include_senza_parser:
+                continue
+
+            if movimento_id > 0:
+                movimenti_estratti += 1
+            tot_uscite += quota_importo
+            totale_iva += quota_iva
+
         tot_litri = float((row_latte[0] if row_latte else 0) or 0)
         qta_produzioni = int((row_latte[1] if row_latte else 0) or 0)
         totale_valore_latte = float((row_latte[2] if row_latte else 0) or 0)
@@ -1989,7 +2340,13 @@ class ZootecniaTabMixin:
             "scostamento_imponibile": scostamento_imponibile,
         }
 
-    def _calcola_metriche_latte_report_operativa_per_gruppo(self, animale_entry_id, totale_capi=0, shared_data=None):
+    def _calcola_metriche_latte_report_operativa_per_gruppo(
+        self,
+        animale_entry_id,
+        totale_capi=0,
+        shared_data=None,
+        categorie_prodotti=None,
+    ):
         if not isinstance(shared_data, dict):
             shared_data = self._prepara_dati_metriche_latte_per_gruppi()
 
@@ -2076,6 +2433,7 @@ class ZootecniaTabMixin:
         totale_costi_fissi = 0.0
         totale_costi_variabili = 0.0
         movimenti_estratti = set()
+        categorie_ammesse = self._normalizza_categorie_report_latte(categorie_prodotti)
 
         for movimento_row in movimenti_rows:
             movimento_id = int(movimento_row[0] or 0)
@@ -2088,6 +2446,7 @@ class ZootecniaTabMixin:
                 animale_entry_id_eff,
                 linked_ids,
                 lookup_gruppi,
+                categorie_prodotti_ammesse=categorie_ammesse,
                 quote_ratio_entrate_per_movimento=quote_ratio_per_movimento_entrate,
                 merge_rules=merge_rules,
                 active_parent_map=active_parent_map,
@@ -2208,7 +2567,7 @@ class ZootecniaTabMixin:
         fill_mode = "x"
         expand_mode = False
         if side in ("left", "right"):
-            fill_mode = "x"
+            fill_mode = "both"
             expand_mode = True
 
         frame_tabella.pack(side=side, fill=fill_mode, expand=expand_mode, padx=padx, pady=(10, 0))
@@ -2227,8 +2586,8 @@ class ZootecniaTabMixin:
         for metrica, valore in righe:
             tree.insert("", "end", values=(metrica, valore))
 
-        tree.pack(fill="x", expand=True, padx=8, pady=8)
-        self._zootecnia_adatta_altezza_tree(tree, len(righe))
+        tree.pack(fill="both", expand=True, padx=8, pady=8)
+        return tree
 
     def _ensure_tab_zootecnia_latte(self):
         pagina = getattr(self, "tab_zootecnia_latte", None)
@@ -2267,10 +2626,10 @@ class ZootecniaTabMixin:
         self._imposta_periodo_report_latte_default(aggiorna=False)
 
         frame_report_affiancati = ttk.Frame(content)
-        frame_report_affiancati.pack(fill="x")
+        frame_report_affiancati.pack(fill="both", expand=True)
 
         frame_info = ttk.LabelFrame(frame_report_affiancati, text="Riepilogo zootecnia")
-        frame_info.pack(side="left", fill="x", expand=True, padx=(0, 6))
+        frame_info.pack(side="left", fill="both", expand=True, padx=(0, 6))
 
         self.tree_zootecnia_info_generali = ttk.Treeview(
             frame_info,
@@ -2282,10 +2641,12 @@ class ZootecniaTabMixin:
         self.tree_zootecnia_info_generali.heading("valore", text="Valore")
         self.tree_zootecnia_info_generali.column("metrica", width=250, anchor="w")
         self.tree_zootecnia_info_generali.column("valore", width=220, anchor="e")
-        self.tree_zootecnia_info_generali.pack(fill="x", expand=True, padx=8, pady=8)
+        self.tree_zootecnia_info_generali.pack(fill="both", expand=True, padx=8, pady=8)
+        if hasattr(self, "abilita_a_capo_treeview"):
+            self.abilita_a_capo_treeview(self.tree_zootecnia_info_generali, max_lines=1)
 
         frame_latte = ttk.LabelFrame(frame_report_affiancati, text="Calcoli latte (riepilogo generale)")
-        frame_latte.pack(side="left", fill="x", expand=True, padx=(6, 0))
+        frame_latte.pack(side="left", fill="both", expand=True, padx=(6, 0))
 
         self.tree_zootecnia_info_latte = ttk.Treeview(
             frame_latte,
@@ -2297,10 +2658,12 @@ class ZootecniaTabMixin:
         self.tree_zootecnia_info_latte.heading("valore", text="Valore")
         self.tree_zootecnia_info_latte.column("metrica", width=250, anchor="w")
         self.tree_zootecnia_info_latte.column("valore", width=220, anchor="e")
-        self.tree_zootecnia_info_latte.pack(fill="x", expand=True, padx=8, pady=8)
+        self.tree_zootecnia_info_latte.pack(fill="both", expand=True, padx=8, pady=8)
+        if hasattr(self, "abilita_a_capo_treeview"):
+            self.abilita_a_capo_treeview(self.tree_zootecnia_info_latte, max_lines=1)
 
         frame_carne = ttk.LabelFrame(content, text="Calcoli carne (riepilogo generale)")
-        frame_carne.pack(fill="x", pady=(10, 0))
+        frame_carne.pack(fill="both", expand=True, pady=(10, 0))
 
         self.tree_zootecnia_info_carne = ttk.Treeview(
             frame_carne,
@@ -2312,13 +2675,15 @@ class ZootecniaTabMixin:
         self.tree_zootecnia_info_carne.heading("valore", text="Valore")
         self.tree_zootecnia_info_carne.column("metrica", width=330, anchor="w")
         self.tree_zootecnia_info_carne.column("valore", width=280, anchor="e")
-        self.tree_zootecnia_info_carne.pack(fill="x", expand=True, padx=8, pady=8)
+        self.tree_zootecnia_info_carne.pack(fill="both", expand=True, padx=8, pady=8)
+        if hasattr(self, "abilita_a_capo_treeview"):
+            self.abilita_a_capo_treeview(self.tree_zootecnia_info_carne, max_lines=1)
 
         frame_storico_gruppi = ttk.LabelFrame(
             content,
             text="Storico gruppi (unioni, divisioni, aggiunte/rimozioni capi)",
         )
-        frame_storico_gruppi.pack(fill="x", pady=(10, 0))
+        frame_storico_gruppi.pack(fill="both", expand=True, pady=(10, 0))
 
         frame_storico_azioni = ttk.Frame(frame_storico_gruppi)
         frame_storico_azioni.pack(fill="x", padx=8, pady=(8, 0))
@@ -2355,7 +2720,7 @@ class ZootecniaTabMixin:
         self.tree_zootecnia_storico_gruppi.column("capi_dopo", width=100, anchor="e")
         self.tree_zootecnia_storico_gruppi.column("dettaglio", width=430, anchor="w")
 
-        self.tree_zootecnia_storico_gruppi.pack(fill="x", expand=True, padx=8, pady=8)
+        self.tree_zootecnia_storico_gruppi.pack(fill="both", expand=True, padx=8, pady=8)
         self.tree_zootecnia_storico_gruppi.bind(
             "<Delete>",
             lambda _event: self.elimina_operazioni_storico_gruppi_selezionate(),
@@ -2374,7 +2739,7 @@ class ZootecniaTabMixin:
 
         return self.tab_zootecnia_info_generali
 
-    def _aggiorna_tab_zootecnia_info_generali(self, gruppi_attivi, gruppi_latte_attivi):
+    def _aggiorna_tab_zootecnia_info_generali(self, gruppi_attivi, gruppi_latte_attivi, aggiorna_storico=True):
         if (
             not hasattr(self, "tree_zootecnia_info_generali")
             or not hasattr(self, "tree_zootecnia_info_latte")
@@ -2404,14 +2769,21 @@ class ZootecniaTabMixin:
                 ("Capi totali registrati", format_number(totale_capi, 0)),
             ]
 
+        righe_generali.extend(self._righe_media_nascite_per_tipo_animale())
+
         for metrica, valore in righe_generali:
             self.tree_zootecnia_info_generali.insert("", "end", values=(metrica, valore))
         self._zootecnia_adatta_altezza_tree(self.tree_zootecnia_info_generali, len(righe_generali))
 
         try:
-            metriche_latte = self._calcola_metriche_latte_report_operativa()
+            categorie_latte_attive = self._categorie_report_latte_selezionate()
+            metriche_latte = self._calcola_metriche_latte_report_operativa(
+                categorie_prodotti=categorie_latte_attive,
+            )
+            categorie_text = self._format_categorie_report_latte_compatte(categorie_latte_attive)
             righe_latte = [
                 ("Periodo", metriche_latte["periodo"]),
+                ("Categorie costo/litro", categorie_text),
                 ("Produzioni latte nel periodo", str(metriche_latte["qta_produzioni"])),
                 (
                     "Totale Quintali",
@@ -2466,7 +2838,8 @@ class ZootecniaTabMixin:
             self.tree_zootecnia_info_carne.insert("", "end", values=(metrica, valore))
         self._zootecnia_adatta_altezza_tree(self.tree_zootecnia_info_carne, len(righe_carne))
 
-        self._carica_storico_gruppi_zootecnia(mostra_errori=False)
+        if aggiorna_storico:
+            self._carica_storico_gruppi_zootecnia(mostra_errori=False)
 
     def apri_configurazione_allevamento(self):
         self.mostra_categoria(self.CATEGORIA_AZIENDA)
@@ -2496,6 +2869,9 @@ class ZootecniaTabMixin:
 
         for tab_id in self.zootecnia_notebook.tabs():
             self.zootecnia_notebook.forget(tab_id)
+
+        self._zootecnia_latte_categorie_listboxes = []
+        self._zootecnia_gruppi_report_widgets = {}
 
         gruppi_attivi = []
         gruppi_latte_attivi = []
@@ -2540,6 +2916,9 @@ class ZootecniaTabMixin:
                 }
             )
 
+        self._zootecnia_gruppi_attivi_cache = [dict(gruppo) for gruppo in gruppi_attivi]
+        self._zootecnia_gruppi_latte_attivi_cache = [dict(gruppo) for gruppo in gruppi_latte_attivi]
+
         if hasattr(self, "btn_zootecnia_riporta_nascita"):
             nuovo_stato = "normal" if gruppi_riproduzione_attivi else "disabled"
             self.btn_zootecnia_riporta_nascita.config(state=nuovo_stato)
@@ -2555,6 +2934,7 @@ class ZootecniaTabMixin:
 
         if gruppi_attivi:
             shared_metriche_gruppi = None
+            categorie_latte_attive = self._categorie_report_latte_selezionate()
             try:
                 capi_overrides = {
                     int(gruppo.get("entry_id") or 0): int(gruppo.get("capi") or 0) for gruppo in gruppi_attivi
@@ -2599,12 +2979,13 @@ class ZootecniaTabMixin:
                         gruppo["entry_id"],
                         totale_capi=gruppo["capi"],
                         shared_data=shared_metriche_gruppi,
+                        categorie_prodotti=categorie_latte_attive,
                     )
 
                     frame_report_affiancati = ttk.Frame(pagina)
-                    frame_report_affiancati.pack(fill="x")
+                    frame_report_affiancati.pack(fill="both", expand=True)
 
-                    self._crea_tabella_report_gruppo(
+                    tree_report_generale = self._crea_tabella_report_gruppo(
                         frame_report_affiancati,
                         "Report generale gruppo",
                         self._righe_report_generale_gruppo(metriche_gruppo),
@@ -2613,7 +2994,7 @@ class ZootecniaTabMixin:
                         metrica_width=230,
                         valore_width=190,
                     )
-                    self._crea_tabella_report_gruppo(
+                    tree_report_indici = self._crea_tabella_report_gruppo(
                         frame_report_affiancati,
                         "Report entrate/uscite e indici",
                         self._righe_report_indici_gruppo(metriche_gruppo),
@@ -2622,6 +3003,12 @@ class ZootecniaTabMixin:
                         metrica_width=230,
                         valore_width=190,
                     )
+
+                    self._zootecnia_gruppi_report_widgets[int(gruppo["entry_id"])] = {
+                        "tree_generale": tree_report_generale,
+                        "tree_indici": tree_report_indici,
+                        "totale_capi": int(gruppo.get("capi") or 0),
+                    }
                 except Exception:
                     frame_metriche = ttk.LabelFrame(pagina, text="Report gruppo")
                     frame_metriche.pack(fill="x", pady=(10, 0))

@@ -19,9 +19,11 @@ from database import (
     LITRI_PER_QUINTALE,
 )
 from services.product_parser_utils import (
+    PRODUCT_CATEGORY_OPTIONS,
     build_basic_product_storage_line,
     build_detailed_product_storage_line,
     normalize_cost_type,
+    normalize_product_category,
     serialize_product_storage_lines,
 )
 
@@ -43,16 +45,6 @@ class MovimentiTabMixin:
         "products",
         "fields_view",
     )
-
-    def _movimenti_adatta_altezza_tree(self, tree, righe_count: int, min_rows: int = 1):
-        if tree is None:
-            return
-
-        rows = max(int(righe_count or 0), int(min_rows or 1))
-        try:
-            tree.configure(height=rows)
-        except tk.TclError:
-            pass
 
     def setup_tab_movimenti(self):
         content = self.crea_container_scorribile(self.tab_movimenti)
@@ -125,6 +117,7 @@ class MovimentiTabMixin:
         cols = (
             "n",
             "descrizione",
+            "categoria_prodotto",
             "qta",
             "prezzo_unitario",
             "aliquota_iva",
@@ -132,10 +125,11 @@ class MovimentiTabMixin:
             "natura_costo",
             "gruppi_imputazione",
         )
-        self.tree_fattura_prodotti_mov = ttk.Treeview(frame_table, columns=cols, show="headings", height=1)
+        self.tree_fattura_prodotti_mov = ttk.Treeview(frame_table, columns=cols, show="headings", height=6)
 
         self.tree_fattura_prodotti_mov.heading("n", text="#")
         self.tree_fattura_prodotti_mov.heading("descrizione", text="Descrizione")
+        self.tree_fattura_prodotti_mov.heading("categoria_prodotto", text="Categoria")
         self.tree_fattura_prodotti_mov.heading("qta", text="Quantita")
         self.tree_fattura_prodotti_mov.heading("prezzo_unitario", text="Prezzo unit.")
         self.tree_fattura_prodotti_mov.heading("aliquota_iva", text="IVA %")
@@ -144,7 +138,8 @@ class MovimentiTabMixin:
         self.tree_fattura_prodotti_mov.heading("gruppi_imputazione", text="Imputazione gruppi")
 
         self.tree_fattura_prodotti_mov.column("n", width=40, anchor="center", stretch=False)
-        self.tree_fattura_prodotti_mov.column("descrizione", width=300, anchor="w")
+        self.tree_fattura_prodotti_mov.column("descrizione", width=250, anchor="w")
+        self.tree_fattura_prodotti_mov.column("categoria_prodotto", width=140, anchor="w")
         self.tree_fattura_prodotti_mov.column("qta", width=90, anchor="e")
         self.tree_fattura_prodotti_mov.column("prezzo_unitario", width=110, anchor="e")
         self.tree_fattura_prodotti_mov.column("aliquota_iva", width=80, anchor="e")
@@ -153,19 +148,24 @@ class MovimentiTabMixin:
         self.tree_fattura_prodotti_mov.column("gruppi_imputazione", width=260, anchor="w")
 
         self._fattura_prodotti_item_to_row = {}
+        self._fattura_prodotti_categoria_editor = None
         self._fattura_prodotti_combo_editor = None
         self._fattura_prodotti_gruppi_combo_editor = None
         self._fattura_prodotti_gruppi_popup_editor = None
         self._fattura_prodotti_gruppi_popup_bind_id = None
         self.tree_fattura_prodotti_mov.bind("<Double-1>", self._on_doppio_click_tabella_prodotti_mov)
 
+        scroll = ttk.Scrollbar(frame_table, orient="vertical", command=self.tree_fattura_prodotti_mov.yview)
+        self.tree_fattura_prodotti_mov.configure(yscrollcommand=scroll.set)
+
         self.tree_fattura_prodotti_mov.pack(side="left", fill="both", expand=True)
-        self._movimenti_adatta_altezza_tree(self.tree_fattura_prodotti_mov, 1)
+        scroll.pack(side="right", fill="y")
 
     def _aggiorna_tabella_prodotti_fattura_movimento(self, parser_data):
         if not hasattr(self, "tree_fattura_prodotti_mov"):
             return
 
+        self._chiudi_editor_categoria_prodotto()
         self._chiudi_editor_tipo_costo_prodotto()
         self._chiudi_editor_gruppi_imputazione_prodotto()
         clear_treeview(self.tree_fattura_prodotti_mov)
@@ -182,12 +182,13 @@ class MovimentiTabMixin:
         if not righe:
             if hasattr(self, "var_fattura_prodotti_mov_stato"):
                 self.var_fattura_prodotti_mov_stato.set("Nessun prodotto rilevato nella fattura selezionata.")
-            self._movimenti_adatta_altezza_tree(self.tree_fattura_prodotti_mov, 1)
             return
 
         for idx, riga in enumerate(righe, start=1):
             tipo_costo = self._normalizza_tipo_costo_prodotto(riga.get("cost_type"))
+            categoria_prodotto = self._normalizza_categoria_prodotto(riga.get("category"))
             riga["cost_type"] = tipo_costo
+            riga["category"] = categoria_prodotto
 
             selected_group_ids = riga.get("group_entry_ids")
             self._aggiorna_allocazione_gruppi_prodotto(
@@ -203,6 +204,7 @@ class MovimentiTabMixin:
                 values=(
                     idx,
                     riga.get("description", "-") or "-",
+                    categoria_prodotto,
                     riga.get("quantity", "-") or "-",
                     riga.get("unit_price", "-") or "-",
                     riga.get("vat_rate", "-") or "-",
@@ -218,10 +220,11 @@ class MovimentiTabMixin:
         if hasattr(self, "var_fattura_prodotti_mov_stato"):
             self.var_fattura_prodotti_mov_stato.set(f"Prodotti rilevati: {len(righe)}")
 
-        self._movimenti_adatta_altezza_tree(self.tree_fattura_prodotti_mov, len(righe))
-
     def _normalizza_tipo_costo_prodotto(self, raw_value):
         return normalize_cost_type(raw_value)
+
+    def _normalizza_categoria_prodotto(self, raw_value):
+        return normalize_product_category(raw_value)
 
     def _opzioni_gruppi_imputazione_costi_prodotti(self):
         try:
@@ -293,11 +296,13 @@ class MovimentiTabMixin:
         prodotti = []
         for riga in righe:
             descrizione = str(riga.get("description") or "-").strip() or "-"
+            categoria = self._normalizza_categoria_prodotto(riga.get("category"))
             quantita = str(riga.get("quantity") or "-").strip() or "-"
             totale = str(riga.get("line_total") or "-").strip() or "-"
             tipo_costo = self._normalizza_tipo_costo_prodotto(riga.get("cost_type"))
             gruppi_text = str(riga.get("groups_text_display") or "Nessun gruppo").strip() or "Nessun gruppo"
 
+            riga["category"] = categoria
             riga["cost_type"] = tipo_costo
             riga["groups_text_display"] = gruppi_text
             if not self._totale_riga_prodotto_salvabile_db(riga):
@@ -309,6 +314,7 @@ class MovimentiTabMixin:
                     quantita,
                     totale,
                     tipo_costo,
+                    categoria,
                     gruppi_text,
                 )
             )
@@ -364,6 +370,12 @@ class MovimentiTabMixin:
         if editor is not None and editor.winfo_exists():
             editor.destroy()
         self._fattura_prodotti_combo_editor = None
+
+    def _chiudi_editor_categoria_prodotto(self):
+        editor = getattr(self, "_fattura_prodotti_categoria_editor", None)
+        if editor is not None and editor.winfo_exists():
+            editor.destroy()
+        self._fattura_prodotti_categoria_editor = None
 
     def _chiudi_editor_gruppi_imputazione_prodotto(self):
         editor = getattr(self, "_fattura_prodotti_gruppi_combo_editor", None)
@@ -445,10 +457,49 @@ class MovimentiTabMixin:
             return
 
         column_name = columns[col_index]
-        if column_name == "natura_costo":
+        if column_name == "categoria_prodotto":
+            self._apri_editor_categoria_prodotto(item_id, column_name)
+        elif column_name == "natura_costo":
             self._apri_editor_tipo_costo_prodotto(item_id, column_name)
         elif column_name == "gruppi_imputazione":
             self._apri_editor_gruppi_imputazione_prodotto(item_id, column_name)
+
+    def _apri_editor_categoria_prodotto(self, item_id, column_name):
+        tree = self.tree_fattura_prodotti_mov
+        row = self._fattura_prodotti_item_to_row.get(item_id)
+        if not isinstance(row, dict):
+            return
+
+        bbox = tree.bbox(item_id, column_name)
+        if not bbox:
+            return
+
+        x, y, width, height = bbox
+        self._chiudi_editor_tipo_costo_prodotto()
+        self._chiudi_editor_gruppi_imputazione_prodotto()
+        self._chiudi_editor_categoria_prodotto()
+
+        entry = ttk.Entry(tree)
+        combo = ttk.Combobox(tree, values=PRODUCT_CATEGORY_OPTIONS, state="readonly")
+        combo.place(x=x, y=y, width=width, height=height)
+
+        initial_value = self._normalizza_categoria_prodotto(row.get("category"))
+        combo.set(initial_value)
+        combo.focus_set()
+        self._fattura_prodotti_categoria_editor = combo
+
+        def _commit(_event=None):
+            value = self._normalizza_categoria_prodotto(combo.get())
+            row["category"] = value
+            tree.set(item_id, column_name, value)
+            self._sincronizza_products_parser_da_tabella()
+            self._chiudi_editor_categoria_prodotto()
+
+        combo.bind("<<ComboboxSelected>>", _commit)
+        combo.bind("<Return>", _commit)
+        combo.bind("<KP_Enter>", _commit)
+        combo.bind("<FocusOut>", _commit)
+        combo.bind("<Escape>", lambda _event: self._chiudi_editor_categoria_prodotto())
 
     def _apri_editor_tipo_costo_prodotto(self, item_id, column_name):
         tree = self.tree_fattura_prodotti_mov
@@ -461,6 +512,8 @@ class MovimentiTabMixin:
             return
 
         x, y, width, height = bbox
+        self._chiudi_editor_categoria_prodotto()
+        self._chiudi_editor_gruppi_imputazione_prodotto()
         self._chiudi_editor_tipo_costo_prodotto()
 
         combo = ttk.Combobox(tree, values=("Variabili", "Fissi"), state="readonly")
@@ -488,6 +541,7 @@ class MovimentiTabMixin:
         if not isinstance(row, dict):
             return
 
+        self._chiudi_editor_categoria_prodotto()
         self._chiudi_editor_tipo_costo_prodotto()
         self._chiudi_editor_gruppi_imputazione_prodotto()
 
@@ -1170,6 +1224,7 @@ class MovimentiTabMixin:
         prodotti_rows = []
         for line in line_items:
             descrizione = str(getattr(line, "description", "") or "").strip()
+            categoria_raw = getattr(line, "category", None)
             quantita_raw = getattr(line, "quantity", None)
             prezzo_unit_raw = getattr(line, "unit_price", None)
             totale_raw = getattr(line, "line_total", None)
@@ -1184,6 +1239,7 @@ class MovimentiTabMixin:
             prodotti_rows.append(
                 {
                     "description": descrizione or "-",
+                    "category": self._normalizza_categoria_prodotto(categoria_raw),
                     "quantity": self._valore_parser_to_text(quantita_raw, 3),
                     "unit_price": self._valore_parser_to_text(prezzo_unit_raw, 4),
                     "vat_rate": self._valore_parser_to_text(iva_raw, 2),

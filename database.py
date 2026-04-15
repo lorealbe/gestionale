@@ -732,6 +732,136 @@ def list_azienda_animali_entries(user_id: int, include_merged: bool = False) -> 
     return entries
 
 
+def upsert_azienda_animali_nascite_media(
+    user_id: int,
+    tipo_animale: str,
+    altro_label: str,
+    rapporto_nascite_genitori: float,
+    cursor: sqlite3.Cursor | None = None,
+) -> dict:
+    tipo = _normalize_tipo_animale(tipo_animale)
+    if tipo not in ANIMAL_TYPE_OPTIONS:
+        raise ValueError("Tipo animale non valido.")
+
+    altro_clean = (altro_label or "").strip()
+    if tipo != "ALTRO":
+        altro_clean = ""
+
+    try:
+        rapporto_value = float(rapporto_nascite_genitori)
+    except (TypeError, ValueError):
+        raise ValueError("Rapporto nascite/genitori non valido.")
+
+    if rapporto_value <= 0:
+        raise ValueError("Rapporto nascite/genitori deve essere maggiore di zero.")
+
+    now_text = datetime.now().isoformat(timespec="seconds")
+
+    def _apply(target_cursor: sqlite3.Cursor) -> dict:
+        target_cursor.execute(
+            '''
+            SELECT COALESCE(media_nascite_per_capo, 0), COALESCE(campioni, 0)
+            FROM azienda_animali_nascite_media
+            WHERE user_id=? AND tipo_animale=? AND altro_label=?
+        ''',
+            (user_id, tipo, altro_clean),
+        )
+        row = target_cursor.fetchone()
+
+        if row:
+            media_attuale = float(row[0] or 0)
+            campioni_attuali = _to_non_negative_int(row[1])
+        else:
+            media_attuale = 0.0
+            campioni_attuali = 0
+
+        campioni_nuovi = campioni_attuali + 1
+        if campioni_attuali > 0:
+            media_nuova = ((media_attuale * campioni_attuali) + rapporto_value) / campioni_nuovi
+        else:
+            media_nuova = rapporto_value
+
+        target_cursor.execute(
+            '''
+            INSERT INTO azienda_animali_nascite_media
+                (user_id, tipo_animale, altro_label, media_nascite_per_capo, campioni, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(user_id, tipo_animale, altro_label) DO UPDATE SET
+                media_nascite_per_capo=excluded.media_nascite_per_capo,
+                campioni=excluded.campioni,
+                updated_at=excluded.updated_at
+        ''',
+            (user_id, tipo, altro_clean, media_nuova, campioni_nuovi, now_text),
+        )
+
+        return {
+            "tipo_animale": tipo,
+            "altro_label": altro_clean,
+            "media_nascite_per_capo": media_nuova,
+            "campioni": campioni_nuovi,
+            "updated_at": now_text,
+        }
+
+    if cursor is not None:
+        return _apply(cursor)
+
+    with get_conn() as conn:
+        c = conn.cursor()
+        return _apply(c)
+
+
+def list_azienda_animali_nascite_media(user_id: int) -> list[dict]:
+    try:
+        with get_conn() as conn:
+            c = conn.cursor()
+            c.execute(
+                '''
+                SELECT
+                    COALESCE(tipo_animale, ''),
+                    COALESCE(altro_label, ''),
+                    COALESCE(media_nascite_per_capo, 0),
+                    COALESCE(campioni, 0),
+                    COALESCE(updated_at, '')
+                FROM azienda_animali_nascite_media
+                WHERE user_id=?
+                  AND COALESCE(campioni, 0) > 0
+                ORDER BY tipo_animale, altro_label
+            ''',
+                (user_id,),
+            )
+            rows = c.fetchall()
+    except sqlite3.Error:
+        return []
+
+    entries = []
+    for tipo_animale, altro_label, media_nascite_per_capo, campioni, updated_at in rows:
+        tipo = _normalize_tipo_animale(tipo_animale)
+        if tipo not in ANIMAL_TYPE_OPTIONS:
+            continue
+
+        altro_clean = (altro_label or "").strip() if tipo == "ALTRO" else ""
+        campioni_value = _to_non_negative_int(campioni)
+        if campioni_value <= 0:
+            continue
+
+        try:
+            media_value = float(media_nascite_per_capo or 0)
+        except (TypeError, ValueError):
+            media_value = 0.0
+
+        entries.append(
+            {
+                "tipo_animale": tipo,
+                "altro_label": altro_clean,
+                "media_nascite_per_capo": media_value,
+                "campioni": campioni_value,
+                "updated_at": (updated_at or "").strip(),
+            }
+        )
+
+    return entries
+
+
 def _normalize_entry_id_list(entry_ids) -> list[int]:
     if not entry_ids:
         return []
@@ -3121,6 +3251,38 @@ def init_db():
                  ON azienda_animali_storico(user_id, event_time DESC, id DESC)''')
         c.execute('''CREATE INDEX IF NOT EXISTS idx_animali_storico_user_gruppo
                  ON azienda_animali_storico(user_id, gruppo_entry_id, event_time DESC, id DESC)''')
+
+        # Statistiche media nascite/genitori per tipo animale.
+        c.execute(
+            '''CREATE TABLE IF NOT EXISTS azienda_animali_nascite_media
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  user_id INTEGER NOT NULL,
+                  tipo_animale TEXT NOT NULL,
+                  altro_label TEXT NOT NULL DEFAULT '',
+                  media_nascite_per_capo REAL NOT NULL DEFAULT 0,
+                  campioni INTEGER NOT NULL DEFAULT 0,
+                  updated_at TEXT NOT NULL DEFAULT '',
+                  UNIQUE(user_id, tipo_animale, altro_label),
+                  FOREIGN KEY(user_id) REFERENCES utenti(id) ON DELETE CASCADE)'''
+        )
+
+        c.execute("PRAGMA table_info(azienda_animali_nascite_media)")
+        colonne_animali_nascite_media = {row[1] for row in c.fetchall()}
+        if colonne_animali_nascite_media and "tipo_animale" not in colonne_animali_nascite_media:
+            c.execute("ALTER TABLE azienda_animali_nascite_media ADD COLUMN tipo_animale TEXT NOT NULL DEFAULT ''")
+        if colonne_animali_nascite_media and "altro_label" not in colonne_animali_nascite_media:
+            c.execute("ALTER TABLE azienda_animali_nascite_media ADD COLUMN altro_label TEXT NOT NULL DEFAULT ''")
+        if colonne_animali_nascite_media and "media_nascite_per_capo" not in colonne_animali_nascite_media:
+            c.execute(
+                "ALTER TABLE azienda_animali_nascite_media ADD COLUMN media_nascite_per_capo REAL NOT NULL DEFAULT 0"
+            )
+        if colonne_animali_nascite_media and "campioni" not in colonne_animali_nascite_media:
+            c.execute("ALTER TABLE azienda_animali_nascite_media ADD COLUMN campioni INTEGER NOT NULL DEFAULT 0")
+        if colonne_animali_nascite_media and "updated_at" not in colonne_animali_nascite_media:
+            c.execute("ALTER TABLE azienda_animali_nascite_media ADD COLUMN updated_at TEXT NOT NULL DEFAULT ''")
+
+        c.execute('''CREATE INDEX IF NOT EXISTS idx_animali_nascite_media_user
+                 ON azienda_animali_nascite_media(user_id, tipo_animale, altro_label)''')
 
         _migrate_legacy_azienda_animali_to_dettaglio(c)
         _backfill_missing_group_names(c)

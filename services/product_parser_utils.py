@@ -3,8 +3,25 @@ import re
 from app_utils import parse_decimal
 
 PRODUCT_ROW_PATTERN = re.compile(
-    r"^(?P<description>.*?)\s*-\s*qta\s+(?P<quantity>.*?)\s*-\s*tot\s+(?P<line_total>.*?)(?:\s*-\s*costi\s+(?P<cost_type>.*?))?(?:\s*-\s*gruppi\s+(?P<groups>.*))?$",
+    (
+        r"^(?P<description>.*?)\s*-\s*qta\s+(?P<quantity>.*?)\s*-\s*tot\s+(?P<line_total>.*?)"
+        r"(?:\s*-\s*costi\s+(?P<cost_type>.*?))?"
+        r"(?:\s*-\s*categoria\s+(?P<category>.*?))?"
+        r"(?:\s*-\s*gruppi\s+(?P<groups>.*))?$"
+    ),
     re.IGNORECASE,
+)
+
+PRODUCT_CATEGORY_OPTIONS = (
+    "Mangimi",
+    "Foraggi",
+    "Integratori",
+    "Veterinaria",
+    "Igiene",
+    "Manutenzione",
+    "Trasporti",
+    "Servizi",
+    "Altro",
 )
 
 
@@ -13,6 +30,31 @@ def normalize_cost_type(raw_value):
     if value.startswith("fiss"):
         return "Fissi"
     return "Variabili"
+
+
+def normalize_product_category(raw_value):
+    text = str(raw_value or "").strip()
+    if not text or text == "-":
+        return "Altro"
+
+    normalized_by_lower = {option.lower(): option for option in PRODUCT_CATEGORY_OPTIONS}
+    text_lower = text.lower()
+    if text_lower in normalized_by_lower:
+        return normalized_by_lower[text_lower]
+
+    alias_map = {
+        "mangime": "Mangimi",
+        "foraggio": "Foraggi",
+        "integratore": "Integratori",
+        "farmaci": "Veterinaria",
+        "farmaco": "Veterinaria",
+        "sanificazione": "Igiene",
+        "pulizia": "Igiene",
+        "ricambi": "Manutenzione",
+        "trasporto": "Trasporti",
+        "servizio": "Servizi",
+    }
+    return alias_map.get(text_lower, "Altro")
 
 
 def normalize_product_description_for_storage(raw_description):
@@ -26,9 +68,20 @@ def build_basic_product_storage_line(description, quantity_text, total_text):
     return f"{desc} - qta {quantity_text} - tot {total_text}"
 
 
-def build_detailed_product_storage_line(description, quantity_text, total_text, cost_type, groups_text):
+def build_detailed_product_storage_line(
+    description,
+    quantity_text,
+    total_text,
+    cost_type,
+    category_text,
+    groups_text,
+):
     desc = normalize_product_description_for_storage(description)
-    return f"{desc} - qta {quantity_text} - tot {total_text} - costi {cost_type} - gruppi {groups_text}"
+    category = normalize_product_category(category_text)
+    return (
+        f"{desc} - qta {quantity_text} - tot {total_text} "
+        f"- costi {cost_type} - categoria {category} - gruppi {groups_text}"
+    )
 
 
 def serialize_product_storage_lines(lines, separator="\n"):
@@ -78,6 +131,7 @@ def extract_products_rows_from_parser_text(products_text):
                 "quantity": quantita,
                 "line_total": totale,
                 "cost_type": tipo_costo,
+                "category": normalize_product_category(match.group("category")),
                 "groups": (match.group("groups") or "").strip() or "-",
             }
         )

@@ -34,16 +34,59 @@ class FormHelpersMixin:
         else:
             tree._wrap_max_lines = max(1, int(max_lines))
         tree._wrap_raw_values = {}
+        tree._zebra_odd_tag = "__wrap_zebra_odd"
+        tree._zebra_even_tag = "__wrap_zebra_even"
 
         base_style = tree.cget("style") or "Treeview"
         wrap_style = f"Wrap{str(id(tree))}.{base_style}"
 
         tree._wrap_base_style = base_style
         tree._wrap_style = wrap_style
+        tree._fit_columns = tuple(tree.cget("columns"))
+        tree._fit_base_widths = {}
+        tree._fit_min_widths = {}
+
+        for col in tree._fit_columns:
+            try:
+                base_w = max(int(tree.column(col, "width") or 0), 24)
+            except tk.TclError:
+                base_w = 80
+
+            # Keep a readable minimum based on heading text and declared minwidth.
+            try:
+                heading_text = str(tree.heading(col, "text") or "")
+            except tk.TclError:
+                heading_text = ""
+
+            heading_font = tkfont.nametofont("TkHeadingFont")
+            heading_px = int(heading_font.measure(heading_text) or 0)
+
+            try:
+                declared_min = int(tree.column(col, "minwidth") or 0)
+            except tk.TclError:
+                declared_min = 0
+
+            auto_min = max(42, heading_px + 22)
+            min_w = min(base_w, max(declared_min, auto_min))
+            min_w = max(36, min_w)
+
+            tree._fit_base_widths[col] = base_w
+            tree._fit_min_widths[col] = min_w
 
         style = ttk.Style(tree)
-        style.configure(wrap_style)
+        style.configure(
+            wrap_style,
+            background="#FFFFFF",
+            fieldbackground="#FFFFFF",
+        )
+        style.map(
+            wrap_style,
+            background=[("selected", "#E8F0F7")],
+            foreground=[("selected", "#000000")],
+        )
         tree.configure(style=wrap_style)
+        tree.tag_configure(tree._zebra_odd_tag, background="#FFFFFF")
+        tree.tag_configure(tree._zebra_even_tag, background="#E6F1FB")
 
         original_insert = tree.insert
         original_set = tree.set
@@ -70,6 +113,8 @@ class FormHelpersMixin:
             if raw_values:
                 tree._wrap_raw_values[item_id] = raw_values
                 self._treeview_update_rowheight(tree)
+
+            self._treeview_apply_zebra(tree)
 
             return item_id
 
@@ -106,7 +151,10 @@ class FormHelpersMixin:
         def _wrapped_delete(*items):
             for item_id in items:
                 _drop_item_cache(item_id)
-            return original_delete(*items)
+            result = original_delete(*items)
+            self._treeview_update_rowheight(tree)
+            self._treeview_apply_zebra(tree)
+            return result
 
         def _schedule_rewrap(_event=None):
             pending = getattr(tree, "_wrap_after_id", None)
@@ -123,6 +171,98 @@ class FormHelpersMixin:
         tree.bind("<Configure>", _schedule_rewrap, add="+")
 
         self._treeview_rewrap_all_items(tree)
+
+    def _treeview_fit_columns_to_viewport(self, tree):
+        if tree is None:
+            return
+
+        columns = tuple(tree.cget("columns"))
+        if not columns:
+            return
+
+        fit_columns = tuple(getattr(tree, "_fit_columns", tuple()))
+        if fit_columns != columns:
+            tree._fit_columns = columns
+            tree._fit_base_widths = {}
+            tree._fit_min_widths = {}
+            for col in columns:
+                try:
+                    tree._fit_base_widths[col] = max(int(tree.column(col, "width") or 0), 24)
+                except tk.TclError:
+                    tree._fit_base_widths[col] = 80
+                tree._fit_min_widths[col] = 40
+
+        base_widths = getattr(tree, "_fit_base_widths", {})
+        min_widths = getattr(tree, "_fit_min_widths", {})
+        if not base_widths:
+            return
+
+        viewport_width = max(int(tree.winfo_width() or 0) - 4, 1)
+        base_total = sum(int(base_widths.get(col, 80)) for col in columns)
+        if base_total <= 0:
+            return
+
+        if viewport_width >= base_total:
+            target = {col: int(base_widths.get(col, 80)) for col in columns}
+        else:
+            ratio = float(viewport_width) / float(base_total)
+            target = {}
+            for col in columns:
+                base_w = int(base_widths.get(col, 80))
+                min_w = int(min_widths.get(col, 40))
+                target[col] = max(min_w, int(base_w * ratio))
+
+            current_total = sum(target.values())
+            if current_total > viewport_width:
+                excess = current_total - viewport_width
+                reducible = {col: max(target[col] - int(min_widths.get(col, 40)), 0) for col in columns}
+                total_reducible = sum(reducible.values())
+                if total_reducible > 0:
+                    for col in columns:
+                        room = reducible[col]
+                        if room <= 0:
+                            continue
+                        cut = int((room / total_reducible) * excess)
+                        cut = min(cut, room)
+                        target[col] -= cut
+
+                    remainder = sum(target.values()) - viewport_width
+                    if remainder > 0:
+                        for col in columns:
+                            if remainder <= 0:
+                                break
+                            min_w = int(min_widths.get(col, 40))
+                            room = target[col] - min_w
+                            if room <= 0:
+                                continue
+                            dec = min(room, remainder)
+                            target[col] -= dec
+                            remainder -= dec
+
+            elif current_total < viewport_width:
+                extra = viewport_width - current_total
+                # Distribute leftover space to wider base columns first, without exceeding original widths.
+                grow_candidates = sorted(columns, key=lambda c: int(base_widths.get(c, 80)), reverse=True)
+                while extra > 0 and grow_candidates:
+                    progressed = False
+                    for col in grow_candidates:
+                        base_w = int(base_widths.get(col, 80))
+                        if target[col] >= base_w:
+                            continue
+                        target[col] += 1
+                        extra -= 1
+                        progressed = True
+                        if extra <= 0:
+                            break
+                    if not progressed:
+                        break
+
+        for col in columns:
+            width = max(int(target.get(col, 80)), int(min_widths.get(col, 40)))
+            try:
+                tree.column(col, width=width)
+            except tk.TclError:
+                continue
 
     def _treeview_column_key(self, tree, column_index):
         columns = tuple(tree.cget("columns"))
@@ -214,6 +354,8 @@ class FormHelpersMixin:
         if original_set is None:
             return
 
+        self._treeview_fit_columns_to_viewport(tree)
+
         columns = tuple(tree.cget("columns"))
         for item_id in tree.get_children(""):
             raw_values = tree._wrap_raw_values.get(item_id)
@@ -227,7 +369,23 @@ class FormHelpersMixin:
                     break
                 original_set(item_id, columns[idx], wrapped)
 
+        self._treeview_apply_zebra(tree)
         self._treeview_update_rowheight(tree)
+
+    def _treeview_apply_zebra(self, tree, parent=""):
+        if tree is None or not getattr(tree, "_wrap_auto_enabled", False):
+            return
+
+        odd_tag = getattr(tree, "_zebra_odd_tag", "__wrap_zebra_odd")
+        even_tag = getattr(tree, "_zebra_even_tag", "__wrap_zebra_even")
+        stripe_tags = {odd_tag, even_tag}
+
+        for idx, item_id in enumerate(tree.get_children(parent)):
+            current_tags = tuple(tree.item(item_id, "tags") or tuple())
+            preserved_tags = tuple(tag for tag in current_tags if tag not in stripe_tags)
+            zebra_tag = odd_tag if idx % 2 == 0 else even_tag
+            tree.item(item_id, tags=(*preserved_tags, zebra_tag))
+            self._treeview_apply_zebra(tree, parent=item_id)
 
     def _treeview_update_rowheight(self, tree):
         if tree is None or not getattr(tree, "_wrap_auto_enabled", False):

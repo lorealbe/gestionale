@@ -17,16 +17,6 @@ from database import (
 
 
 class MacchinariTabMixin:
-    def _macchinari_adatta_altezza_tree(self, tree, righe_count: int, min_rows: int = 1):
-        if tree is None:
-            return
-
-        rows = max(int(righe_count or 0), int(min_rows or 1))
-        try:
-            tree.configure(height=rows)
-        except tk.TclError:
-            pass
-
     def _setup_categoria_macchinari(self):
         content = self.crea_container_scorribile(self.frame_macchinari, padding=18)
 
@@ -110,7 +100,7 @@ class MacchinariTabMixin:
         )
 
         frame_tabella = ttk.LabelFrame(content, text="Elenco macchinari")
-        frame_tabella.pack(fill="x")
+        frame_tabella.pack(fill="both", expand=True)
 
         frame_filtri_macchinari = ttk.Frame(frame_tabella)
         frame_filtri_macchinari.pack(fill="x", padx=8, pady=(8, 0))
@@ -147,7 +137,7 @@ class MacchinariTabMixin:
         )
 
         cols = ("id", "nome", "marca", "modello", "identificativo", "anno", "note")
-        self.tree_macchinari = ttk.Treeview(frame_tabella, columns=cols, show="headings", height=1)
+        self.tree_macchinari = ttk.Treeview(frame_tabella, columns=cols, show="headings", height=12)
         self.tree_macchinari.heading("id", text="ID")
         self.tree_macchinari.heading("nome", text="Nome")
         self.tree_macchinari.heading("marca", text="Marca")
@@ -164,8 +154,11 @@ class MacchinariTabMixin:
         self.tree_macchinari.column("anno", width=70, anchor="center")
         self.tree_macchinari.column("note", width=280, anchor="w")
 
-        self.tree_macchinari.pack(side="left", fill="x", expand=True, padx=8, pady=8)
-        self._macchinari_adatta_altezza_tree(self.tree_macchinari, 1)
+        scrollbar = ttk.Scrollbar(frame_tabella, orient="vertical", command=self.tree_macchinari.yview)
+        self.tree_macchinari.configure(yscrollcommand=scrollbar.set)
+
+        self.tree_macchinari.pack(side="left", fill="both", expand=True, padx=(8, 0), pady=8)
+        scrollbar.pack(side="right", fill="y", padx=(0, 8), pady=8)
         self.tree_macchinari.bind("<<TreeviewSelect>>", self._on_tree_macchinari_select)
         self.tree_macchinari.bind("<Double-1>", lambda _event: self.prepara_modifica_macchinario(mostra_errori=False))
         self.tree_macchinari.bind("<Delete>", lambda _event: self.elimina_macchinario_selezionato())
@@ -251,7 +244,7 @@ class MacchinariTabMixin:
         )
 
         frame_tabella_manut = ttk.LabelFrame(self.frame_manutenzione, text="Storico manutenzioni")
-        frame_tabella_manut.pack(fill="x")
+        frame_tabella_manut.pack(fill="both", expand=True)
 
         frame_filtri_manut = ttk.Frame(frame_tabella_manut)
         frame_filtri_manut.pack(fill="x", padx=8, pady=(8, 0))
@@ -341,7 +334,7 @@ class MacchinariTabMixin:
         )
 
         cols_manut = ("id", "data", "tipo", "descrizione", "fornitore", "costo", "note")
-        self.tree_manutenzioni = ttk.Treeview(frame_tabella_manut, columns=cols_manut, show="headings", height=1)
+        self.tree_manutenzioni = ttk.Treeview(frame_tabella_manut, columns=cols_manut, show="headings", height=10)
         self.tree_manutenzioni.heading("id", text="ID")
         self.tree_manutenzioni.heading("data", text="Data")
         self.tree_manutenzioni.heading("tipo", text="Tipo")
@@ -358,8 +351,11 @@ class MacchinariTabMixin:
         self.tree_manutenzioni.column("costo", width=110, anchor="e")
         self.tree_manutenzioni.column("note", width=230, anchor="w")
 
-        self.tree_manutenzioni.pack(side="left", fill="x", expand=True, padx=8, pady=8)
-        self._macchinari_adatta_altezza_tree(self.tree_manutenzioni, 1)
+        scrollbar_manut = ttk.Scrollbar(frame_tabella_manut, orient="vertical", command=self.tree_manutenzioni.yview)
+        self.tree_manutenzioni.configure(yscrollcommand=scrollbar_manut.set)
+
+        self.tree_manutenzioni.pack(side="left", fill="both", expand=True, padx=(8, 0), pady=8)
+        scrollbar_manut.pack(side="right", fill="y", padx=(0, 8), pady=8)
         self.abilita_a_capo_treeview(self.tree_manutenzioni, max_lines=3)
         self.tree_manutenzioni.bind("<Double-1>", lambda _event: self.prepara_modifica_manutenzione(mostra_errori=False))
         self.tree_manutenzioni.bind("<Delete>", lambda _event: self.elimina_manutenzione_selezionata())
@@ -647,7 +643,7 @@ class MacchinariTabMixin:
             if self.lbl_manutenzione_non_disponibile.winfo_manager():
                 self.lbl_manutenzione_non_disponibile.pack_forget()
             if not self.frame_manutenzione.winfo_manager():
-                self.frame_manutenzione.pack(fill="x", pady=(14, 0))
+                self.frame_manutenzione.pack(fill="both", expand=True, pady=(14, 0))
             return
 
         if self.frame_manutenzione.winfo_manager():
@@ -660,7 +656,6 @@ class MacchinariTabMixin:
         self.annulla_modifica_manutenzione(reset_campi=True)
         if hasattr(self, "tree_manutenzioni"):
             clear_treeview(self.tree_manutenzioni)
-            self._macchinari_adatta_altezza_tree(self.tree_manutenzioni, 1)
 
     def _on_tree_macchinari_select(self, _event=None):
         values = self._get_selected_macchinario_tree_values()
@@ -1006,8 +1001,6 @@ class MacchinariTabMixin:
                 ),
             )
 
-        self._macchinari_adatta_altezza_tree(self.tree_macchinari, len(entries_filtrati))
-
         if entries:
             self.carica_manutenzioni_macchinari(mostra_errori=False)
         else:
@@ -1018,7 +1011,6 @@ class MacchinariTabMixin:
             return
 
         clear_treeview(self.tree_manutenzioni)
-        self._macchinari_adatta_altezza_tree(self.tree_manutenzioni, 1)
 
         macchinario_id = self._get_selected_macchinario_id()
         if macchinario_id <= 0:
@@ -1063,5 +1055,3 @@ class MacchinariTabMixin:
                     entry.get("note", ""),
                 ),
             )
-
-        self._macchinari_adatta_altezza_tree(self.tree_manutenzioni, len(entries_filtrati))

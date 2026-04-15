@@ -1,0 +1,16 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Gestionale Tkinter (.venv-1)",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/gestionale.pyw",
+      "python": "${workspaceFolder}/.venv-1/Scripts/python.exe",
+      "cwd": "${workspaceFolder}",
+      "console": "internalConsole",
+      "justMyCode": true,
+      "subProcess": false
+    }
+  ]
+}
