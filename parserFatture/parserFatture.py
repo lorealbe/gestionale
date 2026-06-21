@@ -124,8 +124,12 @@ class RegexInvoiceParser:
                 ultimo_rigo_era_valido = False
                 col_coords = {}
 
-                # Parole chiave di uscita (fine tabella)
-                stop_words = r'(?i)\b(?:totale\s+documento|totale\s+da\s+pagare|totale\s+imponibile|totale\s+iva|riepilogo|scadenza|pagamento|banca|iban|esigibilit[aà]|p\.?iva|c\.?f\.?|condizioni\s+generali|non\s+si\s+accettano|pagamenti\s+dovranno|merce\s+di\s+ritorno|reclami|difettos[ao]|arrotondamenti|non\s+conforme)\b'
+                # Parole chiave di uscita (fine tabella) OTTIMIZZATE
+                # Parole chiave di uscita (fine tabella) - Togliamo i totali da qui!
+                stop_words = r'(?i)\b(?:scadenza|pagamento|banca|iban|esigibilit[aà]|condizioni\s+generali|non\s+si\s+accettano|pagamenti\s+dovranno|merce\s+di\s+ritorno|reclami|difettos[ao]|arrotondamenti|non\s+conforme)\b'
+                
+                # Metadati e Totali da SALTARE (la tabella rimane attiva per le righe successive)
+                ignore_patterns = r'(?i)^(?:tipo\s+dato|valore\s+testo|valore\s+data|cig\b|cup\b|riferimento\b)|\b(?:totale\s+documento|totale\s+da\s+pagare|totale\s+imponibile|totale\s+iva|riepilogo|imponibile|imposta)\b'
                 # Metadati da saltare
                 ignore_patterns = r'(?i)^(?:tipo\s+dato|valore\s+testo|valore\s+data|cig\b|cup\b|riferimento\b)'
 
@@ -203,6 +207,9 @@ class RegexInvoiceParser:
                             continue
 
                         # === FASE 2: USCITA O FILTRO ===
+                        if re.search(stop_words, testo_pulito):
+                            print(f"DEBUG: Tabella interrotta a causa della riga: {testo_pulito}") # <-- Aggiungi questo
+                            in_tabella = False
                         if re.search(stop_words, testo_pulito):
                             in_tabella = False
                             ultimo_rigo_era_valido = False
@@ -287,10 +294,15 @@ class RegexInvoiceParser:
                             ultimo_rigo_era_valido = True
                         else:
                             if desc_inline:
-                                if len(line_items) > 0 and ultimo_rigo_era_valido:
+                                # FIX: Evita di concatenare se la riga orfana è troppo lunga 
+                                # o sembra iniziare un nuovo prodotto (es. inizia con un codice o lettere maiuscole)
+                                sembra_nuovo_prodotto = bool(re.match(r'^[A-Z0-9]{3,}', desc_inline))
+                                
+                                if len(line_items) > 0 and ultimo_rigo_era_valido and not sembra_nuovo_prodotto:
                                     line_items[-1]["description"] = (line_items[-1]["description"] + " " + desc_inline).strip()
                                 else:
                                     buffer_descrizione = (buffer_descrizione + " " + desc_inline).strip()
+                                    ultimo_rigo_era_valido = False # Forza il reset
             finally:
                 documento.close()
 

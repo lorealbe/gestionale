@@ -12,6 +12,7 @@ from PySide6.QtCore import QDate, QObject, Qt, QThread, Signal, Slot
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
+    QStyledItemDelegate,
     QDateEdit,
     QFileDialog,
     QFrame,
@@ -48,7 +49,63 @@ from services.product_parser_utils import (
     normalize_product_category,
     serialize_product_storage_lines,
 )
+class CheckableComboBox(QComboBox):
+    class Delegate(QStyledItemDelegate):
+        def sizeHint(self, option, index):
+            size = super().sizeHint(option, index)
+            size.setHeight(28)
+            return size
 
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setEditable(True)
+        self.lineEdit().setReadOnly(True)
+        self.lineEdit().setPlaceholderText("Seleziona gruppi...")
+        self.setItemDelegate(CheckableComboBox.Delegate())
+        self.model().dataChanged.connect(self._update_text)
+        self.lineEdit().installEventFilter(self)
+
+    def eventFilter(self, obj, event):
+        if obj == self.lineEdit() and event.type() == event.Type.MouseButtonRelease:
+            self.showPopup()
+            return True
+        return super().eventFilter(obj, event)
+
+    def addItem(self, text, data=None, checked=False):
+        super().addItem(text, data)
+        item = self.model().item(self.count() - 1, 0)
+        item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsUserCheckable)
+        item.setCheckState(Qt.Checked if checked else Qt.Unchecked)
+
+    def _update_text(self):
+        texts = []
+        for i in range(self.count()):
+            item = self.model().item(i, 0)
+            if item.checkState() == Qt.Checked:
+                texts.append(item.text())
+        if texts:
+            self.lineEdit().setText(", ".join(texts))
+        else:
+            self.lineEdit().setText("Nessun gruppo")
+
+    def checked_data(self):
+        res = []
+        for i in range(self.count()):
+            item = self.model().item(i, 0)
+            if item.checkState() == Qt.Checked:
+                res.append(self.itemData(i))
+        return res
+
+    def set_checked_data(self, data_list):
+        self.model().blockSignals(True)
+        for i in range(self.count()):
+            item = self.model().item(i, 0)
+            if self.itemData(i) in data_list:
+                item.setCheckState(Qt.Checked)
+            else:
+                item.setCheckState(Qt.Unchecked)
+        self.model().blockSignals(False)
+        self._update_text()
 
 class _InvoiceParserWorker(QObject):
     success = Signal(object)
@@ -148,7 +205,6 @@ class AziendaNuovoMovimentoPage(QWidget):
         self._build_ui()
         self._reset_form()
         self._carica_categorie_salvate(show_errors=False)
-        self._carica_gruppi_animali(show_errors=False)
 
     def _build_ui(self):
         main_layout = QVBoxLayout(self)
@@ -277,41 +333,6 @@ class AziendaNuovoMovimentoPage(QWidget):
 
         main_layout.addWidget(self.table_prodotti)
 
-        groups_title = QLabel("Imputazione gruppi animali")
-        groups_title.setStyleSheet("font-size: 15px; font-weight: 600;")
-        main_layout.addWidget(groups_title)
-
-        frame_groups = QFrame(self)
-        groups_layout = QVBoxLayout(frame_groups)
-        groups_layout.setContentsMargins(10, 10, 10, 10)
-        groups_layout.setSpacing(8)
-
-        self.list_gruppi = QListWidget(self)
-        self.list_gruppi.setMinimumHeight(220)
-        self.list_gruppi.setSelectionMode(QListWidget.MultiSelection)
-        self.list_gruppi.itemSelectionChanged.connect(self._on_gruppi_selection_changed)
-        groups_layout.addWidget(self.list_gruppi, 1)
-
-        groups_buttons = QHBoxLayout()
-        groups_buttons.setSpacing(8)
-
-        button_select_all = QPushButton("Seleziona tutti", self)
-        button_select_all.clicked.connect(self._seleziona_tutti_gruppi)
-        groups_buttons.addWidget(button_select_all)
-
-        button_clear_selection = QPushButton("Deseleziona", self)
-        button_clear_selection.clicked.connect(self._deseleziona_gruppi)
-        groups_buttons.addWidget(button_clear_selection)
-
-        button_reload_groups = QPushButton("Aggiorna gruppi", self)
-        button_reload_groups.clicked.connect(lambda: self._carica_gruppi_animali(show_errors=True))
-        groups_buttons.addWidget(button_reload_groups)
-
-        groups_buttons.addStretch(1)
-        groups_layout.addLayout(groups_buttons)
-
-        main_layout.addWidget(frame_groups, 1)
-
         action_row = QHBoxLayout()
         action_row.setSpacing(8)
 
@@ -379,37 +400,6 @@ class AziendaNuovoMovimentoPage(QWidget):
         self.combo_categoria.setCurrentText(current_text)
         self.combo_categoria.blockSignals(False)
 
-    def _carica_gruppi_animali(self, show_errors=True, selected_entry_ids=None):
-        if selected_entry_ids is None:
-            selected_entry_ids = self._get_selected_group_entry_ids()
-
-        selected_set = {int(v) for v in selected_entry_ids if int(v) > 0}
-
-        try:
-            entries = list_azienda_animali_entries(self.user_id)
-        except sqlite3.Error as exc:
-            if show_errors:
-                QMessageBox.critical(self, "Errore DB", f"Errore database: {exc}")
-            return
-
-        candidati = [entry for entry in entries if int(entry.get("id", 0) or 0) > 0 and int(entry.get("capi", 0) or 0) > 0]
-        candidati.sort(key=lambda item: ((item.get("group_name") or "").strip().lower(), int(item.get("id", 0) or 0)))
-
-        self.list_gruppi.clear()
-
-        labels_seen = set()
-        for entry in candidati:
-            entry_id = int(entry.get("id", 0) or 0)
-            label = self._label_gruppo_animale_movimento(entry)
-            if label in labels_seen:
-                label = f"{label} [ID {entry_id}]"
-            labels_seen.add(label)
-
-            item = QListWidgetItem(label)
-            item.setData(Qt.UserRole, entry_id)
-            self.list_gruppi.addItem(item)
-            if entry_id in selected_set:
-                item.setSelected(True)
 
     def _get_selected_group_entry_ids(self):
         ids = []
@@ -419,12 +409,6 @@ class AziendaNuovoMovimentoPage(QWidget):
                 ids.append(entry_id)
         return ids
 
-    def _set_selected_group_entry_ids(self, entry_ids):
-        selected_set = {int(v) for v in (entry_ids or []) if int(v) > 0}
-        for index in range(self.list_gruppi.count()):
-            item = self.list_gruppi.item(index)
-            entry_id = int(item.data(Qt.UserRole) or 0)
-            item.setSelected(entry_id in selected_set)
 
     def _append_row(
         self,
@@ -464,7 +448,14 @@ class AziendaNuovoMovimentoPage(QWidget):
 
             if not righe:
                 self.label_prodotti_stato.setText("Nessun prodotto rilevato nella fattura selezionata.")
+                self.table_prodotti.setFixedHeight(65)
                 return
+
+            # Caricamento dinamico dal DB
+            try:
+                entries = list_azienda_animali_entries(self.user_id)
+            except sqlite3.Error:
+                entries = []
 
             for idx, riga in enumerate(righe, start=1):
                 descrizione = str(riga.get("description") or "-").strip() or "-"
@@ -475,31 +466,77 @@ class AziendaNuovoMovimentoPage(QWidget):
                 iva = str(riga.get("vat_rate") or "-").strip() or "-"
                 totale = str(riga.get("line_total") or "-").strip() or "-"
                 tipo_costo = normalize_cost_type(riga.get("cost_type"))
-                gruppi = str(riga.get("groups") or "-").strip() or "-"
+                
+                # --- Recupero o calcolo dei gruppi salvati ---
+                testo_gruppi = str(riga.get("groups", "")).strip()
+                if "groups_ids" not in riga:
+                    matched_ids = []
+                    # Se è un nuovo prodotto (ha "-" o è vuoto), selezioniamo TUTTI i gruppi di default
+                    if not testo_gruppi or testo_gruppi in ("-", "Tutti i gruppi"):
+                        for entry in entries:
+                            entry_id = int(entry.get("id", 0) or 0)
+                            if entry_id > 0:
+                                matched_ids.append(entry_id)
+                    else:
+                        # Se stiamo ricaricando un movimento salvato, ripristiniamo le spunte dal testo
+                        for entry in entries:
+                            label = self._label_gruppo_animale_movimento(entry)
+                            if label in testo_gruppi:
+                                matched_ids.append(int(entry.get("id", 0)))
+                    riga["groups_ids"] = matched_ids
 
                 self._append_row(
                     self.table_prodotti,
                     idx - 1,
                     [
-                        str(idx),
-                        descrizione,
-                        categoria,
-                        qta,
-                        prezzo,
-                        prezzo_unit,
-                        iva,
-                        totale,
-                        tipo_costo,
-                        gruppi,
+                        str(idx), descrizione, categoria, qta,
+                        prezzo, prezzo_unit, iva, totale, "", ""
                     ],
                     right_align_indexes=[3, 4, 5, 6, 7],
-                    editable_columns=[8],
+                    editable_columns=[],
                 )
 
+                # ComboBox Costo (Colonna 8)
+                combo_costo = QComboBox(self)
+                combo_costo.addItems(["Variabili", "Fissi"])
+                combo_costo.setCurrentText(tipo_costo if tipo_costo in ["Variabili", "Fissi"] else "Variabili")
+                combo_costo.currentTextChanged.connect(
+                    lambda testo, r_idx=idx-1: self._on_combo_costo_changed(r_idx, testo)
+                )
+                self.table_prodotti.setCellWidget(idx - 1, 8, combo_costo)
+
+                # Nuova CheckableComboBox per i Gruppi (Colonna 9)
+                combo_gruppi = CheckableComboBox(self)
+                for entry in entries:
+                    entry_id = int(entry.get("id", 0) or 0)
+                    if entry_id > 0:
+                        label = self._label_gruppo_animale_movimento(entry)
+                        combo_gruppi.addItem(label, data=entry_id)
+                
+                # Applica le spunte calcolate (tutte di default)
+                combo_gruppi.set_checked_data(riga.get("groups_ids", []))
+                
+                # Assicuriamoci che il dizionario interno acquisisca subito il testo con tutti i gruppi
+                riga["groups"] = combo_gruppi.lineEdit().text()
+                
+                combo_gruppi.model().dataChanged.connect(
+                    lambda top_left, bottom_right, roles, r_idx=idx-1, cb=combo_gruppi: 
+                    self._on_combo_gruppi_changed(r_idx, cb.checked_data(), cb.lineEdit().text())
+                )
+                self.table_prodotti.setCellWidget(idx - 1, 9, combo_gruppi)
+
             self.label_prodotti_stato.setText(f"Prodotti rilevati: {len(righe)}")
+
+            # Altezza dinamica...
+            header_height = self.table_prodotti.horizontalHeader().height()
+            if header_height <= 0: header_height = 28
+            total_rows_height = sum(self.table_prodotti.rowHeight(r) if self.table_prodotti.rowHeight(r) > 0 else 26 for r in range(self.table_prodotti.rowCount()))
+            self.table_prodotti.setFixedHeight(max(90, min(header_height + total_rows_height + (self.table_prodotti.frameWidth() * 2) + 4, 280)))
+
         finally:
             self._table_prodotti_updating = False
-
+    
+    
     def _set_parser_feedback(self, busy: bool, message: str | None = None):
         if busy and not self._parser_feedback_busy:
             self._parser_feedback_prev_enabled = {
@@ -528,13 +565,6 @@ class AziendaNuovoMovimentoPage(QWidget):
 
         if message is not None:
             self.label_prodotti_stato.setText(message)
-
-    def _seleziona_tutti_gruppi(self):
-        for index in range(self.list_gruppi.count()):
-            self.list_gruppi.item(index).setSelected(True)
-
-    def _deseleziona_gruppi(self):
-        self.list_gruppi.clearSelection()
 
     def _on_gruppi_selection_changed(self):
         if not isinstance(self.pending_parser_movimento_data, dict):
@@ -566,6 +596,75 @@ class AziendaNuovoMovimentoPage(QWidget):
             item.setText(normalized)
             self._table_prodotti_updating = False
 
+    def _on_combo_costo_changed(self, row_idx, text):
+        if not isinstance(self.pending_parser_movimento_data, dict):
+            return
+        righe = self.pending_parser_movimento_data.get("products_rows")
+        if isinstance(righe, list) and row_idx < len(righe):
+            # Aggiorna direttamente la struttura dati interna con il valore selezionato
+            righe[row_idx]["cost_type"] = text
+
+    def _on_combo_gruppi_changed(self, row_idx, selected_ids, selected_text):
+        if not isinstance(self.pending_parser_movimento_data, dict):
+            return
+        righe = self.pending_parser_movimento_data.get("products_rows")
+        if isinstance(righe, list) and row_idx < len(righe):
+            righe[row_idx]["groups_ids"] = selected_ids
+            righe[row_idx]["groups"] = selected_text if selected_text else "Nessun gruppo"
+
+    def _get_selected_group_entry_ids(self):
+        # Raccoglie tutti gli ID unici dai prodotti selezionati in tabella
+        if not isinstance(self.pending_parser_movimento_data, dict):
+            return []
+        righe = self.pending_parser_movimento_data.get("products_rows", [])
+        ids = set()
+        for riga in righe:
+            for gid in riga.get("groups_ids", []):
+                ids.add(int(gid))
+        return list(ids)
+
+    def _sincronizza_products_parser_da_form(self, parser_data, selected_group_ids):
+        if not isinstance(parser_data, dict):
+            return
+        righe = parser_data.get("products_rows")
+        if not isinstance(righe, list):
+            return
+
+        prodotti = []
+        for riga in righe:
+            descrizione = str(riga.get("description") or "-").strip() or "-"
+            categoria = normalize_product_category(riga.get("category"))
+            tipo_costo = normalize_cost_type(riga.get("cost_type"))
+            groups_text = str(riga.get("groups") or "").strip()
+            
+            if not groups_text or groups_text == "-":
+                groups_text = "Nessun gruppo"
+
+            quantita = parse_decimal(str(riga.get("quantity") or ""), allow_zero=True, allow_negative=False)
+            totale = parse_decimal(str(riga.get("line_total") or ""), allow_zero=True, allow_negative=False)
+            
+            if quantita is None or totale is None or quantita <= 0 or totale <= 0:
+                continue
+
+            riga["category"] = categoria
+            riga["cost_type"] = tipo_costo
+            riga["groups"] = groups_text
+
+            prodotti.append(
+                build_detailed_product_storage_line(
+                    descrizione,
+                    str(riga.get("quantity") or "-"),
+                    str(riga.get("line_total") or "-"),
+                    tipo_costo,
+                    categoria,
+                    groups_text,
+                    price_text=str(riga.get("price") or "-"),
+                    unit_price_text=str(riga.get("unit_price") or "-"),
+                    vat_rate_text=str(riga.get("vat_rate") or "-"),
+                )
+            )
+
+        parser_data["products"] = serialize_product_storage_lines(prodotti, separator="\n")
     def _normalizza_importo(self, raw, allow_zero=False):
         return parse_decimal(raw, allow_zero=allow_zero, allow_negative=False)
 
@@ -1096,9 +1195,6 @@ class AziendaNuovoMovimentoPage(QWidget):
             self._applica_dati_parser_al_form(dati)
             self.pending_parser_movimento_data = dati.get("parser_data")
 
-            if not self._get_selected_group_entry_ids():
-                self._seleziona_tutti_gruppi()
-
             self._sincronizza_products_parser_da_form(
                 self.pending_parser_movimento_data,
                 self._get_selected_group_entry_ids(),
@@ -1205,7 +1301,12 @@ class AziendaNuovoMovimentoPage(QWidget):
 
             riga["category"] = categoria
             riga["cost_type"] = tipo_costo
-            riga["groups"] = groups_text
+            
+            # --- MODIFICA QUI ---
+            # Preserva l'assegnazione specifica della riga impostata tramite la ComboBox della tabella.
+            # Se la riga non ha ancora un gruppo assegnato, applica il valore del form generale.
+            if "groups" not in riga or riga["groups"] in (None, "", "-"):
+                riga["groups"] = groups_text
 
             prodotti.append(
                 build_detailed_product_storage_line(
@@ -1214,7 +1315,7 @@ class AziendaNuovoMovimentoPage(QWidget):
                     totale_text,
                     tipo_costo,
                     categoria,
-                    groups_text,
+                    riga["groups"], # Utilizza il valore specifico preservato
                     price_text=prezzo_text,
                     unit_price_text=prezzo_unit_text,
                     vat_rate_text=iva_text,
@@ -1288,7 +1389,6 @@ class AziendaNuovoMovimentoPage(QWidget):
         self.input_importo.clear()
         self.input_iva.setText("0,00")
 
-        self._deseleziona_gruppi()
         self.rimuovi_fattura_movimento()
 
     def annulla_modifica(self):
@@ -1374,7 +1474,6 @@ class AziendaNuovoMovimentoPage(QWidget):
         self.input_importo.setText(format_number(float(importo or 0), 2))
         self.input_iva.setText(format_number(float(iva_importo or 0), 2))
 
-        self._carica_gruppi_animali(show_errors=False, selected_entry_ids=gruppi_collegati_ids)
         self._carica_fattura_collegata_movimento(
             movimento_id_value,
             str(parser_products or ""),
@@ -1525,6 +1624,5 @@ class AziendaNuovoMovimentoPage(QWidget):
 
         QMessageBox.information(self, "Successo", msg_ok)
         self._carica_categorie_salvate(show_errors=False)
-        self._carica_gruppi_animali(show_errors=False)
         self._reset_form()
         self.movimento_saved.emit(movimento_id)

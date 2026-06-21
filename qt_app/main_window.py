@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (
     QStackedWidget,
     QVBoxLayout,
     QWidget,
+    QSizePolicy
 )
 
 from qt_app.pages import (
@@ -46,6 +47,7 @@ class MainWindow(QMainWindow):
         self.resize(1200, 800)
 
         self.stack = QStackedWidget(self)
+        self.stack.currentChanged.connect(self._adatta_altezza_dinamica)
         self.pages = {}
         self.page_containers = {}
 
@@ -111,7 +113,9 @@ class MainWindow(QMainWindow):
         container = QScrollArea(self)
         container.setWidgetResizable(True)
         container.setFrameShape(QFrame.NoFrame)
-        container.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        container.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        
+        # La barra verticale ora apparirà SOLO quando realmente necessario
         container.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         container.setWidget(page)
         return container
@@ -133,3 +137,19 @@ class MainWindow(QMainWindow):
         )
         if conferma == QMessageBox.Yes:
             self.change_user_requested.emit()
+    def _adatta_altezza_dinamica(self, index):
+        """
+        Script generale per forzare il ricalcolo dell'altezza.
+        Ignora le dimensioni delle pagine nascoste e considera solo quella attiva.
+        """
+        for i in range(self.stack.count()):
+            widget = self.stack.widget(i)
+            if i == index:
+                # La pagina attiva detta le dimensioni reali
+                widget.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
+            else:
+                # Le pagine nascoste "scompaiono" dai calcoli geometrici
+                widget.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
+        
+        # Forza il layout ad aggiornarsi
+        self.stack.adjustSize()
