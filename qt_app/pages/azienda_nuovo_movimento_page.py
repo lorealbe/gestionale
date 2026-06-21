@@ -1608,7 +1608,7 @@ class AziendaNuovoMovimentoPage(QWidget):
                         c.execute(
                             """
                             UPDATE movimenti
-                            SET data_op=?, tipo=?, categoria=?, descrizione=?, importo=?, iva_importo=?, stato_pagamento_value=?
+                            SET data_op=?, tipo=?, categoria=?, descrizione=?, importo=?, iva_importo=?, stato_pagamento=?
                             WHERE id=? AND user_id=?
                         """,
                             (

@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame,
-    QScrollArea, QGridLayout, QSizePolicy
+    QScrollArea, QGridLayout, QSizePolicy, QPushButton
 )
 
 from database import get_conn
@@ -28,6 +28,11 @@ class DashboardPage(QWidget):
         }
         
         self._build_ui()
+        self.aggiorna_dati()
+
+    def showEvent(self, event):
+        """Scatta automaticamente ogni volta che la pagina diventa visibile"""
+        super().showEvent(event)
         self.aggiorna_dati()
 
     def _build_ui(self):
@@ -130,8 +135,8 @@ class DashboardPage(QWidget):
         
         return card
 
-    def _crea_list_item(self, titolo, dettaglio, colore_accento, icona="📄"):
-        """Crea una riga pulita per le liste delle scadenze."""
+    def _crea_list_item(self, titolo, dettaglio, colore_accento, icona="📄", movimento_id=None):
+        """Crea una riga pulita per le liste delle scadenze, con bottone rapido se necessario."""
         item = QFrame()
         item.setStyleSheet(f"""
             QFrame {{
@@ -166,7 +171,28 @@ class DashboardPage(QWidget):
         testo_layout.addWidget(lbl_dettaglio)
         layout.addLayout(testo_layout, 1)
         
+        # --- NUOVO: BOTTONE PAGAMENTO RAPIDO ---
+        if movimento_id is not None:
+            btn_pagato = QPushButton("✔️ Saldato")
+            btn_pagato.setCursor(Qt.PointingHandCursor)
+            btn_pagato.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: {self.colors['success']};
+                    color: white;
+                    border-radius: 5px;
+                    padding: 6px 12px;
+                    font-weight: bold;
+                }}
+                QPushButton:hover {{
+                    background-color: #218838;
+                }}
+            """)
+            # Colleghiamo il pulsante alla funzione di salvataggio passando l'ID specifico
+            btn_pagato.clicked.connect(lambda _, mid=movimento_id: self.segna_come_pagato(mid))
+            layout.addWidget(btn_pagato)
+            
         return item
+    
 
     # --- LOGICA DATI ---
 
@@ -186,6 +212,16 @@ class DashboardPage(QWidget):
                 pass
         return None
 
+    def segna_come_pagato(self, movimento_id):
+        """Aggiorna lo stato della fattura e rinfresca la dashboard"""
+        try:
+            with get_conn() as conn:
+                c = conn.cursor()
+                c.execute("UPDATE movimenti SET stato_pagamento='PAGATO' WHERE id=?", (movimento_id,))
+            self.aggiorna_dati()
+        except Exception as exc:
+            pass
+
     def aggiorna_dati(self):
         self._clear_layout(self.kpi_layout)
         self._clear_layout(self.layout_lista_fatture)
@@ -198,29 +234,35 @@ class DashboardPage(QWidget):
         totale_importo_scadenza = 0.0
         fatture_scadute_count = 0
         
+        # 1. Elaborazione Fatture
+        scadenze_fatture = []
+        totale_importo_scadenza = 0.0
+        fatture_scadute_count = 0
+        
         try:
             with get_conn() as conn:
                 c = conn.cursor()
+                # Aggiunto "id" e il COALESCE che avevamo corretto prima!
                 c.execute('''
-                    SELECT descrizione, importo, parser_due_date 
+                    SELECT id, descrizione, importo, COALESCE(NULLIF(TRIM(parser_due_date), ''), data_op) as data_riferimento
                     FROM movimenti 
-                    WHERE user_id=? AND parser_due_date IS NOT NULL AND TRIM(parser_due_date) != ''
-                    AND tipo='USCITA' AND stato_pagamento='DA PAGARE'
+                    WHERE user_id=? AND tipo='USCITA' AND stato_pagamento='DA PAGARE'
                 ''', (self.user_id,))
                 
-                for desc, importo, data_str in c.fetchall():
+                for mov_id, desc, importo, data_str in c.fetchall():
                     data_scadenza = self._parse_date(data_str)
                     if data_scadenza:
                         giorni_rimanenti = (data_scadenza - oggi).days
                         if giorni_rimanenti <= 30:
-                            scadenze_fatture.append((desc, importo, data_scadenza, giorni_rimanenti))
+                            # Salviamo anche mov_id nella tupla
+                            scadenze_fatture.append((mov_id, desc, importo, data_scadenza, giorni_rimanenti))
                             totale_importo_scadenza += float(importo or 0)
                             if giorni_rimanenti < 0:
                                 fatture_scadute_count += 1
         except Exception:
             pass
 
-        scadenze_fatture.sort(key=lambda x: x[2])
+        scadenze_fatture.sort(key=lambda x: x[3])
         
         # 2. Elaborazione Macchinari
         allarmi_macchinari = []
@@ -272,7 +314,7 @@ class DashboardPage(QWidget):
         if not scadenze_fatture:
             self.layout_lista_fatture.addWidget(self._crea_list_item("Tutto regolare", "Nessuna fattura in scadenza nel breve periodo.", self.colors['success'], "✅"))
         else:
-            for desc, importo, data_scadenza, giorni in scadenze_fatture:
+            for mov_id, desc, importo, data_scadenza, giorni in scadenze_fatture:
                 data_fmt = data_scadenza.strftime('%d/%m/%Y')
                 if giorni < 0:
                     col, sub = self.colors['danger'], f"Scaduta da {abs(giorni)} giorni ({data_fmt}) - {format_eur(importo)}"
@@ -281,7 +323,8 @@ class DashboardPage(QWidget):
                 else:
                     col, sub = self.colors['info'], f"Scade il {data_fmt} - {format_eur(importo)}"
                 
-                self.layout_lista_fatture.addWidget(self._crea_list_item(desc, sub, col, "💸"))
+                # Passiamo il movimento_id al widget
+                self.layout_lista_fatture.addWidget(self._crea_list_item(desc, sub, col, "💸", movimento_id=mov_id))
                 
         # Lista Macchinari
         if not allarmi_macchinari:
