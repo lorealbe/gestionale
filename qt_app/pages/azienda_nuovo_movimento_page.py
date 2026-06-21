@@ -201,6 +201,7 @@ class AziendaNuovoMovimentoPage(QWidget):
         self._parser_feedback_busy = False
         self._parser_feedback_prev_enabled = {}
         self._table_prodotti_updating = False
+        self.fatture_queue = []
 
         self._build_ui()
         self._reset_form()
@@ -1159,23 +1160,44 @@ class AziendaNuovoMovimentoPage(QWidget):
         if self.movimento_in_modifica_id is not None:
             self.annulla_modifica()
 
-        file_path, _ = QFileDialog.getOpenFileName(self, "Seleziona fattura PDF", "", "PDF Files (*.pdf)")
-        if not file_path:
+        # Usiamo getOpenFileNames (al plurale) per permettere la selezione multipla
+        file_paths, _ = QFileDialog.getOpenFileNames(self, "Seleziona fatture PDF", "", "PDF Files (*.pdf)")
+        if not file_paths:
             return
+
+        # Aggiungiamo i file selezionati alla coda e avviamo l'estrazione
+        self.fatture_queue.extend(file_paths)
+        self._processa_prossima_fattura_in_coda()
+
+    def _processa_prossima_fattura_in_coda(self):
+        if not self.fatture_queue:
+            return
+
+        # Estraiamo il primo file dalla coda
+        file_path = self.fatture_queue.pop(0)
+        rimanenti = len(self.fatture_queue)
 
         try:
             fattura_id, percorso_archiviato = self.archivia_fattura_caricata(file_path, "MOVIMENTO")
         except Exception as exc:
-            QMessageBox.critical(self, "Importazione fallita", f"Impossibile salvare la fattura: {exc}")
+            QMessageBox.critical(self, "Importazione fallita", f"Impossibile salvare la fattura {Path(file_path).name}: {exc}")
+            # Se fallisce l'archiviazione di questo file, saltiamo automaticamente al prossimo
+            self._processa_prossima_fattura_in_coda()
             return
 
         pending_id = int(fattura_id or 0)
         self.pending_fattura_movimento_id = pending_id if pending_id > 0 else None
         self.pending_fattura_movimento_path = percorso_archiviato
         self.pending_parser_movimento_data = None
-        self.label_nome_fattura.setText(Path(percorso_archiviato).name)
+        
+        # Aggiorniamo l'etichetta visiva per mostrare quante fatture mancano
+        testo_label = Path(percorso_archiviato).name
+        if rimanenti > 0:
+            testo_label += f"  ( + altre {rimanenti} in coda )"
+        self.label_nome_fattura.setText(testo_label)
+        
         self._aggiorna_tabella_prodotti_fattura_movimento(None)
-        self._set_parser_feedback(True, "Analisi fattura in corso...")
+        self._set_parser_feedback(True, f"Analisi di {Path(file_path).name} in corso...")
 
         def _on_success(risultato):
             try:
@@ -1185,31 +1207,20 @@ class AziendaNuovoMovimentoPage(QWidget):
                     risultato=risultato,
                 )
             except Exception as exc:
-                QMessageBox.warning(
-                    self,
-                    "Analisi non completata",
-                    f"Fattura salvata correttamente, ma analisi automatica non disponibile: {exc}",
-                )
+                QMessageBox.warning(self, "Analisi non completata", f"Fattura salvata, ma analisi non disponibile: {exc}")
                 return
 
             self._applica_dati_parser_al_form(dati)
             self.pending_parser_movimento_data = dati.get("parser_data")
 
-            self._sincronizza_products_parser_da_form(
-                self.pending_parser_movimento_data,
-                self._get_selected_group_entry_ids(),
-            )
+            # La tabella ora si arrangia da sola ad assegnare i gruppi di default
             self._aggiorna_tabella_prodotti_fattura_movimento(self.pending_parser_movimento_data)
 
             if is_blank(self.input_importo.text()):
                 QMessageBox.warning(self, "Attenzione", "Importo non trovato automaticamente. Verificalo manualmente.")
 
         def _on_error(message):
-            QMessageBox.warning(
-                self,
-                "Analisi non completata",
-                f"Fattura salvata correttamente, ma analisi automatica non disponibile: {message}",
-            )
+            QMessageBox.warning(self, "Analisi non completata", f"Fattura salvata, ma analisi non disponibile: {message}")
 
         def _on_progress(message):
             self._set_parser_feedback(True, f"Analisi fattura: {message}")
@@ -1229,18 +1240,26 @@ class AziendaNuovoMovimentoPage(QWidget):
             )
         except Exception as exc:
             self._set_parser_feedback(False)
-            QMessageBox.warning(
-                self,
-                "Analisi non avviata",
-                f"Fattura salvata correttamente, ma il parser non si e avviato: {exc}",
-            )
+            QMessageBox.warning(self, "Errore", f"Il parser non si è avviato: {exc}")
 
-    def rimuovi_fattura_movimento(self):
+    def rimuovi_fattura_movimento(self, skip_queue_prompt=False):
         self.pending_fattura_movimento_id = None
         self.pending_fattura_movimento_path = None
         self.pending_parser_movimento_data = None
         self.label_nome_fattura.setText("Nessuna fattura caricata")
         self._aggiorna_tabella_prodotti_fattura_movimento(None)
+        
+        # Il parametro skip_queue_prompt ci evita domande fastidiose durante i salvataggi automatici
+        if not skip_queue_prompt and hasattr(self, "fatture_queue") and self.fatture_queue:
+            risposta = QMessageBox.question(
+                self, "Coda attiva", 
+                "Fattura rimossa. Vuoi passare alla prossima fattura in coda?",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes
+            )
+            if risposta == QMessageBox.Yes:
+                self._processa_prossima_fattura_in_coda()
+            else:
+                self.fatture_queue.clear()
 
     def _sincronizza_products_parser_da_form(self, parser_data, selected_group_ids):
         if not isinstance(parser_data, dict):
@@ -1377,7 +1396,7 @@ class AziendaNuovoMovimentoPage(QWidget):
                 self.pending_parser_movimento_data = active_data
             self._aggiorna_tabella_prodotti_fattura_movimento(None)
 
-    def _reset_form(self):
+    def _reset_form(self, skip_queue_prompt=False):
         self.movimento_in_modifica_id = None
         self.button_salva.setText("Salva nel DB")
         self.button_annulla.setEnabled(False)
@@ -1389,7 +1408,7 @@ class AziendaNuovoMovimentoPage(QWidget):
         self.input_importo.clear()
         self.input_iva.setText("0,00")
 
-        self.rimuovi_fattura_movimento()
+        self.rimuovi_fattura_movimento(skip_queue_prompt=skip_queue_prompt)
 
     def annulla_modifica(self):
         self._reset_form()
@@ -1622,7 +1641,16 @@ class AziendaNuovoMovimentoPage(QWidget):
             QMessageBox.critical(self, "Errore DB", f"Errore database: {exc}")
             return
 
-        QMessageBox.information(self, "Successo", msg_ok)
+        # 1. Puliamo il form dicendo di NON mostrare il prompt del salto fattura
+        self._reset_form(skip_queue_prompt=True)
         self._carica_categorie_salvate(show_errors=False)
-        self._reset_form()
-        self.movimento_saved.emit(movimento_id)
+
+        # 2. Gestione intelligente del reindirizzamento
+        if hasattr(self, "fatture_queue") and self.fatture_queue:
+            # Ci sono ancora fatture: mostriamo un messaggio veloce e carichiamo la prossima
+            # SENZA emettere il segnale che cambia la pagina
+            self._processa_prossima_fattura_in_coda()
+        else:
+            # La coda è finita: mostriamo il messaggio e torniamo allo storico!
+            QMessageBox.information(self, "Successo", msg_ok)
+            self.movimento_saved.emit(movimento_id)

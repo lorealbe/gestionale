@@ -1,4 +1,4 @@
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, Signal, QTimer
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
     QFrame,
@@ -138,18 +138,30 @@ class MainWindow(QMainWindow):
         if conferma == QMessageBox.Yes:
             self.change_user_requested.emit()
     def _adatta_altezza_dinamica(self, index):
-        """
-        Script generale per forzare il ricalcolo dell'altezza.
-        Ignora le dimensioni delle pagine nascoste e considera solo quella attiva.
-        """
+        current_widget = self.stack.widget(index)
+        if not current_widget:
+            return
+
+        # Impostiamo le policy senza forzare il layout immediatamente
         for i in range(self.stack.count()):
-            widget = self.stack.widget(i)
-            if i == index:
-                # La pagina attiva detta le dimensioni reali
-                widget.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
-            else:
-                # Le pagine nascoste "scompaiono" dai calcoli geometrici
-                widget.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
+            w = self.stack.widget(i)
+            # Usiamo Expanding per assicurare che prendano tutto lo spazio
+            w.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         
-        # Forza il layout ad aggiornarsi
+        # Usiamo un timer a 0ms: questo forza il ricalcolo nel ciclo di eventi successivo
+        # dando tempo a Qt di completare la transizione del cambio pagina
+        QTimer.singleShot(0, lambda: self._finalize_layout(current_widget))
+
+    def _finalize_layout(self, widget):
+        """Metodo di supporto per finalizzare il layout dopo il cambio pagina"""
+        if not widget:
+            return
+        
+        widget.updateGeometry()
+        if widget.layout():
+            widget.layout().activate()
+            # Questo forza il ridisegno dei figli
+            widget.layout().update()
+        
         self.stack.adjustSize()
+        self.update()
