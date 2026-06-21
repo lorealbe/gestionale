@@ -2,11 +2,22 @@
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "Gestionale Tkinter (.venv-1)",
+      "name": "Gestionale Qt (.venv312)",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/gestionale_qt.pyw",
+      "python": "${workspaceFolder}/.venv312/Scripts/python.exe",
+      "cwd": "${workspaceFolder}",
+      "console": "internalConsole",
+      "justMyCode": true,
+      "subProcess": false
+    },
+    {
+      "name": "Gestionale Tkinter (.venv312)",
       "type": "debugpy",
       "request": "launch",
       "program": "${workspaceFolder}/gestionale.pyw",
-      "python": "${workspaceFolder}/.venv-1/Scripts/python.exe",
+      "python": "${workspaceFolder}/.venv312/Scripts/python.exe",
       "cwd": "${workspaceFolder}",
       "console": "internalConsole",
       "justMyCode": true,

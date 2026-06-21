@@ -4,7 +4,11 @@ from app_utils import parse_decimal
 
 PRODUCT_ROW_PATTERN = re.compile(
     (
-        r"^(?P<description>.*?)\s*-\s*qta\s+(?P<quantity>.*?)\s*-\s*tot\s+(?P<line_total>.*?)"
+        r"^(?P<description>.*?)\s*-\s*qta\s+(?P<quantity>.*?)"
+        r"(?:\s*-\s*prezzo\s+(?P<price>.*?))?"
+        r"(?:\s*-\s*prezzo_unit\s+(?P<unit_price>.*?))?"
+        r"(?:\s*-\s*iva\s+(?P<vat_rate>.*?))?"
+        r"\s*-\s*tot\s+(?P<line_total>.*?)"
         r"(?:\s*-\s*costi\s+(?P<cost_type>.*?))?"
         r"(?:\s*-\s*categoria\s+(?P<category>.*?))?"
         r"(?:\s*-\s*gruppi\s+(?P<groups>.*))?$"
@@ -75,13 +79,27 @@ def build_detailed_product_storage_line(
     cost_type,
     category_text,
     groups_text,
+    price_text=None,
+    unit_price_text=None,
+    vat_rate_text=None,
 ):
     desc = normalize_product_description_for_storage(description)
     category = normalize_product_category(category_text)
-    return (
-        f"{desc} - qta {quantity_text} - tot {total_text} "
-        f"- costi {cost_type} - categoria {category} - gruppi {groups_text}"
-    )
+    parts = [f"{desc}", f"qta {quantity_text}"]
+
+    if str(price_text or "").strip() and str(price_text).strip() != "-":
+        parts.append(f"prezzo {price_text}")
+    if str(unit_price_text or "").strip() and str(unit_price_text).strip() != "-":
+        parts.append(f"prezzo_unit {unit_price_text}")
+    if str(vat_rate_text or "").strip() and str(vat_rate_text).strip() != "-":
+        parts.append(f"iva {vat_rate_text}")
+
+    parts.append(f"tot {total_text}")
+    parts.append(f"costi {cost_type}")
+    parts.append(f"categoria {category}")
+    parts.append(f"gruppi {groups_text}")
+
+    return " - ".join(parts)
 
 
 def serialize_product_storage_lines(lines, separator="\n"):
@@ -129,6 +147,9 @@ def extract_products_rows_from_parser_text(products_text):
             {
                 "description": (match.group("description") or "").strip() or "-",
                 "quantity": quantita,
+                "price": (match.group("price") or "").strip() or "-",
+                "unit_price": (match.group("unit_price") or "").strip() or "-",
+                "vat_rate": (match.group("vat_rate") or "").strip() or "-",
                 "line_total": totale,
                 "cost_type": tipo_costo,
                 "category": normalize_product_category(match.group("category")),
