@@ -3304,6 +3304,9 @@ def init_db():
         colonne_movimenti = {row[1] for row in c.fetchall()}
         if "iva_importo" not in colonne_movimenti:
             c.execute("ALTER TABLE movimenti ADD COLUMN iva_importo REAL NOT NULL DEFAULT 0")
+        # Migrazione: aggiunge colonna stato_pagamento se manca.
+        if "stato_pagamento" not in colonne_movimenti:
+            c.execute("ALTER TABLE movimenti ADD COLUMN stato_pagamento TEXT NOT NULL DEFAULT 'PAGATO'")
 
         colonne_parser = {
             "parser_invoice_number": "TEXT",

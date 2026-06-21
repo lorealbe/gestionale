@@ -208,7 +208,6 @@ class RegexInvoiceParser:
 
                         # === FASE 2: USCITA O FILTRO ===
                         if re.search(stop_words, testo_pulito):
-                            print(f"DEBUG: Tabella interrotta a causa della riga: {testo_pulito}") # <-- Aggiungi questo
                             in_tabella = False
                         if re.search(stop_words, testo_pulito):
                             in_tabella = False
@@ -428,14 +427,58 @@ class RegexInvoiceParser:
             return dati_totali
         except: return dati_totali
 
+    @staticmethod
+    def _standardizza_data(data_str):
+        """Converte date testuali o ISO in un formato DD/MM/YYYY standard."""
+        data_str = str(data_str).strip().lower()
+        
+        # Mappa dei mesi in italiano
+        mesi = {
+            'gennaio': '01', 'febbraio': '02', 'marzo': '03', 'aprile': '04',
+            'maggio': '05', 'giugno': '06', 'luglio': '07', 'agosto': '08',
+            'settembre': '09', 'ottobre': '10', 'novembre': '11', 'dicembre': '12'
+        }
+        
+        # Sostituisce il mese a lettere (es. "31 marzo 2026" -> "31/03/2026")
+        for mese_nome, mese_num in mesi.items():
+            if mese_nome in data_str:
+                data_str = re.sub(fr'\s+{mese_nome}\s+', f'/{mese_num}/', data_str)
+                break
+        
+        data_str = data_str.replace('-', '/')
+        
+        # Converte l'eventuale formato ISO YYYY/MM/DD in DD/MM/YYYY
+        m_iso = re.match(r'^(\d{4})/(\d{2})/(\d{2})$', data_str)
+        if m_iso:
+            return f"{m_iso.group(3)}/{m_iso.group(2)}/{m_iso.group(1)}"
+            
+        return data_str
+
     def _estrai_dati_regex(self, testo):
-        """Regex standard per P.IVA e Date."""
+        """Regex per P.IVA, Numeri Documento e Date."""
         dati = {"supplier_vat": "", "customer_vat": "", "invoice_number": "", "invoice_date": ""}
         pivas = list(dict.fromkeys(re.findall(r'(?i)\b(?:IT)?\s*(\d{11})\b', testo)))
         if len(pivas) >= 1: dati["supplier_vat"] = pivas[0]
         if len(pivas) >= 2: dati["customer_vat"] = pivas[1]
-        date_f = re.findall(r'\b(\d{2}[/-]\d{2}[/-]\d{4})\b', testo)
-        if date_f: dati["invoice_date"] = date_f[0]
+        
+        # --- NUOVA LOGICA ESTRAZIONE DATA ---
+        date_patterns = [
+            # 1. Cerca date testuali vicine a "data" o "del" (es. "del 31 Marzo 2026")
+            r'(?i)(?:data|del)[\s:]*(\d{1,2}\s+(?:gennaio|febbraio|marzo|aprile|maggio|giugno|luglio|agosto|settembre|ottobre|novembre|dicembre)\s+\d{4})',
+            # 2. Cerca formato ISO (es. 2026-03-31)
+            r'\b(\d{4}[/-]\d{2}[/-]\d{2})\b',
+            # 3. Cerca formato Standard (es. 31/03/2026)
+            r'\b(\d{2}[/-]\d{2}[/-]\d{4})\b',
+        ]
+        
+        for p in date_patterns:
+            matches = re.findall(p, testo)
+            if matches:
+                # Prende la prima data rilevata e la standardizza in automatico
+                dati["invoice_date"] = self._standardizza_data(matches[0])
+                break
+        # ------------------------------------
+
         num_patterns = [
             r'(?i)([a-z0-9\-]+\s*/\s*[a-z0-9\-]+(?:/[a-z0-9\-]+)*)\s+del\s+(?:\d{2}[/-]\d{2}[/-]\d{4}|\d{1,2}\s+[a-z]+\s+\d{4})',
             r'(?i)(?:fattura|n[°.]|numero)[\s:]*([A-Z0-9\-/]*\d+[A-Z0-9\-/]*)'
@@ -446,7 +489,6 @@ class RegexInvoiceParser:
                 dati["invoice_number"] = m.group(1).strip()
                 break
         return dati
-
 
 def parse_invoice_pdf(file_path, progress_cb=None):
     parser = RegexInvoiceParser()

@@ -19,11 +19,13 @@ from qt_app.pages import (
     MacchinariPage,
     ZootecniaPage,
 )
+from qt_app.pages.dashboard_page import DashboardPage
 
 
 class MainWindow(QMainWindow):
     change_user_requested = Signal()
 
+    CATEGORIA_DASHBOARD = "Dashboard"
     CATEGORIA_AZIENDA = "Azienda"
     CATEGORIA_AGRICOLTURA = "Agricoltura"
     CATEGORIA_ATTREZZATURE = "Attrezzature"
@@ -31,6 +33,7 @@ class MainWindow(QMainWindow):
     CATEGORIA_ZOOTECNIA = "Zootecnia"
 
     CATEGORIES = (
+        CATEGORIA_DASHBOARD,
         CATEGORIA_AZIENDA,
         CATEGORIA_AGRICOLTURA,
         CATEGORIA_ATTREZZATURE,
@@ -61,10 +64,12 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(self.stack)
         self._build_menu()
         self.statusBar().showMessage(f"Accesso effettuato come: {self.username}")
-        self.show_category(self.CATEGORIA_AZIENDA)
+        
+        self.show_category(self.CATEGORIA_DASHBOARD)
 
     def _build_menu(self):
         menu_bar = self.menuBar()
+        
 
         for category in self.CATEGORIES:
             action = QAction(category, self)
@@ -77,7 +82,9 @@ class MainWindow(QMainWindow):
         account_menu.addAction(change_user_action)
 
     def _create_category_page(self, category: str) -> QWidget:
-        if category == self.CATEGORIA_AZIENDA:
+        if category == self.CATEGORIA_DASHBOARD:         
+            return DashboardPage(self.user_id, self)
+        elif category == self.CATEGORIA_AZIENDA:
             return AziendaPage(user_id=self.user_id, parent=self)
         if category == self.CATEGORIA_AGRICOLTURA:
             return AgricolturaPage(user_id=self.user_id, parent=self)

@@ -229,6 +229,9 @@ class AziendaNuovoMovimentoPage(QWidget):
         self.combo_tipo = QComboBox(self)
         self.combo_tipo.addItems(["ENTRATA", "USCITA"])
 
+        self.combo_stato_pagamento = QComboBox(self)
+        self.combo_stato_pagamento.addItems(["PAGATO", "DA PAGARE"])
+
         self.combo_categoria = QComboBox(self)
         self.combo_categoria.setEditable(True)
         self.combo_categoria.setInsertPolicy(QComboBox.NoInsert)
@@ -249,6 +252,8 @@ class AziendaNuovoMovimentoPage(QWidget):
         form_layout.addWidget(self.input_data, 0, 1)
         form_layout.addWidget(QLabel("Tipo:"), 0, 2)
         form_layout.addWidget(self.combo_tipo, 0, 3)
+        form_layout.addWidget(QLabel("Stato:"), 0, 4)                 
+        form_layout.addWidget(self.combo_stato_pagamento, 0, 5)
 
         form_layout.addWidget(QLabel("Categoria:"), 1, 0)
         form_layout.addWidget(self.combo_categoria, 1, 1, 1, 2)
@@ -1403,6 +1408,7 @@ class AziendaNuovoMovimentoPage(QWidget):
 
         self.input_data.setDate(QDate.currentDate())
         self.combo_tipo.setCurrentText("ENTRATA")
+        self.combo_stato_pagamento.setCurrentText("PAGATO")
         self.combo_categoria.setCurrentText("")
         self.input_descrizione.clear()
         self.input_importo.clear()
@@ -1425,7 +1431,7 @@ class AziendaNuovoMovimentoPage(QWidget):
                 c = conn.cursor()
                 c.execute(
                     """
-                    SELECT id, data_op, tipo, categoria, descrizione, importo, iva_importo,
+                    SELECT id, data_op, tipo, categoria, descrizione, importo, iva_importo, stato_pagamento,
                            parser_invoice_number, parser_invoice_date, parser_due_date,
                            parser_supplier_name, parser_supplier_vat,
                            parser_customer_name, parser_customer_vat,
@@ -1453,6 +1459,7 @@ class AziendaNuovoMovimentoPage(QWidget):
             descrizione,
             importo,
             iva_importo,
+            stato_pagamento,
             *parser_values,
         ) = row
         parser_data = None
@@ -1488,6 +1495,7 @@ class AziendaNuovoMovimentoPage(QWidget):
 
         self.input_data.setDate(data_qt)
         self.combo_tipo.setCurrentText(str(tipo or "ENTRATA"))
+        self.combo_stato_pagamento.setCurrentText(str(stato_pagamento or "PAGATO"))
         self.combo_categoria.setCurrentText(str(categoria or ""))
         self.input_descrizione.setText(str(descrizione or ""))
         self.input_importo.setText(format_number(float(importo or 0), 2))
@@ -1526,6 +1534,7 @@ class AziendaNuovoMovimentoPage(QWidget):
                 return
 
         tipo_value = self.combo_tipo.currentText().strip() or "ENTRATA"
+        stato_pagamento_value = self.combo_stato_pagamento.currentText().strip() or "PAGATO"
         if tipo_value not in ("ENTRATA", "USCITA"):
             QMessageBox.critical(self, "Errore", "Tipo movimento non valido.")
             return
@@ -1546,14 +1555,14 @@ class AziendaNuovoMovimentoPage(QWidget):
                     c.execute(
                         """
                         INSERT INTO movimenti (
-                            user_id, data_op, tipo, categoria, descrizione, importo, iva_importo,
+                            user_id, data_op, tipo, categoria, descrizione, importo, iva_importo, stato_pagamento,
                             parser_invoice_number, parser_invoice_date, parser_due_date,
                             parser_supplier_name, parser_supplier_vat,
                             parser_customer_name, parser_customer_vat,
                             parser_total_amount, parser_taxable_total, parser_vat_total,
                             parser_payment_terms, parser_warnings, parser_products, parser_fields_view
                         )
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                         (
                             self.user_id,
@@ -1563,6 +1572,7 @@ class AziendaNuovoMovimentoPage(QWidget):
                             descrizione_value,
                             importo_val,
                             iva_val,
+                            stato_pagamento_value,
                             *parser_values,
                         ),
                     )
@@ -1573,7 +1583,7 @@ class AziendaNuovoMovimentoPage(QWidget):
                         c.execute(
                             """
                             UPDATE movimenti
-                            SET data_op=?, tipo=?, categoria=?, descrizione=?, importo=?, iva_importo=?,
+                            SET data_op=?, tipo=?, categoria=?, descrizione=?, importo=?, iva_importo=?, stato_pagamento=?,
                                 parser_invoice_number=?, parser_invoice_date=?, parser_due_date=?,
                                 parser_supplier_name=?, parser_supplier_vat=?,
                                 parser_customer_name=?, parser_customer_vat=?,
@@ -1588,6 +1598,7 @@ class AziendaNuovoMovimentoPage(QWidget):
                                 descrizione_value,
                                 importo_val,
                                 iva_val,
+                                stato_pagamento_value,
                                 *parser_values,
                                 self.movimento_in_modifica_id,
                                 self.user_id,
@@ -1597,7 +1608,7 @@ class AziendaNuovoMovimentoPage(QWidget):
                         c.execute(
                             """
                             UPDATE movimenti
-                            SET data_op=?, tipo=?, categoria=?, descrizione=?, importo=?, iva_importo=?
+                            SET data_op=?, tipo=?, categoria=?, descrizione=?, importo=?, iva_importo=?, stato_pagamento_value=?
                             WHERE id=? AND user_id=?
                         """,
                             (
@@ -1607,6 +1618,7 @@ class AziendaNuovoMovimentoPage(QWidget):
                                 descrizione_value,
                                 importo_val,
                                 iva_val,
+                                stato_pagamento_value,
                                 self.movimento_in_modifica_id,
                                 self.user_id,
                             ),

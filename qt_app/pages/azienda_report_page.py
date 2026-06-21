@@ -1,6 +1,6 @@
 import sqlite3
 from datetime import datetime
-
+import pyqtgraph as pg
 from PySide6.QtCore import QDate, Qt
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QTableWidget,
+    QTabWidget,
     QTableWidgetItem,
     QVBoxLayout,
     QWidget,
@@ -80,9 +81,19 @@ class AziendaReportPage(QWidget):
 
         main_layout.addWidget(filtri_frame)
 
+        # --- SISTEMA A SCHEDE (TABS) ---
+        self.tabs = QTabWidget(self)
+        main_layout.addWidget(self.tabs, 1)
+
+        # ==========================================
+        # SCHEDA 1: TABELLE (Il tuo codice originale)
+        # ==========================================
+        self.tab_tabelle = QWidget()
+        tabelle_layout = QVBoxLayout(self.tab_tabelle)
+
         riepilogo_label = QLabel("Riepilogo azienda")
         riepilogo_label.setStyleSheet("font-size: 16px; font-weight: 600;")
-        main_layout.addWidget(riepilogo_label)
+        tabelle_layout.addWidget(riepilogo_label)
 
         self.table_riepilogo = QTableWidget(0, 2, self)
         self.table_riepilogo.setHorizontalHeaderLabels(["Metrica", "Valore"])
@@ -95,13 +106,11 @@ class AziendaReportPage(QWidget):
         riepilogo_header = self.table_riepilogo.horizontalHeader()
         riepilogo_header.setSectionResizeMode(0, QHeaderView.Stretch)
         riepilogo_header.setSectionResizeMode(1, QHeaderView.ResizeToContents)
-
-        main_layout.addWidget(self.table_riepilogo)
-        self._adatta_altezza_tabella_riepilogo()
+        tabelle_layout.addWidget(self.table_riepilogo)
 
         dettaglio_label = QLabel("Dettaglio per categoria")
         dettaglio_label.setStyleSheet("font-size: 16px; font-weight: 600;")
-        main_layout.addWidget(dettaglio_label)
+        tabelle_layout.addWidget(dettaglio_label)
 
         self.table_categorie = QTableWidget(0, 4, self)
         self.table_categorie.setHorizontalHeaderLabels(["Tipo", "Categoria", "Totale", "N. Movimenti"])
@@ -116,10 +125,34 @@ class AziendaReportPage(QWidget):
         categorie_header.setSectionResizeMode(1, QHeaderView.Stretch)
         categorie_header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
         categorie_header.setSectionResizeMode(3, QHeaderView.ResizeToContents)
+        tabelle_layout.addWidget(self.table_categorie, 1)
 
-        main_layout.addWidget(self.table_categorie, 1)
+        self.tabs.addTab(self.tab_tabelle, "Dati e Tabelle")
 
+        # ==========================================
+        # SCHEDA 2: GRAFICI INTERATTIVI CON PYQTGRAPH
+        # ==========================================
+        self.tab_grafici = QWidget()
+        grafici_layout = QVBoxLayout(self.tab_grafici)
+
+        # 1. Grafico Linee (Trend)
+        self.plot_trend = pg.PlotWidget(title="Trend Mensile (Entrate vs Uscite)")
+        self.plot_trend.setBackground('w') # Sfondo bianco in stile gestionale
+        self.plot_trend.showGrid(x=True, y=True, alpha=0.3)
+        self.plot_trend.addLegend()
+        grafici_layout.addWidget(self.plot_trend)
+
+        # 2. Grafico Barre (Analisi Spese)
+        self.plot_categorie = pg.PlotWidget(title="Top Costi Aziendali per Categoria")
+        self.plot_categorie.setBackground('w')
+        self.plot_categorie.showGrid(x=False, y=True, alpha=0.3)
+        grafici_layout.addWidget(self.plot_categorie)
+
+        self.tabs.addTab(self.tab_grafici, "Grafici Interattivi")
+
+        # Inizializza lo stato del filtro
         self._on_toggle_filtro_periodo(False)
+
 
     def _on_toggle_filtro_periodo(self, enabled: bool):
         self.data_inizio.setEnabled(enabled)
@@ -329,3 +362,80 @@ class AziendaReportPage(QWidget):
 
         for row_index, values in enumerate(categorie_rows):
             self._append_table_row(self.table_categorie, row_index, values, right_align_indexes=[2, 3])
+
+        # ==========================================
+        # AGGIORNAMENTO GRAFICI PYQTGRAPH
+        # ==========================================
+        
+        # 1. Recupero dati Trend Mensile dal Database
+        try:
+            with get_conn() as conn:
+                c = conn.cursor()
+                c.execute(
+                    f"""
+                    SELECT
+                        strftime('%Y-%m', data_op) as mese,
+                        COALESCE(SUM(CASE WHEN tipo='ENTRATA' THEN importo ELSE 0 END), 0),
+                        COALESCE(SUM(CASE WHEN tipo='USCITA' THEN importo ELSE 0 END), 0)
+                    FROM movimenti
+                    {where_clause}
+                    GROUP BY mese
+                    ORDER BY mese
+                """,
+                    tuple(params),
+                )
+                trend_rows = c.fetchall()
+        except sqlite3.Error:
+            trend_rows = []
+
+        # Pulisce il grafico precedente
+        self.plot_trend.clear()
+        mesi_ticks = []
+        entrate_vals = []
+        uscite_vals = []
+
+        for idx, (mese, ent, usc) in enumerate(trend_rows):
+            mesi_ticks.append((idx, str(mese)))
+            entrate_vals.append(ent)
+            uscite_vals.append(usc)
+
+        # Disegna il Grafico Trend
+        if mesi_ticks:
+            ax = self.plot_trend.getAxis('bottom')
+            ax.setTicks([mesi_ticks])
+            # Linea Verde per Entrate
+            self.plot_trend.plot(
+                [x[0] for x in mesi_ticks], entrate_vals, 
+                pen=pg.mkPen(color='#28a745', width=3), name="Entrate", symbol='o', symbolBrush='#28a745'
+            )
+            # Linea Rossa per Uscite
+            self.plot_trend.plot(
+                [x[0] for x in mesi_ticks], uscite_vals, 
+                pen=pg.mkPen(color='#dc3545', width=3), name="Uscite", symbol='t', symbolBrush='#dc3545'
+            )
+
+        # 2. Generazione Grafico a Barre (Top Costi)
+        self.plot_categorie.clear()
+
+        # Usiamo i dati già calcolati per la tabella, filtrando solo le Uscite
+        spese = [(cat, tot) for tipo, cat, tot, qta in righe_categoria if tipo == "USCITA"]
+        
+        # Aggiungiamo anche la voce manutenzioni
+        if tot_uscite_manutenzioni > 0:
+            spese.append(("Manutenzioni", tot_uscite_manutenzioni))
+
+        # Ordiniamo dalla spesa maggiore alla minore e prendiamo la "Top 8"
+        spese = sorted(spese, key=lambda x: float(x[1] or 0), reverse=True)[:8]
+
+        # Disegna il Grafico a Barre
+        if spese:
+            # Tagliamo i nomi troppo lunghi per l'asse X
+            cat_ticks = [(idx, str(cat)[:12] + ("." if len(str(cat))>12 else "")) for idx, (cat, tot) in enumerate(spese)]
+            valori = [float(tot) for cat, tot in spese]
+
+            ax_cat = self.plot_categorie.getAxis('bottom')
+            ax_cat.setTicks([cat_ticks])
+
+            # Creiamo le barre (Blu)
+            bar_chart = pg.BarGraphItem(x=[x[0] for x in cat_ticks], height=valori, width=0.6, brush='#007bff', pen='w')
+            self.plot_categorie.addItem(bar_chart)
