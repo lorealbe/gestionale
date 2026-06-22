@@ -3471,6 +3471,72 @@ def init_db():
         c.execute('''CREATE INDEX IF NOT EXISTS idx_fatture_user_data
                  ON fatture(user_id, data_caricamento DESC)''')
 
+
+
+
+
+
+        # --- SEZIONE AGRICOLTURA 4.0 ---
+        
+        # Tabella Campi Agricoli (Salva il poligono della mappa)
+        c.execute(
+            '''CREATE TABLE IF NOT EXISTS campi_agricoli
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  user_id INTEGER NOT NULL,
+                  nome TEXT NOT NULL,
+                  area_ettari REAL NOT NULL DEFAULT 0,
+                  geojson TEXT NOT NULL DEFAULT '',
+                  colore TEXT NOT NULL DEFAULT '#3388ff',
+                  created_at TEXT NOT NULL DEFAULT '',
+                  updated_at TEXT NOT NULL DEFAULT '',
+                  FOREIGN KEY(user_id) REFERENCES utenti(id) ON DELETE CASCADE)'''
+        )
+
+        # Tabella Storico Colture (Quaderno di campagna)
+        c.execute(
+            '''CREATE TABLE IF NOT EXISTS storico_colture
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  user_id INTEGER NOT NULL,
+                  campo_id INTEGER NOT NULL,
+                  coltura TEXT NOT NULL,
+                  data_semina TEXT NOT NULL DEFAULT '',
+                  data_raccolto TEXT NOT NULL DEFAULT '',
+                  resa_quintali REAL NOT NULL DEFAULT 0,
+                  note TEXT NOT NULL DEFAULT '',
+                  created_at TEXT NOT NULL DEFAULT '',
+                  updated_at TEXT NOT NULL DEFAULT '',
+                  FOREIGN KEY(user_id) REFERENCES utenti(id) ON DELETE CASCADE,
+                  FOREIGN KEY(campo_id) REFERENCES campi_agricoli(id) ON DELETE CASCADE)'''
+        )
+        # --- TABELLA ECONOMIA COLTURE (Fase 1) ---
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS economia_colture (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                storico_id INTEGER NOT NULL,
+                tipo TEXT NOT NULL,          
+                categoria TEXT NOT NULL,
+                descrizione TEXT,
+                importo REAL NOT NULL,
+                data_operazione TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(storico_id) REFERENCES storico_colture(id) ON DELETE CASCADE
+            )
+        ''')
+
+        # --- AGGIORNAMENTO STRUTTURA CAMPI (Uliveti/Vigneti) ---
+        try:
+            c.execute("PRAGMA table_info(campi_agricoli)")
+            colonne_esistenti = [row[1] for row in c.fetchall()]
+            if "tipo_campo" not in colonne_esistenti:
+                c.execute("ALTER TABLE campi_agricoli ADD COLUMN tipo_campo TEXT NOT NULL DEFAULT 'Seminativo'")
+                c.execute("ALTER TABLE campi_agricoli ADD COLUMN varieta TEXT DEFAULT ''")
+                c.execute("ALTER TABLE campi_agricoli ADD COLUMN num_piante INTEGER DEFAULT 0")
+                c.execute("ALTER TABLE campi_agricoli ADD COLUMN anno_impianto INTEGER DEFAULT 0")
+        except Exception as e:
+            print(f"Errore aggiornamento campi_agricoli: {e}")
+
+
         # Anagrafica macchinari.
         c.execute(
             '''CREATE TABLE IF NOT EXISTS macchinari
