@@ -1,9 +1,11 @@
 import json
 import sqlite3
+import urllib.request
+import threading
 from datetime import datetime
 import pyqtgraph as pg
 
-from PySide6.QtCore import Qt, QObject, Slot, QTimer, QDate
+from PySide6.QtCore import Qt, QObject, Slot, Signal, QTimer, QDate
 from PySide6.QtGui import QCursor
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame, QPushButton, QSplitter,
@@ -21,6 +23,67 @@ from database import get_conn
 # ==========================================
 # FINESTRE DI DIALOGO VINCOLATE E FINANZIARIE
 # ==========================================
+
+class StoricoMeteoDialog(QDialog):
+    def __init__(self, user_id, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Registro delle Precipitazioni")
+        self.setMinimumSize(700, 450)
+        self.user_id = user_id
+        
+        layout = QVBoxLayout(self)
+        
+        titolo = QLabel("Storico delle Piogge Rilevate (mm/giorno)")
+        titolo.setStyleSheet("font-size: 16px; font-weight: bold; color: #2c3e50; margin-bottom: 10px;")
+        layout.addWidget(titolo)
+        
+        self.plot_meteo = pg.PlotWidget()
+        self.plot_meteo.setBackground('w')
+        self.plot_meteo.showGrid(x=False, y=True, alpha=0.3)
+        self.plot_meteo.setMouseEnabled(x=False, y=False)
+        self.plot_meteo.setMenuEnabled(False)
+        layout.addWidget(self.plot_meteo)
+        
+        self._carica_grafico()
+        
+    def _carica_grafico(self):
+        try:
+            with get_conn() as conn:
+                c = conn.cursor()
+                c.execute("""
+                    SELECT data_rilevazione, pioggia_mm 
+                    FROM registro_meteo 
+                    WHERE user_id=? 
+                    ORDER BY data_rilevazione ASC LIMIT 30
+                """, (self.user_id,))
+                dati = c.fetchall()
+        except Exception:
+            return
+            
+        if not dati:
+            self.plot_meteo.setTitle("Nessun dato pluviometrico registrato finora.", color='#7f8c8d', size='12pt')
+            return
+            
+        x_labels = []
+        y_values = []
+        for d in dati:
+            try: d_fmt = datetime.strptime(d[0], "%Y-%m-%d").strftime("%d/%m")
+            except: d_fmt = d[0]
+            x_labels.append(d_fmt)
+            y_values.append(float(d[1]))
+            
+        x_pos = list(range(len(x_labels)))
+        ticks = [list(zip(x_pos, x_labels))]
+        
+        ax = self.plot_meteo.getAxis('bottom')
+        ax.setTicks(ticks)
+        
+        bar_chart = pg.BarGraphItem(x=x_pos, height=y_values, width=0.4, brush='#3498db', pen='w')
+        self.plot_meteo.addItem(bar_chart)
+        self.plot_meteo.setXRange(-0.5, len(x_pos) - 0.5, padding=0)
+        if y_values:
+            self.plot_meteo.setYRange(0, max(y_values) * 1.2 if max(y_values) > 0 else 5, padding=0)
+
 
 class GestioneEconomicaDialog(QDialog):
     def __init__(self, storico_id, user_id, titolo_coltura, parent=None):
@@ -436,10 +499,15 @@ class WebBridge(QObject):
 
 
 class AgricolturaPage(QWidget):
+    
+    segnale_meteo = Signal(str, float, float, float)
+    
     def __init__(self, user_id: int, parent=None):
         super().__init__(parent)
         self.user_id = user_id
         self._mappa_pronta = False 
+        
+        self.segnale_meteo.connect(self._imposta_testo_meteo)
         
         self.channel = QWebChannel()
         self.bridge = WebBridge(self)
@@ -463,7 +531,7 @@ class AgricolturaPage(QWidget):
         header_layout = QVBoxLayout()
         titolo = QLabel("Gestione Campi, Colture e Appezzamenti")
         titolo.setStyleSheet("font-size: 24px; font-weight: bold; color: #2c3e50;")
-        sottotitolo = QLabel("Disegna i campi, gestisci le categorie colturali e analizza i bilanci economici.")
+        sottotitolo = QLabel("Disegna i campi, analizza le rese e consulta il meteo locale.")
         sottotitolo.setStyleSheet("font-size: 14px; color: #7f8c8d;")
         header_layout.addWidget(titolo)
         header_layout.addWidget(sottotitolo)
@@ -511,11 +579,33 @@ class AgricolturaPage(QWidget):
         splitter.addWidget(mappa_frame)
 
         control_frame = QFrame()
-        control_frame.setMinimumWidth(300)
+        control_frame.setMinimumWidth(320)
         control_layout = QVBoxLayout(control_frame)
         
+        self.meteo_frame = QFrame()
+        self.meteo_frame.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
+        self.meteo_frame.setStyleSheet("background-color: #e0f7fa; border: 1px solid #17a2b8; border-radius: 8px; padding: 10px;")
+        meteo_layout = QVBoxLayout(self.meteo_frame)
+        meteo_layout.setContentsMargins(10, 10, 10, 10)
+        
+        self.lbl_meteo_titolo = QLabel("🌤️ Meteo a 3 Giorni")
+        self.lbl_meteo_titolo.setStyleSheet("font-weight: bold; font-size: 14px; color: #006064; border: none; margin-bottom: 5px;")
+        
+        self.lbl_meteo_dati = QLabel("Localizzazione campi in corso...")
+        self.lbl_meteo_dati.setStyleSheet("font-size: 13px; color: #006064; border: none;")
+        self.lbl_meteo_dati.setWordWrap(True)
+        
+        self.btn_storico_meteo = QPushButton("📊 Storico Piogge")
+        self.btn_storico_meteo.setStyleSheet("background-color: #008cba; color: white; border-radius: 4px; padding: 5px; font-weight: bold;")
+        self.btn_storico_meteo.clicked.connect(self._apri_storico_meteo)
+        
+        meteo_layout.addWidget(self.lbl_meteo_titolo)
+        meteo_layout.addWidget(self.lbl_meteo_dati)
+        meteo_layout.addWidget(self.btn_storico_meteo)
+        control_layout.addWidget(self.meteo_frame)
+        
         lbl_campi = QLabel("I tuoi Appezzamenti")
-        lbl_campi.setStyleSheet("font-size: 18px; font-weight: bold; margin-bottom: 5px;")
+        lbl_campi.setStyleSheet("font-size: 18px; font-weight: bold; margin-top: 10px; margin-bottom: 5px;")
         control_layout.addWidget(lbl_campi)
         
         self.list_campi = QListWidget()
@@ -537,7 +627,7 @@ class AgricolturaPage(QWidget):
         control_layout.addLayout(btn_layout_mappa)
         
         splitter.addWidget(control_frame)
-        splitter.setSizes([700, 300])
+        splitter.setSizes([700, 320])
         layout.addWidget(splitter)
 
 
@@ -631,7 +721,7 @@ class AgricolturaPage(QWidget):
         layout.addLayout(h_layout)
 
     # ==========================================
-    # COSTRUZIONE INTERFACCIA STATISTICHE E REDDITIVITA' (FASE 3)
+    # COSTRUZIONE INTERFACCIA STATISTICHE E REDDITIVITA'
     # ==========================================
     def _build_tab_statistiche(self):
         layout = QVBoxLayout(self.tab_statistiche)
@@ -641,7 +731,6 @@ class AgricolturaPage(QWidget):
         top_layout = QHBoxLayout()
         top_layout.setSpacing(20)
         
-        # CARD DINAMICA 
         self.card_area = QFrame()
         self.card_area.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.card_area.setStyleSheet("""
@@ -658,7 +747,6 @@ class AgricolturaPage(QWidget):
         card_layout.addWidget(self.lbl_kpi_titolo)
         card_layout.addWidget(self.lbl_kpi_valore)
         
-        # SEZIONE FILTRI (CAMPO + METRICA)
         filtro_frame = QFrame()
         filtro_frame.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         filtro_frame.setStyleSheet("background-color: #f8f9fa; border: 1px solid #ddd; border-radius: 8px; padding: 10px;")
@@ -749,7 +837,6 @@ class AgricolturaPage(QWidget):
                 c = conn.cursor()
                 
                 if campo_id is None:
-                    # ---- VISTA GLOBALE (TUTTI I CAMPI) ----
                     if not is_finanziaria:
                         c.execute("SELECT SUM(area_ettari) FROM campi_agricoli WHERE user_id=?", (self.user_id,))
                         res = c.fetchone()
@@ -792,7 +879,6 @@ class AgricolturaPage(QWidget):
                         titolo_grafico = "Redditività Globale per Ettaro (Euro / ha)"
 
                 else:
-                    # ---- VISTA CAMPO SPECIFICO ----
                     if not is_finanziaria:
                         c.execute("SELECT nome, area_ettari FROM campi_agricoli WHERE id=? AND user_id=?", (campo_id, self.user_id))
                         res = c.fetchone()
@@ -853,7 +939,6 @@ class AgricolturaPage(QWidget):
         if y_values:
             massimo = max(y_values)
             minimo = min(y_values)
-            # Permettiamo ai grafici finanziari di andare in negativo se l'utile è sotto zero!
             min_y = min(0, minimo * 1.2) if minimo < 0 else 0
             self.plot_agri.setYRange(min_y, massimo * 1.2, padding=0)
 
@@ -884,7 +969,6 @@ class AgricolturaPage(QWidget):
             
             indice_barra_hover = -1
             for i, (x_min, x_max, val_resa, label, colore, unita) in enumerate(self.dati_barre):
-                # La condizione y deve controllare anche i valori in negativo!
                 if x_min <= x <= x_max and (0 <= y <= val_resa or val_resa <= y <= 0):
                     indice_barra_hover = i
                     break
@@ -910,8 +994,101 @@ class AgricolturaPage(QWidget):
                 self.custom_tooltip.hide()
 
     # ==========================================
-    # LOGICA MAPPA E DB
+    # LOGICA MAPPA E DB E INTEGRAZIONE METEO
     # ==========================================
+    
+    @Slot(str, float, float, float)
+    def _imposta_testo_meteo(self, testo_html, pioggia_oggi, tmax_oggi, tmin_oggi):
+        self.lbl_meteo_dati.setText(testo_html)
+        
+        oggi = QDate.currentDate().toString("yyyy-MM-dd")
+        try:
+            with get_conn() as conn:
+                c = conn.cursor()
+                c.execute("SELECT id FROM registro_meteo WHERE user_id=? AND data_rilevazione=?", (self.user_id, oggi))
+                esiste = c.fetchone()
+                if esiste:
+                    c.execute("UPDATE registro_meteo SET pioggia_mm=?, temperatura_max=?, temperatura_min=? WHERE id=?", 
+                              (pioggia_oggi, tmax_oggi, tmin_oggi, esiste[0]))
+                else:
+                    c.execute("INSERT INTO registro_meteo (user_id, data_rilevazione, pioggia_mm, temperatura_max, temperatura_min) VALUES (?, ?, ?, ?, ?)", 
+                              (self.user_id, oggi, pioggia_oggi, tmax_oggi, tmin_oggi))
+        except Exception:
+            pass
+
+    def _aggiorna_meteo_async(self):
+        def task():
+            lat, lon = 41.9028, 12.4964 
+            try:
+                with get_conn() as conn:
+                    c = conn.cursor()
+                    c.execute("SELECT geojson FROM campi_agricoli WHERE user_id=? LIMIT 1", (self.user_id,))
+                    row = c.fetchone()
+                    if row:
+                        dati = json.loads(row[0])
+                        if dati.get('type') == 'Feature':
+                            coords = dati['geometry']['coordinates'][0][0]
+                        else:
+                            coords = dati['coordinates'][0][0]
+                        lon, lat = coords[0], coords[1]
+            except Exception:
+                pass
+                
+            try:
+                url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&daily=weathercode,precipitation_sum,temperature_2m_max,temperature_2m_min&timezone=Europe%2FRome"
+                req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+                with urllib.request.urlopen(req, timeout=5) as response:
+                    data = json.loads(response.read().decode())
+                    daily = data['daily']
+                    
+                    icone = {
+                        0: "☀️", 1: "🌤️", 2: "⛅", 3: "☁️", 
+                        45: "🌫️", 48: "🌫️", 51: "🌦️", 53: "🌧️", 
+                        55: "🌧️", 61: "🌧️", 63: "🌧️", 65: "🌧️", 
+                        71: "❄️", 73: "❄️", 75: "❄️", 
+                        95: "⛈️", 96: "⛈️", 99: "⛈️"
+                    }
+                    
+                    giorni = ["Oggi", "Domani", "Dopodomani"]
+                    
+                    html_blocchi = "<table width='100%' style='text-align:center;'><tr>"
+                    
+                    for i in range(3):
+                        codice = daily['weathercode'][i]
+                        icona = icone.get(codice, "☁️")
+                        t_max = daily['temperature_2m_max'][i]
+                        t_min = daily['temperature_2m_min'][i]
+                        pioggia = daily['precipitation_sum'][i]
+                        
+                        colore_pioggia = '#d35400' if pioggia > 0 else '#27ae60'
+                        testo_pioggia = f"💧 {pioggia} mm" if pioggia > 0 else "💧 0 mm"
+                        bordo = "border-right: 1px solid #b2ebf2;" if i < 2 else ""
+                        
+                        html_blocchi += f"""
+                        <td style='padding: 5px; {bordo}'>
+                            <b>{giorni[i]}</b><br>
+                            <span style='font-size: 26px;'>{icona}</span><br>
+                            <span style='font-size: 11px;'>{t_max}° / {t_min}°</span><br>
+                            <span style='font-size: 12px; font-weight:bold; color: {colore_pioggia};'>{testo_pioggia}</span>
+                        </td>
+                        """
+                        
+                    html_blocchi += "</tr></table>"
+                    
+                    pioggia_oggi = daily['precipitation_sum'][0]
+                    tmax_oggi = daily['temperature_2m_max'][0]
+                    tmin_oggi = daily['temperature_2m_min'][0]
+                    
+                    self.segnale_meteo.emit(html_blocchi, pioggia_oggi, tmax_oggi, tmin_oggi)
+            except Exception as e:
+                self.segnale_meteo.emit("<div style='text-align:center;'>Impossibile scaricare le previsioni meteo.</div>", 0.0, 0.0, 0.0)
+
+        threading.Thread(target=task, daemon=True).start()
+        
+    def _apri_storico_meteo(self):
+        dialog = StoricoMeteoDialog(self.user_id, self)
+        dialog.exec_()
+
     def _on_mappa_caricata(self):
         self._mappa_pronta = True
         if self.isVisible() and self.tabs.currentIndex() == 0:
@@ -924,6 +1101,9 @@ class AgricolturaPage(QWidget):
         if getattr(self, '_mappa_pronta', False) and self.tabs.currentIndex() == 0:
             QTimer.singleShot(200, lambda: self._carica_campi_salvati(centra_mappa=True))
         self._aggiorna_combo_campi()
+        
+        self.lbl_meteo_dati.setText("Localizzazione campi in corso...")
+        self._aggiorna_meteo_async()
 
     def _on_tab_changed(self, index):
         if index == 1: self._aggiorna_combo_campi()
@@ -1112,6 +1292,7 @@ class AgricolturaPage(QWidget):
             if nome:
                 self._salva_campo_db(nome, area_ha, geojson_str, tipo, varieta, piante, anno)
                 self._carica_campi_salvati(centra_mappa=False) 
+                self._aggiorna_meteo_async() 
         else:
             self.web_view.page().runJavaScript("rimuoviUltimoDisegno();")
 
@@ -1255,6 +1436,16 @@ class AgricolturaPage(QWidget):
             <script src="qrc:///qtwebchannel/qwebchannel.js"></script>
             
             <script>
+                // --- FIX: Monkey Patch per l'errore _flat nel terminale ---
+                window.typeWarningFix = true;
+                if (L.LineUtil && !L.LineUtil._flat) {
+                    L.LineUtil._flat = L.LineUtil.isFlat;
+                }
+                if (L.Polyline && !L.Polyline._flat) {
+                    L.Polyline._flat = L.LineUtil.isFlat;
+                }
+                // ----------------------------------------------------------
+            
                 var map = L.map('map', {attributionControl: false}).setView([41.9028, 12.4964], 6);
                 L.tileLayer('http://{s}.google.com/vt/lyrs=s&x={x}&y={y}&z={z}',{maxZoom: 20, subdomains:['mt0','mt1','mt2','mt3']}).addTo(map);
                 const resizeObserver = new ResizeObserver(() => { map.invalidateSize(); });

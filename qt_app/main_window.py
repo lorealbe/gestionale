@@ -83,7 +83,10 @@ class MainWindow(QMainWindow):
 
     def _create_category_page(self, category: str) -> QWidget:
         if category == self.CATEGORIA_DASHBOARD:         
-            return DashboardPage(self.user_id, self)
+            page = DashboardPage(self.user_id, self)
+            # --- FIX: Connettiamo la Dashboard alla MainWindow ---
+            page.richiesta_navigazione.connect(self._gestisci_navigazione_dashboard)
+            return page
         elif category == self.CATEGORIA_AZIENDA:
             return AziendaPage(user_id=self.user_id, parent=self)
         if category == self.CATEGORIA_AGRICOLTURA:
@@ -95,6 +98,19 @@ class MainWindow(QMainWindow):
         if category == self.CATEGORIA_ZOOTECNIA:
             return ZootecniaPage(user_id=self.user_id, parent=self)
         return self._create_placeholder_page(category)
+
+    # --- NUOVO METODO: Fa da vigile urbano per le richieste della Dashboard ---
+    def _gestisci_navigazione_dashboard(self, destinazione: str):
+        mappa_destinazioni = {
+            "agricoltura": self.CATEGORIA_AGRICOLTURA,
+            "fatture": self.CATEGORIA_AZIENDA, # Mandiamo Fatture nella sezione Azienda
+            "macchinari": self.CATEGORIA_MACCHINARI,
+            "zootecnia": self.CATEGORIA_ZOOTECNIA
+        }
+        categoria_target = mappa_destinazioni.get(destinazione)
+        if categoria_target:
+            self.show_category(categoria_target)
+    # -------------------------------------------------------------------------
 
     def _create_placeholder_page(self, category: str) -> QWidget:
         page = QWidget(self)
@@ -144,6 +160,7 @@ class MainWindow(QMainWindow):
         )
         if conferma == QMessageBox.Yes:
             self.change_user_requested.emit()
+            
     def _adatta_altezza_dinamica(self, index):
         current_widget = self.stack.widget(index)
         if not current_widget:

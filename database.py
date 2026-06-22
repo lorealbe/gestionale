@@ -3536,7 +3536,17 @@ def init_db():
         except Exception as e:
             print(f"Errore aggiornamento campi_agricoli: {e}")
 
-
+        # --- TABELLA REGISTRO METEO E PIOGGE ---
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS registro_meteo (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                data_rilevazione TEXT NOT NULL,
+                pioggia_mm REAL NOT NULL DEFAULT 0.0,
+                temperatura_max REAL,
+                temperatura_min REAL
+            )
+        ''')
         # Anagrafica macchinari.
         c.execute(
             '''CREATE TABLE IF NOT EXISTS macchinari

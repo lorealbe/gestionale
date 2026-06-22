@@ -1,339 +1,264 @@
 import sqlite3
-from datetime import datetime, timedelta
+from datetime import datetime
+import pyqtgraph as pg
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtGui import QFont, QColor
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame,
-    QScrollArea, QGridLayout, QSizePolicy, QPushButton
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame, QPushButton, QGridLayout, QSizePolicy
 )
 
 from database import get_conn
-from app_utils import format_eur
 
 class DashboardPage(QWidget):
+    # Segnale che avviserà il MainWindow di cambiare tab quando premiamo un'Azione Rapida
+    richiesta_navigazione = Signal(str)
+
     def __init__(self, user_id: int, parent=None):
         super().__init__(parent)
         self.user_id = user_id
         
-        # Colori della palette per la UI
-        self.colors = {
-            "danger": "#dc3545",   # Rosso
-            "warning": "#ffc107",  # Giallo/Arancio
-            "info": "#17a2b8",     # Azzurro
-            "success": "#28a745",  # Verde
-            "text_dark": "#2c3e50",
-            "text_muted": "#7f8c8d",
-            "bg_card": "#ffffff",
-            "bg_page": "#f4f6f9"
-        }
-        
         self._build_ui()
-        self.aggiorna_dati()
+        
+        # Carichiamo i dati con un leggero ritardo per assicurarci che l'UI sia renderizzata
+        QTimer.singleShot(100, self._carica_dati_finanziari)
 
     def showEvent(self, event):
-        """Scatta automaticamente ogni volta che la pagina diventa visibile"""
+        """Ogni volta che si apre la pagina Dashboard, aggiorna i numeri"""
         super().showEvent(event)
-        self.aggiorna_dati()
+        self._carica_dati_finanziari()
 
     def _build_ui(self):
-        # Imposta lo sfondo della pagina intera (grigio chiarissimo per far risaltare le card bianche)
-        self.setStyleSheet(f"background-color: {self.colors['bg_page']};")
-        
-        outer_layout = QVBoxLayout(self)
-        outer_layout.setContentsMargins(0, 0, 0, 0)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(15, 15, 15, 15)
+        layout.setSpacing(15)
 
-        scroll_area = QScrollArea(self)
-        scroll_area.setWidgetResizable(True)
-        scroll_area.setFrameShape(QFrame.NoFrame)
-        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-
-        inner_widget = QWidget()
-        self.main_layout = QVBoxLayout(inner_widget)
-        self.main_layout.setContentsMargins(24, 24, 24, 24)
-        self.main_layout.setSpacing(24)
-
-        # --- INTESTAZIONE ---
+        # ==========================================
+        # 1. HEADER (Titolo)
+        # ==========================================
         header_layout = QVBoxLayout()
-        header_layout.setSpacing(4)
-        titolo = QLabel("Dashboard Aziendale")
-        titolo.setStyleSheet(f"font-size: 28px; font-weight: 800; color: {self.colors['text_dark']};")
-        sottotitolo = QLabel("Panoramica aggiornata in tempo reale sulle scadenze e le operazioni.")
-        sottotitolo.setStyleSheet(f"font-size: 15px; color: {self.colors['text_muted']};")
+        header_layout.setSpacing(2)
+        titolo = QLabel("Cruscotto Aziendale")
+        titolo.setStyleSheet("font-size: 24px; font-weight: bold; color: #2c3e50;")
+        sottotitolo = QLabel("Panoramica finanziaria e azioni rapide per la gestione quotidiana.")
+        sottotitolo.setStyleSheet("font-size: 13px; color: #7f8c8d;")
         header_layout.addWidget(titolo)
         header_layout.addWidget(sottotitolo)
-        self.main_layout.addLayout(header_layout)
+        layout.addLayout(header_layout)
 
-        # --- SEZIONE 1: KPI CARDS (Riga superiore) ---
-        self.kpi_layout = QHBoxLayout()
-        self.kpi_layout.setSpacing(20)
-        self.main_layout.addLayout(self.kpi_layout)
+        # ==========================================
+        # 2. SEZIONE AZIONI RAPIDE
+        # ==========================================
+        azioni_frame = QFrame()
+        # QSizePolicy.Fixed in verticale garantisce che i bottoni non rubino spazio al grafico
+        azioni_frame.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        azioni_frame.setStyleSheet("background-color: #f8f9fa; border: 1px solid #e1e8ed; border-radius: 8px;")
+        azioni_layout = QVBoxLayout(azioni_frame)
+        azioni_layout.setContentsMargins(15, 10, 15, 15)
 
-        # --- SEZIONE 2: LISTE DETTAGLIATE (Affiancate) ---
-        self.lists_layout = QHBoxLayout()
-        self.lists_layout.setSpacing(20)
-        
-        # Colonna Sinistra (Fatture)
-        self.col_sx_layout = QVBoxLayout()
-        lbl_fatture = QLabel("🗓️ Scadenze Finanziarie (Prossimi 30gg)")
-        lbl_fatture.setStyleSheet(f"font-size: 18px; font-weight: bold; color: {self.colors['text_dark']}; margin-bottom: 10px;")
-        self.col_sx_layout.addWidget(lbl_fatture)
-        self.layout_lista_fatture = QVBoxLayout()
-        self.layout_lista_fatture.setSpacing(10)
-        self.col_sx_layout.addLayout(self.layout_lista_fatture)
-        self.col_sx_layout.addStretch(1)
-        
-        # Colonna Destra (Macchinari)
-        self.col_dx_layout = QVBoxLayout()
-        lbl_macchinari = QLabel("🚜 Avvisi Manutenzione Mezzi")
-        lbl_macchinari.setStyleSheet(f"font-size: 18px; font-weight: bold; color: {self.colors['text_dark']}; margin-bottom: 10px;")
-        self.col_dx_layout.addWidget(lbl_macchinari)
-        self.layout_lista_macchinari = QVBoxLayout()
-        self.layout_lista_macchinari.setSpacing(10)
-        self.col_dx_layout.addLayout(self.layout_lista_macchinari)
-        self.col_dx_layout.addStretch(1)
+        lbl_azioni = QLabel("⚡ Azioni Rapide")
+        lbl_azioni.setStyleSheet("font-size: 14px; font-weight: bold; color: #34495e; border: none;")
+        azioni_layout.addWidget(lbl_azioni)
 
-        self.lists_layout.addLayout(self.col_sx_layout, 1) # Il peso '1' fa sì che si dividano lo spazio a metà
-        self.lists_layout.addLayout(self.col_dx_layout, 1)
-        
-        self.main_layout.addLayout(self.lists_layout)
-        self.main_layout.addStretch(1)
+        grid_azioni = QHBoxLayout()
+        grid_azioni.setSpacing(10)
 
-        scroll_area.setWidget(inner_widget)
-        outer_layout.addWidget(scroll_area)
+        # Creazione dei bottoni (Testi brevi su una singola riga per evitare tagli verticali)
+        btn_mappa = self._crea_bottone_azione("📍 Campi", "#27ae60")
+        btn_mappa.clicked.connect(lambda: self.richiesta_navigazione.emit("agricoltura"))
 
-    # --- COMPONENTI GRAFICI REUSABILI ---
+        btn_spesa = self._crea_bottone_azione("💶 Fatture", "#e74c3c")
+        btn_spesa.clicked.connect(lambda: self.richiesta_navigazione.emit("fatture"))
 
-    def _crea_kpi_card(self, titolo, valore, sotto_testo, colore_accento):
-        """Crea un riquadro riassuntivo elegante per la cima della pagina."""
-        card = QFrame()
-        card.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        card.setStyleSheet(f"""
-            QFrame {{
-                background-color: {self.colors['bg_card']};
-                border-radius: 10px;
-                border: 1px solid #e1e8ed;
-                border-bottom: 4px solid {colore_accento};
-            }}
-        """)
-        
-        layout = QVBoxLayout(card)
-        layout.setContentsMargins(20, 20, 20, 20)
-        layout.setSpacing(8)
-        
-        lbl_titolo = QLabel(titolo.upper())
-        lbl_titolo.setStyleSheet(f"font-size: 12px; font-weight: bold; color: {self.colors['text_muted']}; border: none;")
-        
-        lbl_valore = QLabel(valore)
-        lbl_valore.setStyleSheet(f"font-size: 26px; font-weight: 800; color: {self.colors['text_dark']}; border: none;")
-        
-        lbl_sotto = QLabel(sotto_testo)
-        lbl_sotto.setStyleSheet(f"font-size: 12px; color: {self.colors['text_muted']}; border: none;")
-        
-        layout.addWidget(lbl_titolo)
-        layout.addWidget(lbl_valore)
-        layout.addWidget(lbl_sotto)
-        
-        return card
+        btn_macchinari = self._crea_bottone_azione("🚜 Mezzi", "#f39c12")
+        btn_macchinari.clicked.connect(lambda: self.richiesta_navigazione.emit("macchinari"))
 
-    def _crea_list_item(self, titolo, dettaglio, colore_accento, icona="📄", movimento_id=None):
-        """Crea una riga pulita per le liste delle scadenze, con bottone rapido se necessario."""
-        item = QFrame()
-        item.setStyleSheet(f"""
-            QFrame {{
-                background-color: {self.colors['bg_card']};
+        btn_animali = self._crea_bottone_azione("🐄 Stalla", "#8e44ad")
+        btn_animali.clicked.connect(lambda: self.richiesta_navigazione.emit("zootecnia"))
+
+        grid_azioni.addWidget(btn_mappa)
+        grid_azioni.addWidget(btn_spesa)
+        grid_azioni.addWidget(btn_macchinari)
+        grid_azioni.addWidget(btn_animali)
+
+        azioni_layout.addLayout(grid_azioni)
+        layout.addWidget(azioni_frame)
+
+        # ==========================================
+        # 3. SEZIONE STATO ECONOMICO
+        # ==========================================
+        # Contenitore elastico per la zona finanziaria
+        finanza_container = QWidget()
+        finanza_layout = QHBoxLayout(finanza_container)
+        finanza_layout.setContentsMargins(0, 0, 0, 0)
+        finanza_layout.setSpacing(15)
+
+        # --- PANNELLO KPI (A Sinistra) ---
+        kpi_frame = QFrame()
+        kpi_frame.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        kpi_frame.setStyleSheet("background-color: white; border: 1px solid #e1e8ed; border-radius: 8px;")
+        kpi_vbox = QVBoxLayout(kpi_frame)
+        kpi_vbox.setContentsMargins(15, 15, 15, 15)
+        kpi_vbox.setSpacing(10)
+
+        lbl_finanza = QLabel("📊 Agricoltura")
+        lbl_finanza.setStyleSheet("font-size: 14px; font-weight: bold; color: #34495e; border: none;")
+        kpi_vbox.addWidget(lbl_finanza)
+
+        # Contenitori modificabili dinamicamente
+        self.lbl_ricavi = self._crea_kpi_label("Ricavi Totali", "0.00 €", "#28a745")
+        self.lbl_spese = self._crea_kpi_label("Spese Totali", "0.00 €", "#dc3545")
+        self.lbl_utile = self._crea_kpi_label("Utile Netto", "0.00 €", "#007bff", font_size="22px")
+
+        kpi_vbox.addWidget(self.lbl_ricavi)
+        kpi_vbox.addWidget(self.lbl_spese)
+        kpi_vbox.addWidget(self.lbl_utile)
+        kpi_vbox.addStretch()
+
+        finanza_layout.addWidget(kpi_frame, 30) # Prende il 30% dello spazio orizzontale
+
+        # --- GRAFICO RIPARTIZIONE SPESE (A Destra) ---
+        grafico_frame = QFrame()
+        grafico_frame.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        grafico_frame.setStyleSheet("background-color: white; border: 1px solid #e1e8ed; border-radius: 8px; padding: 10px;")
+        grafico_vbox = QVBoxLayout(grafico_frame)
+
+        lbl_grafico = QLabel("📉 Ripartizione Spese per Categoria")
+        lbl_grafico.setStyleSheet("font-size: 14px; font-weight: bold; color: #7f8c8d; border: none;")
+        grafico_vbox.addWidget(lbl_grafico)
+
+        self.plot_spese = pg.PlotWidget()
+        self.plot_spese.setBackground('w')
+        self.plot_spese.showGrid(x=False, y=True, alpha=0.3)
+        self.plot_spese.setMouseEnabled(x=False, y=False)
+        self.plot_spese.setMenuEnabled(False)
+        self.plot_spese.hideButtons()
+        
+        # FIX IMPORTANTE: Garantisce uno spazio fisso di 50px in basso affinché le scritte non escano fuori
+        self.plot_spese.getPlotItem().getAxis('bottom').setHeight(50)
+        
+        grafico_vbox.addWidget(self.plot_spese)
+
+        finanza_layout.addWidget(grafico_frame, 70) # Prende il 70% dello spazio orizzontale
+
+        # Stretch=1 indica al contenitore finanziario di espandersi verticalmente prendendosi tutto lo spazio rimasto
+        layout.addWidget(finanza_container, 1)
+
+    # --- FUNZIONI DI SUPPORTO GRAFICO ---
+    def _crea_bottone_azione(self, testo, colore):
+        btn = QPushButton(testo)
+        btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        btn.setMinimumHeight(60) # Altezza ideale per testi a singola riga
+        btn.setCursor(Qt.PointingHandCursor)
+        btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: white;
+                color: {colore};
+                border: 2px solid {colore};
                 border-radius: 8px;
-                border: 1px solid #e1e8ed;
-                border-left: 5px solid {colore_accento};
+                font-size: 15px;
+                font-weight: bold;
+                padding: 5px;
+            }}
+            QPushButton:hover {{
+                background-color: {colore};
+                color: white;
             }}
         """)
-        
-        layout = QHBoxLayout(item)
-        layout.setContentsMargins(15, 12, 15, 12)
-        layout.setSpacing(15)
-        
-        lbl_icona = QLabel(icona)
-        lbl_icona.setStyleSheet("font-size: 20px; border: none; background: transparent;")
-        lbl_icona.setFixedWidth(30)
-        layout.addWidget(lbl_icona)
-        
-        testo_layout = QVBoxLayout()
-        testo_layout.setSpacing(4)
-        
-        lbl_titolo = QLabel(titolo)
-        lbl_titolo.setStyleSheet(f"font-size: 14px; font-weight: bold; color: {self.colors['text_dark']}; border: none; background: transparent;")
-        lbl_titolo.setWordWrap(True)
-        
-        lbl_dettaglio = QLabel(dettaglio)
-        lbl_dettaglio.setStyleSheet(f"font-size: 13px; color: {self.colors['text_muted']}; border: none; background: transparent;")
-        lbl_dettaglio.setWordWrap(True)
-        
-        testo_layout.addWidget(lbl_titolo)
-        testo_layout.addWidget(lbl_dettaglio)
-        layout.addLayout(testo_layout, 1)
-        
-        # --- NUOVO: BOTTONE PAGAMENTO RAPIDO ---
-        if movimento_id is not None:
-            btn_pagato = QPushButton("✔️ Saldato")
-            btn_pagato.setCursor(Qt.PointingHandCursor)
-            btn_pagato.setStyleSheet(f"""
-                QPushButton {{
-                    background-color: {self.colors['success']};
-                    color: white;
-                    border-radius: 5px;
-                    padding: 6px 12px;
-                    font-weight: bold;
-                }}
-                QPushButton:hover {{
-                    background-color: #218838;
-                }}
-            """)
-            # Colleghiamo il pulsante alla funzione di salvataggio passando l'ID specifico
-            btn_pagato.clicked.connect(lambda _, mid=movimento_id: self.segna_come_pagato(mid))
-            layout.addWidget(btn_pagato)
-            
-        return item
-    
+        return btn
 
-    # --- LOGICA DATI ---
+    def _crea_kpi_label(self, titolo, valore, colore, font_size="18px"):
+        container = QFrame()
+        container.setStyleSheet(f"border-left: 5px solid {colore}; background-color: #f8f9fa; padding: 8px; border-radius: 5px;")
+        lay = QVBoxLayout(container)
+        lay.setContentsMargins(10, 5, 10, 5)
 
-    def _clear_layout(self, layout):
-        while layout.count():
-            child = layout.takeAt(0)
-            if child.widget():
-                child.widget().deleteLater()
+        lbl_tit = QLabel(titolo)
+        lbl_tit.setStyleSheet("color: #7f8c8d; font-size: 12px; font-weight: bold; border: none; background: transparent;")
 
-    def _parse_date(self, date_str):
-        if not date_str: return None
-        date_str = str(date_str).strip()
-        for fmt in ("%d/%m/%Y", "%Y-%m-%d", "%d-%m-%Y", "%Y/%m/%d"):
-            try:
-                return datetime.strptime(date_str, fmt).date()
-            except ValueError:
-                pass
-        return None
+        lbl_val = QLabel(valore)
+        lbl_val.setStyleSheet(f"color: {colore}; font-size: {font_size}; font-weight: 900; border: none; background: transparent;")
 
-    def segna_come_pagato(self, movimento_id):
-        """Aggiorna lo stato della fattura e rinfresca la dashboard"""
+        lay.addWidget(lbl_tit)
+        lay.addWidget(lbl_val)
+        return container
+
+    # --- LOGICA DEI DATI ---
+    def _carica_dati_finanziari(self):
         try:
             with get_conn() as conn:
                 c = conn.cursor()
-                c.execute("UPDATE movimenti SET stato_pagamento='PAGATO' WHERE id=?", (movimento_id,))
-            self.aggiorna_dati()
-        except Exception as exc:
-            pass
-
-    def aggiorna_dati(self):
-        self._clear_layout(self.kpi_layout)
-        self._clear_layout(self.layout_lista_fatture)
-        self._clear_layout(self.layout_lista_macchinari)
-        
-        oggi = datetime.now().date()
-        
-        # 1. Elaborazione Fatture
-        scadenze_fatture = []
-        totale_importo_scadenza = 0.0
-        fatture_scadute_count = 0
-        
-        # 1. Elaborazione Fatture
-        scadenze_fatture = []
-        totale_importo_scadenza = 0.0
-        fatture_scadute_count = 0
-        
-        try:
-            with get_conn() as conn:
-                c = conn.cursor()
-                # Aggiunto "id" e il COALESCE che avevamo corretto prima!
-                c.execute('''
-                    SELECT id, descrizione, importo, COALESCE(NULLIF(TRIM(parser_due_date), ''), data_op) as data_riferimento
-                    FROM movimenti 
-                    WHERE user_id=? AND tipo='USCITA' AND stato_pagamento='DA PAGARE'
-                ''', (self.user_id,))
                 
-                for mov_id, desc, importo, data_str in c.fetchall():
-                    data_scadenza = self._parse_date(data_str)
-                    if data_scadenza:
-                        giorni_rimanenti = (data_scadenza - oggi).days
-                        if giorni_rimanenti <= 30:
-                            # Salviamo anche mov_id nella tupla
-                            scadenze_fatture.append((mov_id, desc, importo, data_scadenza, giorni_rimanenti))
-                            totale_importo_scadenza += float(importo or 0)
-                            if giorni_rimanenti < 0:
-                                fatture_scadute_count += 1
-        except Exception:
-            pass
+                # Calcolo Ricavi globali
+                c.execute("SELECT SUM(importo) FROM economia_colture WHERE user_id=? AND tipo='RICAVO'", (self.user_id,))
+                ricavi = float(c.fetchone()[0] or 0.0)
 
-        scadenze_fatture.sort(key=lambda x: x[3])
-        
-        # 2. Elaborazione Macchinari
-        allarmi_macchinari = []
-        try:
-            with get_conn() as conn:
-                c = conn.cursor()
-                c.execute('''
-                    SELECT m.nome, MAX(mm.data_manutenzione)
-                    FROM macchinari m
-                    LEFT JOIN manutenzioni_macchinari mm ON m.id = mm.macchinario_id
-                    WHERE m.user_id=?
-                    GROUP BY m.id, m.nome
-                ''', (self.user_id,))
-                
-                for nome, data_str in c.fetchall():
-                    if not data_str:
-                        allarmi_macchinari.append((nome, None, True, 0))
-                    else:
-                        data_manutenzione = self._parse_date(data_str)
-                        if data_manutenzione:
-                            giorni_passati = (oggi - data_manutenzione).days
-                            if giorni_passati >= 365:
-                                allarmi_macchinari.append((nome, data_manutenzione, False, giorni_passati))
-        except Exception:
-            pass
-            
-        allarmi_macchinari.sort(key=lambda x: x[3], reverse=True)
+                # Calcolo Spese globali
+                c.execute("SELECT SUM(importo) FROM economia_colture WHERE user_id=? AND tipo='SPESA'", (self.user_id,))
+                spese = float(c.fetchone()[0] or 0.0)
 
-        # --- POPOLAMENTO KPI CARDS ---
-        colore_kpi_fat = self.colors['danger'] if fatture_scadute_count > 0 else self.colors['warning']
-        self.kpi_layout.addWidget(self._crea_kpi_card(
-            "Uscite a breve termine (30gg)", 
-            format_eur(totale_importo_scadenza), 
-            f"{len(scadenze_fatture)} documenti di cui {fatture_scadute_count} già scaduti" if fatture_scadute_count > 0 else f"{len(scadenze_fatture)} documenti in arrivo",
-            colore_kpi_fat
-        ))
+                # Classifica spese per categoria
+                c.execute("""
+                    SELECT categoria, SUM(importo) 
+                    FROM economia_colture 
+                    WHERE user_id=? AND tipo='SPESA' 
+                    GROUP BY categoria 
+                    ORDER BY SUM(importo) DESC
+                """, (self.user_id,))
+                spese_per_cat = c.fetchall()
+
+        except Exception as e:
+            print("Errore caricamento dati dashboard:", e)
+            return
+
+        utile = ricavi - spese
+
+        # 1. Aggiornamento Testi KPI
+        self.lbl_ricavi.findChildren(QLabel)[1].setText(f"{ricavi:,.2f} €")
+        self.lbl_spese.findChildren(QLabel)[1].setText(f"{spese:,.2f} €")
+        self.lbl_utile.findChildren(QLabel)[1].setText(f"{utile:,.2f} €")
         
-        colore_kpi_mezzi = self.colors['danger'] if len(allarmi_macchinari) > 0 else self.colors['success']
-        self.kpi_layout.addWidget(self._crea_kpi_card(
-            "Stato Parco Mezzi", 
-            f"{len(allarmi_macchinari)} Avvisi" if allarmi_macchinari else "OK", 
-            "Mezzi che necessitano di revisione/tagliando" if allarmi_macchinari else "Tutti i macchinari sono in regola",
-            colore_kpi_mezzi
-        ))
-        
-        # --- POPOLAMENTO LISTE ---
-        
-        # Lista Fatture
-        if not scadenze_fatture:
-            self.layout_lista_fatture.addWidget(self._crea_list_item("Tutto regolare", "Nessuna fattura in scadenza nel breve periodo.", self.colors['success'], "✅"))
+        # Colore dinamico per l'utile (Rosso se negativo, Blu/Verde se positivo)
+        if utile < 0:
+            self.lbl_utile.setStyleSheet("border-left: 5px solid #dc3545; background-color: #f8f9fa; padding: 8px; border-radius: 5px;")
+            self.lbl_utile.findChildren(QLabel)[1].setStyleSheet("color: #dc3545; font-size: 22px; font-weight: 900; border: none; background: transparent;")
         else:
-            for mov_id, desc, importo, data_scadenza, giorni in scadenze_fatture:
-                data_fmt = data_scadenza.strftime('%d/%m/%Y')
-                if giorni < 0:
-                    col, sub = self.colors['danger'], f"Scaduta da {abs(giorni)} giorni ({data_fmt}) - {format_eur(importo)}"
-                elif giorni <= 7:
-                    col, sub = self.colors['warning'], f"Scade tra {giorni} giorni ({data_fmt}) - {format_eur(importo)}"
-                else:
-                    col, sub = self.colors['info'], f"Scade il {data_fmt} - {format_eur(importo)}"
-                
-                # Passiamo il movimento_id al widget
-                self.layout_lista_fatture.addWidget(self._crea_list_item(desc, sub, col, "💸", movimento_id=mov_id))
-                
-        # Lista Macchinari
-        if not allarmi_macchinari:
-            self.layout_lista_macchinari.addWidget(self._crea_list_item("Nessun intervento richiesto", "Nessun allarme manutenzione registrato.", self.colors['success'], "✅"))
-        else:
-            for nome, data_man, mai_fatta, giorni_passati in allarmi_macchinari:
-                if mai_fatta:
-                    col, sub = self.colors['danger'], "Non è mai stato registrato alcun intervento."
-                else:
-                    col, sub = self.colors['warning'], f"Ultimo intervento: {data_man.strftime('%d/%m/%Y')} ({giorni_passati} giorni fa)."
-                
-                self.layout_lista_macchinari.addWidget(self._crea_list_item(nome, sub, col, "🔧"))
+            self.lbl_utile.setStyleSheet("border-left: 5px solid #007bff; background-color: #f8f9fa; padding: 8px; border-radius: 5px;")
+            self.lbl_utile.findChildren(QLabel)[1].setStyleSheet("color: #007bff; font-size: 22px; font-weight: 900; border: none; background: transparent;")
+
+        # 2. Aggiornamento Grafico a Barre
+        self.plot_spese.clear()
+        if not spese_per_cat:
+            self.plot_spese.setTitle("Inizia a registrare le spese per vedere l'analisi.", color='#7f8c8d', size="11pt")
+            return
+
+        self.plot_spese.setTitle("")
+        
+        # Dizionario per "accorciare" intelligentemente i nomi lunghi affinché entrino sotto le barre
+        abbreviazioni = {
+            "Sementi/Piantine": "Sementi",
+            "Concimi/Fertilizzanti": "Concimi",
+            "Fitofarmaci": "Fito",
+            "Gasolio/Energia": "Energia",
+            "Lavorazioni Conto Terzi": "Terzisti",
+            "Manodopera": "Lavoro",
+            "Assicurazioni (Risarcimenti)": "Assicuraz.",
+            "Irrigazione": "Acqua"
+        }
+        
+        # Mappiamo le etichette per abbreviarle
+        x_labels = [abbreviazioni.get(str(row[0]), str(row[0])) for row in spese_per_cat]
+        y_values = [float(row[1]) for row in spese_per_cat]
+        x_pos = list(range(len(x_labels)))
+        ticks = [list(zip(x_pos, x_labels))]
+
+        ax = self.plot_spese.getAxis('bottom')
+        ax.setTicks(ticks)
+
+        bar_width = 0.4
+        bar_chart = pg.BarGraphItem(x=x_pos, height=y_values, width=bar_width, brush='#e74c3c', pen='w')
+        self.plot_spese.addItem(bar_chart)
+
+        margine_destro = max(5.5, len(x_pos) - 0.5)
+        self.plot_spese.setXRange(-0.5, margine_destro, padding=0)
+        self.plot_spese.setYRange(0, max(y_values) * 1.2 if y_values else 100, padding=0)

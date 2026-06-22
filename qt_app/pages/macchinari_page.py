@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
     QTableWidgetItem,
     QVBoxLayout,
     QWidget,
+    QSplitter
 )
 
 from app_utils import format_eur, parse_decimal
@@ -49,144 +50,197 @@ class MacchinariPage(QWidget):
         self.carica_macchinari(show_errors=False)
 
     def _build_ui(self):
+        # Stili ricorrenti per i pulsanti
+        STYLE_BTN_SALVA = "background-color: #28a745; color: white; font-weight: bold; padding: 8px; border-radius: 5px;"
+        STYLE_BTN_MODIFICA = "background-color: #ffc107; color: black; font-weight: bold; padding: 8px; border-radius: 5px;"
+        STYLE_BTN_ELIMINA = "background-color: #dc3545; color: white; font-weight: bold; padding: 8px; border-radius: 5px;"
+        STYLE_BTN_SECONDARIO = "background-color: #6c757d; color: white; font-weight: bold; padding: 8px; border-radius: 5px;"
+        STYLE_BTN_INFO = "background-color: #17a2b8; color: white; font-weight: bold; padding: 8px; border-radius: 5px;"
+
         main_layout = QVBoxLayout(self)
-        main_layout.setContentsMargins(14, 14, 14, 14)
-        main_layout.setSpacing(10)
+        main_layout.setContentsMargins(15, 15, 15, 15)
+        main_layout.setSpacing(15)
 
-        title = QLabel("Macchinari")
-        title.setStyleSheet("font-size: 20px; font-weight: 600;")
-        main_layout.addWidget(title)
+        # HEADER
+        header_layout = QVBoxLayout()
+        titolo = QLabel("🚜 Gestione Macchinari e Manutenzioni")
+        titolo.setStyleSheet("font-size: 24px; font-weight: bold; color: #2c3e50;")
+        sottotitolo = QLabel("Registra i tuoi mezzi agricoli, tieni traccia degli interventi e dei costi.")
+        sottotitolo.setStyleSheet("font-size: 14px; color: #7f8c8d;")
+        header_layout.addWidget(titolo)
+        header_layout.addWidget(sottotitolo)
+        main_layout.addLayout(header_layout)
 
-        subtitle = QLabel("Gestione macchinari e manutenzioni.")
-        subtitle.setWordWrap(True)
-        main_layout.addWidget(subtitle)
+        # SPLITTER PRINCIPALE VERTICALE (Sopra Macchine, Sotto Manutenzioni)
+        main_splitter = QSplitter(Qt.Vertical)
+        
+        # ==========================================
+        # PARTE 1: MACCHINARI
+        # ==========================================
+        top_widget = QWidget()
+        top_layout = QVBoxLayout(top_widget)
+        top_layout.setContentsMargins(0, 0, 0, 0)
+        top_layout.setSpacing(10)
 
-        frame_form = QFrame(self)
-        frame_form.setFrameShape(QFrame.StyledPanel)
-        form_layout = QGridLayout(frame_form)
-        form_layout.setContentsMargins(10, 10, 10, 10)
-        form_layout.setHorizontalSpacing(8)
-        form_layout.setVerticalSpacing(8)
+        lbl_titolo_macch = QLabel("📋 Parco Macchine")
+        lbl_titolo_macch.setStyleSheet("font-size: 18px; font-weight: bold; color: #34495e; padding-top: 5px;")
+        top_layout.addWidget(lbl_titolo_macch)
 
+        h_split_macch = QSplitter(Qt.Horizontal)
+
+        # --- Pannello Inserimento Macchinari (Sinistra) ---
+        frame_form_m = QFrame()
+        frame_form_m.setStyleSheet("background-color: #f8f9fa; border: 1px solid #ddd; border-radius: 8px;")
+        layout_form_m = QVBoxLayout(frame_form_m)
+        layout_form_m.setContentsMargins(15, 15, 15, 15)
+
+        form_m = QFormLayout()
         self.input_nome = QLineEdit(self)
         self.input_marca = QLineEdit(self)
         self.input_modello = QLineEdit(self)
         self.input_identificativo = QLineEdit(self)
         self.input_anno = QLineEdit(self)
+        self.input_anno.setPlaceholderText("Es: 2015")
         self.input_note = QLineEdit(self)
 
-        form_layout.addWidget(QLabel("Nome macchinario:"), 0, 0)
-        form_layout.addWidget(self.input_nome, 0, 1)
-        form_layout.addWidget(QLabel("Marca:"), 0, 2)
-        form_layout.addWidget(self.input_marca, 0, 3)
+        form_m.addRow("Nome/Tipo:", self.input_nome)
+        form_m.addRow("Marca:", self.input_marca)
+        form_m.addRow("Modello:", self.input_modello)
+        form_m.addRow("Targa/Telaio:", self.input_identificativo)
+        form_m.addRow("Anno:", self.input_anno)
+        form_m.addRow("Note:", self.input_note)
+        layout_form_m.addLayout(form_m)
 
-        form_layout.addWidget(QLabel("Modello:"), 1, 0)
-        form_layout.addWidget(self.input_modello, 1, 1)
-        form_layout.addWidget(QLabel("Identificativo:"), 1, 2)
-        form_layout.addWidget(self.input_identificativo, 1, 3)
-
-        form_layout.addWidget(QLabel("Anno:"), 2, 0)
-        form_layout.addWidget(self.input_anno, 2, 1)
-        form_layout.addWidget(QLabel("Note:"), 2, 2)
-        form_layout.addWidget(self.input_note, 2, 3)
-
-        row_actions = QHBoxLayout()
-        row_actions.setSpacing(8)
-
-        button_salva = QPushButton("Salva macchinario", self)
-        button_salva.clicked.connect(self.salva_macchinario)
-        row_actions.addWidget(button_salva)
-
-        button_pulisci = QPushButton("Pulisci campi", self)
-        button_pulisci.clicked.connect(self._reset_form_macchinario)
-        row_actions.addWidget(button_pulisci)
-
-        button_modifica = QPushButton("Modifica selezionato", self)
-        button_modifica.clicked.connect(self.prepara_modifica_macchinario)
-        row_actions.addWidget(button_modifica)
-
-        self.button_annulla_modifica_macchinario = QPushButton("Annulla modifica", self)
+        # Pulsanti Macchinari in griglia per risparmiare spazio
+        grid_btn_m = QGridLayout()
+        grid_btn_m.setSpacing(8)
+        
+        btn_salva_m = QPushButton("Salva")
+        btn_salva_m.setStyleSheet(STYLE_BTN_SALVA)
+        btn_salva_m.clicked.connect(self.salva_macchinario)
+        
+        btn_pulisci_m = QPushButton("Pulisci")
+        btn_pulisci_m.setStyleSheet(STYLE_BTN_SECONDARIO)
+        btn_pulisci_m.clicked.connect(self._reset_form_macchinario)
+        
+        btn_modifica_m = QPushButton("Modifica Selezionato")
+        btn_modifica_m.setStyleSheet(STYLE_BTN_MODIFICA)
+        btn_modifica_m.clicked.connect(self.prepara_modifica_macchinario)
+        
+        self.button_annulla_modifica_macchinario = QPushButton("Annulla Mod.")
+        self.button_annulla_modifica_macchinario.setStyleSheet(STYLE_BTN_SECONDARIO)
         self.button_annulla_modifica_macchinario.setEnabled(False)
         self.button_annulla_modifica_macchinario.clicked.connect(lambda: self.annulla_modifica_macchinario(reset_fields=True))
-        row_actions.addWidget(self.button_annulla_modifica_macchinario)
+        
+        btn_elimina_m = QPushButton("Elimina")
+        btn_elimina_m.setStyleSheet(STYLE_BTN_ELIMINA)
+        btn_elimina_m.clicked.connect(self.elimina_macchinario_selezionato)
 
-        button_elimina = QPushButton("Elimina selezionato", self)
-        button_elimina.clicked.connect(self.elimina_macchinario_selezionato)
-        row_actions.addWidget(button_elimina)
+        btn_ricarica_m = QPushButton("Aggiorna")
+        btn_ricarica_m.setStyleSheet(STYLE_BTN_INFO)
+        btn_ricarica_m.clicked.connect(lambda: self.carica_macchinari(show_errors=True))
 
-        button_ricarica = QPushButton("Aggiorna elenco", self)
-        button_ricarica.clicked.connect(lambda: self.carica_macchinari(show_errors=True))
-        row_actions.addWidget(button_ricarica)
-
-        row_actions.addStretch(1)
-        form_layout.addLayout(row_actions, 3, 0, 1, 4)
+        grid_btn_m.addWidget(btn_salva_m, 0, 0)
+        grid_btn_m.addWidget(btn_modifica_m, 0, 1)
+        grid_btn_m.addWidget(btn_elimina_m, 0, 2)
+        grid_btn_m.addWidget(btn_pulisci_m, 1, 0)
+        grid_btn_m.addWidget(self.button_annulla_modifica_macchinario, 1, 1)
+        grid_btn_m.addWidget(btn_ricarica_m, 1, 2)
+        
+        layout_form_m.addLayout(grid_btn_m)
 
         self.label_stato_macchinario = QLabel("")
-        form_layout.addWidget(self.label_stato_macchinario, 4, 0, 1, 4)
+        self.label_stato_macchinario.setStyleSheet("color: #e67e22; font-weight: bold; border: none; background: transparent;")
+        self.label_stato_macchinario.setWordWrap(True)
+        layout_form_m.addWidget(self.label_stato_macchinario)
+        layout_form_m.addStretch()
 
-        main_layout.addWidget(frame_form)
+        h_split_macch.addWidget(frame_form_m)
 
-        frame_table = QFrame(self)
-        frame_table.setFrameShape(QFrame.StyledPanel)
-        table_layout = QVBoxLayout(frame_table)
-        table_layout.setContentsMargins(10, 10, 10, 10)
-        table_layout.setSpacing(8)
+        # --- Tabella Macchinari (Destra) ---
+        frame_tab_m = QFrame()
+        frame_tab_m.setStyleSheet("background-color: white; border: 1px solid #ddd; border-radius: 8px;")
+        layout_tab_m = QVBoxLayout(frame_tab_m)
+        layout_tab_m.setContentsMargins(10, 10, 10, 10)
 
-        row_filtri = QHBoxLayout()
-        row_filtri.setSpacing(8)
-
-        row_filtri.addWidget(QLabel("Ricerca:"))
+        row_filtri_m = QHBoxLayout()
+        row_filtri_m.addWidget(QLabel("🔍 Ricerca:"))
         self.input_ricerca_macchinari = QLineEdit(self)
-        self.input_ricerca_macchinari.setPlaceholderText("Nome, marca, modello, identificativo, note")
+        self.input_ricerca_macchinari.setPlaceholderText("Cerca...")
         self.input_ricerca_macchinari.textChanged.connect(lambda _v: self.carica_macchinari(show_errors=False))
-        row_filtri.addWidget(self.input_ricerca_macchinari, 1)
+        row_filtri_m.addWidget(self.input_ricerca_macchinari, 1)
 
-        row_filtri.addWidget(QLabel("Anno:"))
+        row_filtri_m.addWidget(QLabel("📅 Anno:"))
         self.input_filtro_anno = QLineEdit(self)
         self.input_filtro_anno.setPlaceholderText("YYYY")
+        self.input_filtro_anno.setFixedWidth(80)
         self.input_filtro_anno.textChanged.connect(lambda _v: self.carica_macchinari(show_errors=False))
-        row_filtri.addWidget(self.input_filtro_anno)
+        row_filtri_m.addWidget(self.input_filtro_anno)
 
-        button_reset_filtri = QPushButton("Reset filtri", self)
-        button_reset_filtri.clicked.connect(self._reset_filtri_macchinari)
-        row_filtri.addWidget(button_reset_filtri)
+        btn_reset_filtri_m = QPushButton("Reset Filtri")
+        btn_reset_filtri_m.setStyleSheet(STYLE_BTN_SECONDARIO)
+        btn_reset_filtri_m.clicked.connect(self._reset_filtri_macchinari)
+        row_filtri_m.addWidget(btn_reset_filtri_m)
 
-        table_layout.addLayout(row_filtri)
+        layout_tab_m.addLayout(row_filtri_m)
 
         self.table_macchinari = QTableWidget(0, 7, self)
-        self.table_macchinari.setHorizontalHeaderLabels(["ID", "Nome", "Marca", "Modello", "Identificativo", "Anno", "Note"])
+        self.table_macchinari.setHorizontalHeaderLabels(["ID", "Nome", "Marca", "Modello", "Targa/Telaio", "Anno", "Note"])
         self.table_macchinari.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table_macchinari.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table_macchinari.setSelectionMode(QAbstractItemView.SingleSelection)
         self.table_macchinari.setAlternatingRowColors(True)
         self.table_macchinari.verticalHeader().setVisible(False)
+        self.table_macchinari.setStyleSheet("QTableWidget { border: none; } QHeaderView::section { background-color: #f8f9fa; font-weight: bold; border: 1px solid #ddd; }")
         self.table_macchinari.itemSelectionChanged.connect(self._on_macchinario_selection_changed)
 
-        header = self.table_macchinari.horizontalHeader()
-        header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(1, QHeaderView.Stretch)
-        header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(3, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(4, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(5, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(6, QHeaderView.Stretch)
+        header_m = self.table_macchinari.horizontalHeader()
+        header_m.setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        header_m.setSectionResizeMode(1, QHeaderView.Stretch)
+        header_m.setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        header_m.setSectionResizeMode(3, QHeaderView.ResizeToContents)
+        header_m.setSectionResizeMode(4, QHeaderView.ResizeToContents)
+        header_m.setSectionResizeMode(5, QHeaderView.ResizeToContents)
+        header_m.setSectionResizeMode(6, QHeaderView.Stretch)
 
-        table_layout.addWidget(self.table_macchinari)
-        main_layout.addWidget(frame_table, 1)
+        layout_tab_m.addWidget(self.table_macchinari)
+        h_split_macch.addWidget(frame_tab_m)
+        
+        # Imposta proporzioni splitter 35% sx, 65% dx
+        h_split_macch.setSizes([350, 650])
+        top_layout.addWidget(h_split_macch)
 
-        self.label_manutenzione_non_disponibile = QLabel(
-            "Manutenzione disponibile dopo aver registrato almeno 1 macchinario."
-        )
-        self.label_manutenzione_non_disponibile.setWordWrap(True)
-        main_layout.addWidget(self.label_manutenzione_non_disponibile)
+        main_splitter.addWidget(top_widget)
 
-        self.frame_manutenzione = QGroupBox("Manutenzione macchinari", self)
+        # ==========================================
+        # PARTE 2: MANUTENZIONI
+        # ==========================================
+        self.frame_manutenzione = QWidget(self)
         manut_layout = QVBoxLayout(self.frame_manutenzione)
-        manut_layout.setContentsMargins(10, 10, 10, 10)
-        manut_layout.setSpacing(8)
+        manut_layout.setContentsMargins(0, 0, 0, 0)
+        manut_layout.setSpacing(10)
+
+        lbl_titolo_manut = QLabel("🔧 Registro Manutenzioni")
+        lbl_titolo_manut.setStyleSheet("font-size: 18px; font-weight: bold; color: #34495e; padding-top: 10px;")
+        manut_layout.addWidget(lbl_titolo_manut)
+
+        # Riquadro di avviso se non ci sono macchine
+        self.label_manutenzione_non_disponibile = QLabel("ℹ️ Manutenzione disponibile dopo aver registrato almeno 1 macchinario.")
+        self.label_manutenzione_non_disponibile.setStyleSheet("color: #e67e22; font-size: 14px; font-style: italic; font-weight: bold;")
+        self.label_manutenzione_non_disponibile.setWordWrap(True)
+        manut_layout.addWidget(self.label_manutenzione_non_disponibile)
+
+        h_split_manut = QSplitter(Qt.Horizontal)
+
+        # --- Form Manutenzioni (Sinistra) ---
+        frame_form_manut = QFrame()
+        frame_form_manut.setStyleSheet("background-color: #f8f9fa; border: 1px solid #ddd; border-radius: 8px;")
+        layout_form_manut = QVBoxLayout(frame_form_manut)
+        layout_form_manut.setContentsMargins(15, 15, 15, 15)
 
         form_manut = QFormLayout()
         self.combo_macchinario_manutenzione = QComboBox(self)
+        self.combo_macchinario_manutenzione.setStyleSheet("padding: 5px;")
         self.combo_macchinario_manutenzione.currentIndexChanged.connect(lambda _i: self.carica_manutenzioni(show_errors=False))
 
         self.input_manut_data = QDateEdit(self)
@@ -195,64 +249,80 @@ class MacchinariPage(QWidget):
         self.input_manut_data.setDate(QDate.currentDate())
 
         self.combo_manut_tipo = QComboBox(self)
+        self.combo_manut_tipo.setStyleSheet("padding: 5px;")
         self.combo_manut_tipo.addItems(["Ordinaria", "Straordinaria"])
 
         self.input_manut_descrizione = QLineEdit(self)
         self.input_manut_fornitore = QLineEdit(self)
         self.input_manut_costo = QLineEdit(self)
+        self.input_manut_costo.setPlaceholderText("Es: 150.50")
         self.input_manut_note = QLineEdit(self)
 
         form_manut.addRow("Macchinario:", self.combo_macchinario_manutenzione)
-        form_manut.addRow("Data manutenzione:", self.input_manut_data)
-        form_manut.addRow("Tipo manutenzione:", self.combo_manut_tipo)
+        form_manut.addRow("Data:", self.input_manut_data)
+        form_manut.addRow("Tipo:", self.combo_manut_tipo)
         form_manut.addRow("Descrizione:", self.input_manut_descrizione)
-        form_manut.addRow("Fornitore/Officina:", self.input_manut_fornitore)
-        form_manut.addRow("Costo (EUR):", self.input_manut_costo)
+        form_manut.addRow("Officina:", self.input_manut_fornitore)
+        form_manut.addRow("Costo (€):", self.input_manut_costo)
         form_manut.addRow("Note:", self.input_manut_note)
-        manut_layout.addLayout(form_manut)
+        layout_form_manut.addLayout(form_manut)
 
-        row_actions_manut = QHBoxLayout()
-        row_actions_manut.setSpacing(8)
+        # Pulsanti Manutenzione
+        grid_btn_manut = QGridLayout()
+        grid_btn_manut.setSpacing(8)
+        
+        btn_salva_manut = QPushButton("Salva")
+        btn_salva_manut.setStyleSheet(STYLE_BTN_SALVA)
+        btn_salva_manut.clicked.connect(self.salva_manutenzione)
 
-        button_salva_manut = QPushButton("Salva manutenzione", self)
-        button_salva_manut.clicked.connect(self.salva_manutenzione)
-        row_actions_manut.addWidget(button_salva_manut)
+        btn_pulisci_manut = QPushButton("Pulisci")
+        btn_pulisci_manut.setStyleSheet(STYLE_BTN_SECONDARIO)
+        btn_pulisci_manut.clicked.connect(self._reset_form_manutenzione)
 
-        button_pulisci_manut = QPushButton("Pulisci campi", self)
-        button_pulisci_manut.clicked.connect(self._reset_form_manutenzione)
-        row_actions_manut.addWidget(button_pulisci_manut)
+        btn_modifica_manut = QPushButton("Modifica Selez.")
+        btn_modifica_manut.setStyleSheet(STYLE_BTN_MODIFICA)
+        btn_modifica_manut.clicked.connect(self.prepara_modifica_manutenzione)
 
-        button_modifica_manut = QPushButton("Modifica selezionata", self)
-        button_modifica_manut.clicked.connect(self.prepara_modifica_manutenzione)
-        row_actions_manut.addWidget(button_modifica_manut)
-
-        self.button_annulla_modifica_manutenzione = QPushButton("Annulla modifica", self)
+        self.button_annulla_modifica_manutenzione = QPushButton("Annulla Mod.")
+        self.button_annulla_modifica_manutenzione.setStyleSheet(STYLE_BTN_SECONDARIO)
         self.button_annulla_modifica_manutenzione.setEnabled(False)
         self.button_annulla_modifica_manutenzione.clicked.connect(lambda: self.annulla_modifica_manutenzione(reset_fields=True))
-        row_actions_manut.addWidget(self.button_annulla_modifica_manutenzione)
 
-        button_elimina_manut = QPushButton("Elimina selezionata", self)
-        button_elimina_manut.clicked.connect(self.elimina_manutenzione_selezionata)
-        row_actions_manut.addWidget(button_elimina_manut)
+        btn_elimina_manut = QPushButton("Elimina")
+        btn_elimina_manut.setStyleSheet(STYLE_BTN_ELIMINA)
+        btn_elimina_manut.clicked.connect(self.elimina_manutenzione_selezionata)
 
-        button_aggiorna_manut = QPushButton("Aggiorna elenco", self)
-        button_aggiorna_manut.clicked.connect(lambda: self.carica_manutenzioni(show_errors=True))
-        row_actions_manut.addWidget(button_aggiorna_manut)
+        btn_aggiorna_manut = QPushButton("Aggiorna")
+        btn_aggiorna_manut.setStyleSheet(STYLE_BTN_INFO)
+        btn_aggiorna_manut.clicked.connect(lambda: self.carica_manutenzioni(show_errors=True))
 
-        row_actions_manut.addStretch(1)
-        manut_layout.addLayout(row_actions_manut)
+        grid_btn_manut.addWidget(btn_salva_manut, 0, 0)
+        grid_btn_manut.addWidget(btn_modifica_manut, 0, 1)
+        grid_btn_manut.addWidget(btn_elimina_manut, 0, 2)
+        grid_btn_manut.addWidget(btn_pulisci_manut, 1, 0)
+        grid_btn_manut.addWidget(self.button_annulla_modifica_manutenzione, 1, 1)
+        grid_btn_manut.addWidget(btn_aggiorna_manut, 1, 2)
+        
+        layout_form_manut.addLayout(grid_btn_manut)
 
         self.label_stato_manutenzione = QLabel("")
-        manut_layout.addWidget(self.label_stato_manutenzione)
+        self.label_stato_manutenzione.setStyleSheet("color: #e67e22; font-weight: bold; border: none; background: transparent;")
+        self.label_stato_manutenzione.setWordWrap(True)
+        layout_form_manut.addWidget(self.label_stato_manutenzione)
+        layout_form_manut.addStretch()
 
-        frame_filtri_manut = QFrame(self)
-        filters_layout = QHBoxLayout(frame_filtri_manut)
-        filters_layout.setContentsMargins(0, 0, 0, 0)
-        filters_layout.setSpacing(8)
+        h_split_manut.addWidget(frame_form_manut)
 
-        filters_layout.addWidget(QLabel("Ricerca:"))
+        # --- Tabella Manutenzioni (Destra) ---
+        frame_tab_manut = QFrame(self)
+        frame_tab_manut.setStyleSheet("background-color: white; border: 1px solid #ddd; border-radius: 8px;")
+        layout_tab_manut = QVBoxLayout(frame_tab_manut)
+        layout_tab_manut.setContentsMargins(10, 10, 10, 10)
+
+        filters_layout = QHBoxLayout()
+        filters_layout.addWidget(QLabel("🔍 Cerca:"))
         self.input_ricerca_manut = QLineEdit(self)
-        self.input_ricerca_manut.setPlaceholderText("Descrizione, fornitore, note")
+        self.input_ricerca_manut.setPlaceholderText("Fornitore, note...")
         self.input_ricerca_manut.textChanged.connect(lambda _v: self.carica_manutenzioni(show_errors=False))
         filters_layout.addWidget(self.input_ricerca_manut, 1)
 
@@ -262,7 +332,7 @@ class MacchinariPage(QWidget):
         self.combo_filtro_tipo_manut.currentIndexChanged.connect(lambda _i: self.carica_manutenzioni(show_errors=False))
         filters_layout.addWidget(self.combo_filtro_tipo_manut)
 
-        self.check_data_da = QCheckBox("Da", self)
+        self.check_data_da = QCheckBox("Da:", self)
         self.check_data_da.toggled.connect(self._on_toggle_filtri_data_manutenzione)
         filters_layout.addWidget(self.check_data_da)
 
@@ -274,7 +344,7 @@ class MacchinariPage(QWidget):
         self.filtro_data_da.dateChanged.connect(lambda _d: self.carica_manutenzioni(show_errors=False))
         filters_layout.addWidget(self.filtro_data_da)
 
-        self.check_data_a = QCheckBox("A", self)
+        self.check_data_a = QCheckBox("A:", self)
         self.check_data_a.toggled.connect(self._on_toggle_filtri_data_manutenzione)
         filters_layout.addWidget(self.check_data_a)
 
@@ -286,21 +356,21 @@ class MacchinariPage(QWidget):
         self.filtro_data_a.dateChanged.connect(lambda _d: self.carica_manutenzioni(show_errors=False))
         filters_layout.addWidget(self.filtro_data_a)
 
-        button_reset_filtri_manut = QPushButton("Reset filtri", self)
-        button_reset_filtri_manut.clicked.connect(self._reset_filtri_manutenzioni)
-        filters_layout.addWidget(button_reset_filtri_manut)
+        btn_reset_filtri_manut = QPushButton("Reset Filtri")
+        btn_reset_filtri_manut.setStyleSheet(STYLE_BTN_SECONDARIO)
+        btn_reset_filtri_manut.clicked.connect(self._reset_filtri_manutenzioni)
+        filters_layout.addWidget(btn_reset_filtri_manut)
 
-        manut_layout.addWidget(frame_filtri_manut)
+        layout_tab_manut.addLayout(filters_layout)
 
         self.table_manutenzioni = QTableWidget(0, 7, self)
-        self.table_manutenzioni.setHorizontalHeaderLabels(
-            ["ID", "Data", "Tipo", "Descrizione", "Fornitore/Officina", "Costo", "Note"]
-        )
+        self.table_manutenzioni.setHorizontalHeaderLabels(["ID", "Data", "Tipo", "Descrizione", "Officina", "Costo", "Note"])
         self.table_manutenzioni.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table_manutenzioni.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table_manutenzioni.setSelectionMode(QAbstractItemView.SingleSelection)
         self.table_manutenzioni.setAlternatingRowColors(True)
         self.table_manutenzioni.verticalHeader().setVisible(False)
+        self.table_manutenzioni.setStyleSheet("QTableWidget { border: none; } QHeaderView::section { background-color: #f8f9fa; font-weight: bold; border: 1px solid #ddd; }")
 
         header_manut = self.table_manutenzioni.horizontalHeader()
         header_manut.setSectionResizeMode(0, QHeaderView.ResizeToContents)
@@ -311,8 +381,23 @@ class MacchinariPage(QWidget):
         header_manut.setSectionResizeMode(5, QHeaderView.ResizeToContents)
         header_manut.setSectionResizeMode(6, QHeaderView.Stretch)
 
-        manut_layout.addWidget(self.table_manutenzioni)
-        main_layout.addWidget(self.frame_manutenzione, 1)
+        layout_tab_manut.addWidget(self.table_manutenzioni)
+        h_split_manut.addWidget(frame_tab_manut)
+        
+        # Imposta proporzioni splitter 35% sx, 65% dx
+        h_split_manut.setSizes([350, 650])
+        manut_layout.addWidget(h_split_manut)
+
+        main_splitter.addWidget(self.frame_manutenzione)
+        
+        # Split 50% e 50% tra macchine e manutenzioni
+        main_splitter.setSizes([400, 400])
+        main_layout.addWidget(main_splitter, 1)
+
+
+    # =========================================================================
+    # LE LOGICHE DI FUNZIONAMENTO RESTANO INVARIATE DA QUI IN GIÙ
+    # =========================================================================
 
     def _append_row(self, table: QTableWidget, row_index: int, values: list[str], right_align_indexes=None):
         if right_align_indexes is None:
@@ -583,7 +668,7 @@ class MacchinariPage(QWidget):
 
         self.button_annulla_modifica_macchinario.setEnabled(True)
         self.label_stato_macchinario.setText(
-            f"Modifica macchinario ID {macchinario_id} attiva. Premi 'Salva macchinario' per confermare."
+            f"✍️ Modifica ID {macchinario_id} attiva."
         )
 
     def elimina_macchinario_selezionato(self):
@@ -609,7 +694,7 @@ class MacchinariPage(QWidget):
             "Conferma eliminazione",
             "Vuoi eliminare il macchinario selezionato?\n\n"
             + dettaglio
-            + "\n\nLe manutenzioni collegate saranno eliminate.",
+            + "\n\n🚨 Le manutenzioni collegate saranno eliminate definitivamente.",
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No,
         )
@@ -665,7 +750,7 @@ class MacchinariPage(QWidget):
 
         self.button_annulla_modifica_manutenzione.setEnabled(True)
         self.label_stato_manutenzione.setText(
-            f"Modifica manutenzione ID {manutenzione_id} attiva. Premi 'Salva manutenzione' per confermare."
+            f"✍️ Modifica ID {manutenzione_id} attiva."
         )
 
     def elimina_manutenzione_selezionata(self):
@@ -733,7 +818,7 @@ class MacchinariPage(QWidget):
                     note=self.input_note.text(),
                 )
                 self._reset_form_macchinario()
-                self.label_stato_macchinario.setText("Macchinario salvato correttamente.")
+                self.label_stato_macchinario.setText("✅ Macchinario salvato correttamente.")
                 self.carica_macchinari(show_errors=False, select_macchinario_id=new_id)
                 return
 
@@ -758,7 +843,7 @@ class MacchinariPage(QWidget):
             return
 
         self.annulla_modifica_macchinario(reset_fields=True)
-        self.label_stato_macchinario.setText(f"Macchinario ID {macchinario_id} aggiornato correttamente.")
+        self.label_stato_macchinario.setText(f"✅ Macchinario ID {macchinario_id} aggiornato.")
         self.carica_macchinari(show_errors=False, select_macchinario_id=macchinario_id)
 
     def salva_manutenzione(self):
@@ -800,7 +885,7 @@ class MacchinariPage(QWidget):
                     note=self.input_manut_note.text(),
                 )
                 self._reset_form_manutenzione()
-                self.label_stato_manutenzione.setText("Manutenzione salvata correttamente.")
+                self.label_stato_manutenzione.setText("✅ Manutenzione salvata correttamente.")
                 self.carica_manutenzioni(show_errors=False, select_manutenzione_id=new_id)
                 return
 
@@ -826,7 +911,7 @@ class MacchinariPage(QWidget):
             return
 
         self.annulla_modifica_manutenzione(reset_fields=True)
-        self.label_stato_manutenzione.setText(f"Manutenzione ID {manutenzione_id} aggiornata correttamente.")
+        self.label_stato_manutenzione.setText(f"✅ Manutenzione ID {manutenzione_id} aggiornata.")
         self.carica_manutenzioni(show_errors=False, select_manutenzione_id=manutenzione_id)
 
     def carica_macchinari(self, show_errors=True, select_macchinario_id=None):
