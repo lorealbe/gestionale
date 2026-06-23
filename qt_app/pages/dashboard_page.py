@@ -5,9 +5,10 @@ import pyqtgraph as pg
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QFont, QColor
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame, QPushButton, QGridLayout, QSizePolicy
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame, QPushButton, 
+    QGridLayout, QSizePolicy, QTableWidget, QHeaderView, QTableWidgetItem, 
+    QAbstractItemView, QMessageBox
 )
-
 from database import get_conn
 
 class DashboardPage(QWidget):
@@ -19,14 +20,18 @@ class DashboardPage(QWidget):
         self.user_id = user_id
         
         self._build_ui()
-        
-        # Carichiamo i dati con un leggero ritardo per assicurarci che l'UI sia renderizzata
-        QTimer.singleShot(100, self._carica_dati_finanziari)
+
+        def init_dashboard():
+            self._carica_dati_finanziari()
+            self._carica_fatture_da_pagare()
+
+        QTimer.singleShot(100, init_dashboard)  
 
     def showEvent(self, event):
         """Ogni volta che si apre la pagina Dashboard, aggiorna i numeri"""
         super().showEvent(event)
         self._carica_dati_finanziari()
+        self._carica_fatture_da_pagare()
 
     def _build_ui(self):
         layout = QVBoxLayout(self)
@@ -140,7 +145,46 @@ class DashboardPage(QWidget):
         
         grafico_vbox.addWidget(self.plot_spese)
 
-        finanza_layout.addWidget(grafico_frame, 70) # Prende il 70% dello spazio orizzontale
+        grafico_vbox.addWidget(self.plot_spese)
+
+        # ==========================================
+        # NUOVO ASSEGNO DEGLI SPAZI (20% KPI, 45% Grafico, 35% Scadenze)
+        # ==========================================
+        finanza_layout.addWidget(kpi_frame, 20) 
+        finanza_layout.addWidget(grafico_frame, 45)
+
+        # --- PANNELLO SCADENZIARIO (A Destra) ---
+        self.scadenze_frame = QFrame()
+        self.scadenze_frame.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.scadenze_frame.setStyleSheet("background-color: white; border: 1px solid #e1e8ed; border-radius: 8px; padding: 5px;")
+        scadenze_vbox = QVBoxLayout(self.scadenze_frame)
+        scadenze_vbox.setContentsMargins(10, 10, 10, 10)
+        
+        lbl_scadenze = QLabel("🚨 Da Pagare")
+        lbl_scadenze.setStyleSheet("font-size: 14px; font-weight: bold; color: #c0392b; border: none;")
+        scadenze_vbox.addWidget(lbl_scadenze)
+        
+        # Creazione della tabella delle scadenze
+        self.table_scadenze = QTableWidget()
+        self.table_scadenze.setColumnCount(4)
+        self.table_scadenze.setHorizontalHeaderLabels(["Data", "Descrizione", "Importo", ""])
+        self.table_scadenze.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        self.table_scadenze.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        self.table_scadenze.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        self.table_scadenze.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeToContents)
+        self.table_scadenze.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.table_scadenze.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.table_scadenze.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.table_scadenze.verticalHeader().setVisible(False)
+        self.table_scadenze.setStyleSheet("""
+            QTableWidget { border: none; }
+            QHeaderView::section { font-weight: bold; border: none; border-bottom: 1px solid #ddd; background-color: white; }
+        """)
+        
+        scadenze_vbox.addWidget(self.table_scadenze)
+        
+        # Aggiungiamo il pannello scadenze al contenitore orizzontale
+        finanza_layout.addWidget(self.scadenze_frame, 35)
 
         # Stretch=1 indica al contenitore finanziario di espandersi verticalmente prendendosi tutto lo spazio rimasto
         layout.addWidget(finanza_container, 1)
@@ -287,3 +331,100 @@ class DashboardPage(QWidget):
         
         max_y = max(max(y_entrate + [0]), max(y_uscite + [0]))
         self.plot_spese.setYRange(0, max_y * 1.2 if max_y > 0 else 100, padding=0)
+    
+    def _carica_fatture_da_pagare(self):
+        try:
+            with get_conn() as conn:
+                c = conn.cursor()
+                # Cerchiamo tutti i movimenti da pagare ordinandoli per scadenza (o per data operazione)
+                c.execute("""
+                    SELECT id, data_op, descrizione, importo, iva_importo, parser_due_date, tipo
+                    FROM movimenti
+                    WHERE user_id=? AND stato_pagamento='DA PAGARE'
+                    ORDER BY COALESCE(NULLIF(TRIM(parser_due_date), ''), data_op) ASC
+                """, (self.user_id,))
+                righe = c.fetchall()
+        except Exception as e:
+            print("Errore caricamento scadenze:", e)
+            return
+
+        self.table_scadenze.clearSpans()
+        self.table_scadenze.setRowCount(0)
+        
+        # Se non c'è nulla da pagare, mostriamo un messaggio di rassicurazione
+        if not righe:
+            self.table_scadenze.setRowCount(1)
+            item_ok = QTableWidgetItem("🎉 Tutto in regola! Nessun sospeso.")
+            item_ok.setTextAlignment(Qt.AlignCenter)
+            item_ok.setForeground(QColor("#7f8c8d"))
+            self.table_scadenze.setSpan(0, 0, 1, 4)
+            self.table_scadenze.setItem(0, 0, item_ok)
+            return
+            
+        self.table_scadenze.setRowCount(len(righe))
+        
+        for idx, riga in enumerate(righe):
+            mov_id = riga[0]
+            data_op = riga[1]
+            descrizione = str(riga[2] or "Senza descrizione").strip()
+            importo = float(riga[3] or 0.0)
+            iva = float(riga[4] or 0.0)
+            due_date = str(riga[5] or "").strip()
+            tipo = str(riga[6] or "").strip()
+            
+            totale = importo + iva
+            data_mostrata = due_date if due_date else data_op
+            
+            # Formattazione grafica in base al fatto che noi dobbiamo pagare (Rosso) o incassare (Verde)
+            if tipo == "USCITA":
+                colore_testo = "#c0392b"
+                icona = "📉 "
+            else:
+                colore_testo = "#27ae60"
+                icona = "📈 "
+                
+            item_data = QTableWidgetItem(data_mostrata)
+            item_desc = QTableWidgetItem(icona + descrizione)
+            item_imp = QTableWidgetItem(f"{totale:,.2f} €")
+            item_imp.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            
+            for item in (item_data, item_desc, item_imp):
+                item.setForeground(QColor(colore_testo))
+            
+            self.table_scadenze.setItem(idx, 0, item_data)
+            self.table_scadenze.setItem(idx, 1, item_desc)
+            self.table_scadenze.setItem(idx, 2, item_imp)
+            
+            # Creiamo dinamicamente il bottone per ogni riga
+            btn_paga = QPushButton("Saldato ✔")
+            btn_paga.setStyleSheet("background-color: #27ae60; color: white; border-radius: 4px; font-weight: bold; padding: 4px 8px;")
+            btn_paga.setCursor(Qt.PointingHandCursor)
+            
+            # Utilizziamo una closure per intrappolare il valore di 'mov_id' in questo ciclo
+            btn_paga.clicked.connect(lambda checked=False, m_id=mov_id: self._segna_come_pagato(m_id))
+            
+            widget_btn = QWidget()
+            layout_btn = QHBoxLayout(widget_btn)
+            layout_btn.setContentsMargins(5, 2, 5, 2)
+            layout_btn.addWidget(btn_paga)
+            
+            self.table_scadenze.setCellWidget(idx, 3, widget_btn)
+
+    def _segna_come_pagato(self, movimento_id):
+        risposta = QMessageBox.question(
+            self, "Conferma Pagamento", 
+            "Vuoi segnare questo movimento come SALDATO?", 
+            QMessageBox.Yes | QMessageBox.No
+        )
+        
+        if risposta == QMessageBox.Yes:
+            try:
+                with get_conn() as conn:
+                    c = conn.cursor()
+                    c.execute("UPDATE movimenti SET stato_pagamento='PAGATO' WHERE id=? AND user_id=?", (movimento_id, self.user_id))
+            except Exception as e:
+                QMessageBox.critical(self, "Errore", f"Impossibile aggiornare lo stato: {e}")
+                return
+            
+            # Ricarichiamo la tabella: la fattura scomparirà automaticamente dalle pendenze!
+            self._carica_fatture_da_pagare()

@@ -328,9 +328,24 @@ class AziendaNuovoMovimentoPage(QWidget):
         bottom_layout.setContentsMargins(0,0,0,0)
         bottom_layout.setSpacing(5) # FIX: Ridotta la spaziatura tra i titoli e la tabella
 
+        header_prodotti_layout = QHBoxLayout()
         prodotti_title = QLabel("🛒 Prodotti rilevati in fattura")
         prodotti_title.setStyleSheet("font-size: 16px; font-weight: bold; color: #34495e; padding-top: 5px;")
-        bottom_layout.addWidget(prodotti_title)
+        header_prodotti_layout.addWidget(prodotti_title)
+        
+        # --- NUOVO: Pulsanti Aggiungi/Rimuovi ---
+        self.btn_add_riga = QPushButton("➕ Aggiungi Riga")
+        self.btn_add_riga.setStyleSheet("background-color: #27ae60; color: white; border-radius: 4px; padding: 5px; font-weight: bold;")
+        self.btn_add_riga.clicked.connect(self._aggiungi_riga_prodotto)
+        header_prodotti_layout.addWidget(self.btn_add_riga)
+        
+        self.btn_remove_riga = QPushButton("➖ Rimuovi Riga")
+        self.btn_remove_riga.setStyleSheet("background-color: #e74c3c; color: white; border-radius: 4px; padding: 5px; font-weight: bold;")
+        self.btn_remove_riga.clicked.connect(self._rimuovi_riga_prodotto)
+        header_prodotti_layout.addWidget(self.btn_remove_riga)
+        
+        header_prodotti_layout.addStretch()
+        bottom_layout.addLayout(header_prodotti_layout)
 
         self.label_prodotti_stato = QLabel("Importa una fattura PDF per vederne il riepilogo.")
         self.label_prodotti_stato.setStyleSheet("color: #7f8c8d; font-style: italic;")
@@ -552,7 +567,8 @@ class AziendaNuovoMovimentoPage(QWidget):
                         prezzo, prezzo_unit, iva, totale, "", ""
                     ],
                     right_align_indexes=[3, 4, 5, 6, 7],
-                    editable_columns=[],
+                    # --- NUOVO: Sblocca le colonne (da 1 a 7) per la modifica manuale ---
+                    editable_columns=[1, 2, 3, 4, 5, 6, 7],
                 )
 
                 combo_costo = QComboBox(self)
@@ -661,6 +677,34 @@ class AziendaNuovoMovimentoPage(QWidget):
     def _sincronizza_products_parser_da_form(self, parser_data, selected_group_ids):
         if not isinstance(parser_data, dict):
             return
+        
+        righe_aggiornate = []
+        for row in range(self.table_prodotti.rowCount()):
+            desc = self.table_prodotti.item(row, 1).text().strip() if self.table_prodotti.item(row, 1) else ""
+            cat = self.table_prodotti.item(row, 2).text().strip() if self.table_prodotti.item(row, 2) else ""
+            qta = self.table_prodotti.item(row, 3).text().strip() if self.table_prodotti.item(row, 3) else ""
+            prezzo = self.table_prodotti.item(row, 4).text().strip() if self.table_prodotti.item(row, 4) else ""
+            prezzo_u = self.table_prodotti.item(row, 5).text().strip() if self.table_prodotti.item(row, 5) else ""
+            iva = self.table_prodotti.item(row, 6).text().strip() if self.table_prodotti.item(row, 6) else ""
+            totale = self.table_prodotti.item(row, 7).text().strip() if self.table_prodotti.item(row, 7) else ""
+            
+            combo_costo = self.table_prodotti.cellWidget(row, 8)
+            tipo_costo = combo_costo.currentText() if combo_costo else "Variabili"
+            
+            combo_gruppi = self.table_prodotti.cellWidget(row, 9)
+            groups_text = combo_gruppi.lineEdit().text() if combo_gruppi else ""
+            groups_ids = combo_gruppi.checked_data() if combo_gruppi else []
+            
+            righe_aggiornate.append({
+                "description": desc, "category": cat, "quantity": qta,
+                "price": prezzo, "unit_price": prezzo_u, "vat_rate": iva,
+                "line_total": totale, "cost_type": tipo_costo,
+                "groups": groups_text, "groups_ids": groups_ids
+            })
+            
+        parser_data["products_rows"] = righe_aggiornate
+
+
         righe = parser_data.get("products_rows")
         if not isinstance(righe, list):
             return
@@ -1427,3 +1471,50 @@ class AziendaNuovoMovimentoPage(QWidget):
         else:
             QMessageBox.information(self, "Successo", msg_ok)
             self.movimento_saved.emit(movimento_id)
+    def _aggiungi_riga_prodotto(self):
+        # Assicura che la struttura dati esista
+        if not isinstance(self.pending_parser_movimento_data, dict):
+            self.pending_parser_movimento_data = {"products_rows": []}
+            
+        row_count = self.table_prodotti.rowCount()
+        idx = row_count + 1
+        
+        self._table_prodotti_updating = True
+        try:
+            # Aggiunge una riga vuota modificabile
+            self._append_row(
+                self.table_prodotti,
+                row_count,
+                [str(idx), "", "", "", "", "", "", "", "", ""],
+                right_align_indexes=[3, 4, 5, 6, 7],
+                editable_columns=[1, 2, 3, 4, 5, 6, 7],
+            )
+            
+            # Crea e aggancia i menu a tendina "Tipo costo" e "Gruppi" per la nuova riga
+            combo_costo = QComboBox(self)
+            combo_costo.addItems(["Variabili", "Fissi"])
+            self.table_prodotti.setCellWidget(row_count, 8, combo_costo)
+
+            combo_gruppi = CheckableComboBox(self)
+            try:
+                entries = list_azienda_animali_entries(self.user_id)
+                for entry in entries:
+                    entry_id = int(entry.get("id", 0) or 0)
+                    if entry_id > 0:
+                        combo_gruppi.addItem(self._label_gruppo_animale_movimento(entry), data=entry_id)
+            except sqlite3.Error:
+                pass
+            self.table_prodotti.setCellWidget(row_count, 9, combo_gruppi)
+        finally:
+            self._table_prodotti_updating = False
+
+    def _rimuovi_riga_prodotto(self):
+        current_row = self.table_prodotti.currentRow()
+        if current_row >= 0:
+            self.table_prodotti.removeRow(current_row)
+            
+            # Riaggiorna la numerazione progressiva della colonna #
+            for row in range(self.table_prodotti.rowCount()):
+                item = self.table_prodotti.item(row, 0)
+                if item:
+                    item.setText(str(row + 1))
