@@ -24,7 +24,7 @@ from PySide6.QtWidgets import (
     QSplitter
 )
 
-from app_utils import format_eur, parse_decimal
+from app_utils import format_eur, parse_decimal, TabellaIsolata
 from database import (
     add_macchinario_entry,
     add_manutenzione_macchinario_entry,
@@ -184,7 +184,7 @@ class MacchinariPage(QWidget):
 
         layout_tab_m.addLayout(row_filtri_m)
 
-        self.table_macchinari = QTableWidget(0, 7, self)
+        self.table_macchinari = TabellaIsolata(0, 7, self)
         self.table_macchinari.setHorizontalHeaderLabels(["ID", "Nome", "Marca", "Modello", "Targa/Telaio", "Anno", "Note"])
         self.table_macchinari.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table_macchinari.setSelectionBehavior(QAbstractItemView.SelectRows)
@@ -363,7 +363,7 @@ class MacchinariPage(QWidget):
 
         layout_tab_manut.addLayout(filters_layout)
 
-        self.table_manutenzioni = QTableWidget(0, 7, self)
+        self.table_manutenzioni = TabellaIsolata(0, 7, self)
         self.table_manutenzioni.setHorizontalHeaderLabels(["ID", "Data", "Tipo", "Descrizione", "Officina", "Costo", "Note"])
         self.table_manutenzioni.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table_manutenzioni.setSelectionBehavior(QAbstractItemView.SelectRows)

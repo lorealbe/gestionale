@@ -3307,6 +3307,8 @@ def init_db():
         # Migrazione: aggiunge colonna stato_pagamento se manca.
         if "stato_pagamento" not in colonne_movimenti:
             c.execute("ALTER TABLE movimenti ADD COLUMN stato_pagamento TEXT NOT NULL DEFAULT 'PAGATO'")
+        if "economia_colture_id" not in colonne_movimenti:
+            c.execute("ALTER TABLE movimenti ADD COLUMN economia_colture_id INTEGER DEFAULT NULL")
 
         colonne_parser = {
             "parser_invoice_number": "TEXT",
@@ -3472,7 +3474,67 @@ def init_db():
                  ON fatture(user_id, data_caricamento DESC)''')
 
 
+        # =====================================================================
+        # SINCRONIZZAZIONE AUTOMATICA: ECONOMIA COLTURE -> MOVIMENTI GLOBALI
+        # =====================================================================
 
+        # 1. Backfill: Sincronizza eventuali dati passati già presenti in economia_colture
+        #    che non sono ancora stati inseriti nei movimenti.
+        c.execute('''
+            INSERT INTO movimenti (user_id, data_op, tipo, categoria, descrizione, importo, stato_pagamento, iva_importo, economia_colture_id)
+            SELECT 
+                user_id, 
+                data_operazione, 
+                CASE WHEN tipo='RICAVO' THEN 'ENTRATA' ELSE 'USCITA' END, 
+                categoria, 
+                COALESCE(descrizione, 'Operazione su campo'), 
+                importo, 
+                'PAGATO', 
+                0, 
+                id
+            FROM economia_colture e
+            WHERE NOT EXISTS (
+                SELECT 1 FROM movimenti m WHERE m.economia_colture_id = e.id
+            )
+        ''')
+
+        # 2. Trigger: Alla CREAZIONE di una nuova operazione agricola
+        c.execute('''
+            CREATE TRIGGER IF NOT EXISTS trg_economia_insert
+            AFTER INSERT ON economia_colture
+            BEGIN
+                INSERT INTO movimenti 
+                    (user_id, data_op, tipo, categoria, descrizione, importo, stato_pagamento, iva_importo, economia_colture_id)
+                VALUES 
+                    (NEW.user_id, NEW.data_operazione, 
+                     CASE WHEN NEW.tipo='RICAVO' THEN 'ENTRATA' ELSE 'USCITA' END, 
+                     NEW.categoria, COALESCE(NEW.descrizione, 'Operazione su campo'), NEW.importo, 'PAGATO', 0, NEW.id);
+            END
+        ''')
+
+        # 3. Trigger: All'AGGIORNAMENTO di un'operazione agricola
+        c.execute('''
+            CREATE TRIGGER IF NOT EXISTS trg_economia_update
+            AFTER UPDATE ON economia_colture
+            BEGIN
+                UPDATE movimenti
+                SET data_op = NEW.data_operazione,
+                    tipo = CASE WHEN NEW.tipo='RICAVO' THEN 'ENTRATA' ELSE 'USCITA' END,
+                    categoria = NEW.categoria,
+                    descrizione = COALESCE(NEW.descrizione, 'Operazione su campo'),
+                    importo = NEW.importo
+                WHERE economia_colture_id = NEW.id;
+            END
+        ''')
+
+        # 4. Trigger: All'ELIMINAZIONE di un'operazione agricola
+        c.execute('''
+            CREATE TRIGGER IF NOT EXISTS trg_economia_delete
+            AFTER DELETE ON economia_colture
+            BEGIN
+                DELETE FROM movimenti WHERE economia_colture_id = OLD.id;
+            END
+        ''')
 
 
 

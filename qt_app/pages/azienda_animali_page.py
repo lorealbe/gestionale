@@ -23,7 +23,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from app_utils import format_number
+from app_utils import format_number, TabellaIsolata
 from database import (
     add_azienda_animale_entry,
     delete_azienda_animale_entry,
@@ -124,7 +124,7 @@ class AziendaAnimaliPage(QWidget):
 
         main_layout.addWidget(frame_add)
 
-        self.table_animali = QTableWidget(0, 6, self)
+        self.table_animali = TabellaIsolata(0, 6, self)
         self.table_animali.setHorizontalHeaderLabels(["ID", "Gruppo", "Tipo", "Destinazione", "Riproduzione", "Capi"])
         self.table_animali.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table_animali.setSelectionBehavior(QAbstractItemView.SelectRows)

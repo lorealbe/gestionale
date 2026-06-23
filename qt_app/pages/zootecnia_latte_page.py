@@ -27,7 +27,7 @@ from PySide6.QtWidgets import (
     QSplitter
 )
 
-from app_utils import format_eur, format_number, is_blank, parse_decimal
+from app_utils import format_eur, format_number, is_blank, parse_decimal, TabellaIsolata
 from database import (
     LITRI_PER_QUINTALE,
     get_conn,
@@ -268,7 +268,7 @@ class ZootecniaLattePage(ZootecniaParserSupport, QWidget):
         riepilogo_label.setStyleSheet("font-size: 16px; font-weight: bold; color: #34495e;")
         bottom_layout.addWidget(riepilogo_label)
 
-        self.table_produzione = QTableWidget(0, 4, self)
+        self.table_produzione = TabellaIsolata(0, 4, self)
         self.table_produzione.setHorizontalHeaderLabels(["ID", "Data", "Quintali", "Prezzo / L"])
         self.table_produzione.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table_produzione.setSelectionBehavior(QAbstractItemView.SelectRows)

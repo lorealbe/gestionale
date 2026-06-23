@@ -18,6 +18,7 @@ from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWebChannel import QWebChannel
 
 from database import get_conn
+from app_utils import TabellaIsolata
 
 
 # ==========================================
@@ -111,7 +112,7 @@ class GestioneEconomicaDialog(QDialog):
         kpi_layout.addWidget(self.lbl_utile)
         layout.addWidget(kpi_frame)
         
-        self.table = QTableWidget(0, 5)
+        self.table = TabellaIsolata(0, 5)
         self.table.setHorizontalHeaderLabels(["Data", "Tipo", "Categoria", "Descrizione", "Importo"])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
@@ -688,7 +689,7 @@ class AgricolturaPage(QWidget):
         h_layout.addWidget(form_frame, 1)
 
         tabella_frame = QVBoxLayout()
-        self.table_colture = QTableWidget(0, 5)
+        self.table_colture = TabellaIsolata(0, 5)
         self.table_colture.setHorizontalHeaderLabels(["Ciclo/Coltura", "Data Inizio", "Data Raccolto", "Resa", "Stato"])
         self.table_colture.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.table_colture.setSelectionBehavior(QAbstractItemView.SelectRows)

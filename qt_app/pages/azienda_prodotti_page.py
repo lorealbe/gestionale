@@ -21,7 +21,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from app_utils import format_number, parse_decimal
+from app_utils import format_number, parse_decimal, TabellaIsolata
 from database import get_conn
 from services.product_parser_utils import (
     PRODUCT_CATEGORY_OPTIONS,
@@ -157,7 +157,7 @@ class AziendaProdottiPage(QWidget):
         main_layout.addWidget(frame_filtri)
 
         # TABELLA PRODOTTI
-        self.table_prodotti = QTableWidget(0, 10, self)
+        self.table_prodotti = TabellaIsolata(0, 10, self)
         self.table_prodotti.setHorizontalHeaderLabels(
             [
                 "Data",

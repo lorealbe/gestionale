@@ -20,7 +20,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from app_utils import format_eur, is_blank
+from app_utils import format_eur, is_blank, TabellaIsolata
 from database import get_azienda_info, get_conn, save_azienda_info
 
 
@@ -77,7 +77,7 @@ class AziendaInfoPage(QWidget):
         action_row.addStretch(1)
         main_layout.addLayout(action_row)
 
-        self.table_andamento = QTableWidget(0, 2, self)
+        self.table_andamento = TabellaIsolata(0, 2, self)
         self.table_andamento.setHorizontalHeaderLabels(["Metrica", "Valore"])
         self.table_andamento.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table_andamento.setSelectionBehavior(QAbstractItemView.SelectRows)

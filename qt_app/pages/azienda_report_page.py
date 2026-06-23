@@ -22,7 +22,7 @@ from PySide6.QtWidgets import (
     QSplitter
 )
 
-from app_utils import format_eur, format_number
+from app_utils import format_eur, format_number, TabellaIsolata
 from database import get_conn
 
 
@@ -134,7 +134,7 @@ class AziendaReportPage(QWidget):
         riepilogo_label.setStyleSheet("font-size: 16px; font-weight: bold; color: #34495e;")
         layout_riepilogo.addWidget(riepilogo_label)
 
-        self.table_riepilogo = QTableWidget(0, 2, self)
+        self.table_riepilogo = TabellaIsolata(0, 2, self)
         self.table_riepilogo.setHorizontalHeaderLabels(["Metrica", "Valore"])
         self.table_riepilogo.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table_riepilogo.setSelectionBehavior(QAbstractItemView.SelectRows)
@@ -163,7 +163,7 @@ class AziendaReportPage(QWidget):
         dettaglio_label.setStyleSheet("font-size: 16px; font-weight: bold; color: #34495e; padding-top: 10px;")
         layout_categorie.addWidget(dettaglio_label)
 
-        self.table_categorie = QTableWidget(0, 4, self)
+        self.table_categorie = TabellaIsolata(0, 4, self)
         self.table_categorie.setHorizontalHeaderLabels(["Tipo", "Categoria", "Totale", "N. Movimenti"])
         self.table_categorie.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table_categorie.setSelectionBehavior(QAbstractItemView.SelectRows)

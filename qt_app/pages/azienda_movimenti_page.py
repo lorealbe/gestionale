@@ -25,7 +25,7 @@ from PySide6.QtWidgets import (
     QSplitter
 )
 
-from app_utils import format_number, parse_decimal
+from app_utils import format_number, parse_decimal, TabellaIsolata
 from database import (
     get_conn,
     get_movimento_animali_group_labels,
@@ -144,7 +144,7 @@ class AziendaMovimentiPage(QWidget):
         top_layout = QVBoxLayout(top_widget)
         top_layout.setContentsMargins(0, 0, 0, 0)
 
-        self.table_movimenti = QTableWidget(0, 7, self)
+        self.table_movimenti = TabellaIsolata(0, 7, self)
         self.table_movimenti.setHorizontalHeaderLabels(["ID", "Data", "Tipo", "Categoria", "Descrizione", "Importo", "IVA"])
         self.table_movimenti.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table_movimenti.setSelectionBehavior(QAbstractItemView.SelectRows)
@@ -202,7 +202,7 @@ class AziendaMovimentiPage(QWidget):
         dettagli_title.setStyleSheet("font-size: 16px; font-weight: bold; color: #34495e; padding-top: 10px;")
         bottom_layout.addWidget(dettagli_title)
 
-        self.table_dettagli = QTableWidget(0, 2, self)
+        self.table_dettagli = TabellaIsolata(0, 2, self)
         self.table_dettagli.setHorizontalHeaderLabels(["Campo", "Valore Letto da PDF"])
         self.table_dettagli.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table_dettagli.setSelectionBehavior(QAbstractItemView.SelectRows)

@@ -34,7 +34,7 @@ from PySide6.QtWidgets import (
     QSizePolicy
 )
 
-from app_utils import format_number, is_blank, parse_decimal
+from app_utils import format_number, is_blank, parse_decimal, TabellaIsolata
 from database import (
     get_conn,
     get_fatture_user_dir,
@@ -343,7 +343,7 @@ class AziendaNuovoMovimentoPage(QWidget):
         self.progress_parser.setVisible(False)
         bottom_layout.addWidget(self.progress_parser)
 
-        self.table_prodotti = QTableWidget(0, 10, self)
+        self.table_prodotti = TabellaIsolata(0, 10, self)
         self.table_prodotti.setHorizontalHeaderLabels(
             [
                 "#",

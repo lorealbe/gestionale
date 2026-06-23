@@ -55,3 +55,19 @@ def clear_treeview(tree) -> None:
     children = tree.get_children()
     if children:
         tree.delete(*children)
+
+from PySide6.QtWidgets import QAbstractScrollArea, QTableWidget
+
+class TabellaIsolata(QTableWidget):
+    """
+    Una QTableWidget che blocca la propagazione dello scroll alla pagina principale.
+    Se il mouse è sopra la tabella, scorre solo la tabella.
+    """
+    def wheelEvent(self, event):
+        # 1. Eseguiamo lo scorrimento normale della tabella
+        super().wheelEvent(event)
+        
+        self.setSizeAdjustPolicy(QAbstractScrollArea.AdjustToContents)
+        # 2. "Accettiamo" l'evento in ogni caso. 
+        # Questo impedisce a Qt di passare lo scroll alla QScrollArea della pagina.
+        event.accept()

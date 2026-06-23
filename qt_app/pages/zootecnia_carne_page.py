@@ -28,7 +28,7 @@ from PySide6.QtWidgets import (
     QSplitter
 )
 
-from app_utils import format_eur, format_number, is_blank, parse_decimal
+from app_utils import format_eur, format_number, is_blank, parse_decimal, TabellaIsolata
 from database import (
     get_conn,
     get_movimento_animali_entry_ids,
@@ -276,7 +276,7 @@ class ZootecniaCarnePage(ZootecniaParserSupport, QWidget):
         riepilogo_label.setStyleSheet("font-size: 16px; font-weight: bold; color: #34495e;")
         bottom_layout.addWidget(riepilogo_label)
 
-        self.table_produzione = QTableWidget(0, 5, self)
+        self.table_produzione = TabellaIsolata(0, 5, self)
         self.table_produzione.setHorizontalHeaderLabels(["ID", "Data", "Kg", "Prezzo / Kg", "Totale"])
         self.table_produzione.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table_produzione.setSelectionBehavior(QAbstractItemView.SelectRows)

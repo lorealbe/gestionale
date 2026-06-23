@@ -101,7 +101,7 @@ class DashboardPage(QWidget):
         kpi_vbox.setContentsMargins(15, 15, 15, 15)
         kpi_vbox.setSpacing(10)
 
-        lbl_finanza = QLabel("📊 Agricoltura")
+        lbl_finanza = QLabel("📊 Bilancio Totale")
         lbl_finanza.setStyleSheet("font-size: 14px; font-weight: bold; color: #34495e; border: none;")
         kpi_vbox.addWidget(lbl_finanza)
 
@@ -123,7 +123,7 @@ class DashboardPage(QWidget):
         grafico_frame.setStyleSheet("background-color: white; border: 1px solid #e1e8ed; border-radius: 8px; padding: 10px;")
         grafico_vbox = QVBoxLayout(grafico_frame)
 
-        lbl_grafico = QLabel("📉 Ripartizione Spese per Categoria")
+        lbl_grafico = QLabel("📉 Entrate e Uscite")
         lbl_grafico.setStyleSheet("font-size: 14px; font-weight: bold; color: #7f8c8d; border: none;")
         grafico_vbox.addWidget(lbl_grafico)
 
@@ -133,6 +133,7 @@ class DashboardPage(QWidget):
         self.plot_spese.setMouseEnabled(x=False, y=False)
         self.plot_spese.setMenuEnabled(False)
         self.plot_spese.hideButtons()
+        self.legend = self.plot_spese.addLegend(offset=(10, 10))
         
         # FIX IMPORTANTE: Garantisce uno spazio fisso di 50px in basso affinché le scritte non escano fuori
         self.plot_spese.getPlotItem().getAxis('bottom').setHeight(50)
@@ -189,23 +190,26 @@ class DashboardPage(QWidget):
             with get_conn() as conn:
                 c = conn.cursor()
                 
-                # Calcolo Ricavi globali
-                c.execute("SELECT SUM(importo) FROM economia_colture WHERE user_id=? AND tipo='RICAVO'", (self.user_id,))
+                # Calcolo Ricavi globali dalla tabella generale 'movimenti'
+                c.execute("SELECT SUM(importo) FROM movimenti WHERE user_id=? AND tipo='ENTRATA'", (self.user_id,))
                 ricavi = float(c.fetchone()[0] or 0.0)
 
-                # Calcolo Spese globali
-                c.execute("SELECT SUM(importo) FROM economia_colture WHERE user_id=? AND tipo='SPESA'", (self.user_id,))
+                # Calcolo Spese globali dalla tabella generale 'movimenti'
+                c.execute("SELECT SUM(importo) FROM movimenti WHERE user_id=? AND tipo='USCITA'", (self.user_id,))
                 spese = float(c.fetchone()[0] or 0.0)
 
-                # Classifica spese per categoria
+                # Classifica bilancio per categoria (calcola sia entrate che uscite per ogni categoria)
                 c.execute("""
-                    SELECT categoria, SUM(importo) 
-                    FROM economia_colture 
-                    WHERE user_id=? AND tipo='SPESA' 
-                    GROUP BY categoria 
-                    ORDER BY SUM(importo) DESC
+                    SELECT 
+                        COALESCE(NULLIF(TRIM(categoria), ''), 'Non categorizzato') as cat, 
+                        SUM(CASE WHEN tipo='ENTRATA' THEN importo ELSE 0 END) as tot_entrate,
+                        SUM(CASE WHEN tipo='USCITA' THEN importo ELSE 0 END) as tot_uscite
+                    FROM movimenti 
+                    WHERE user_id=?
+                    GROUP BY cat 
+                    ORDER BY (SUM(CASE WHEN tipo='ENTRATA' THEN importo ELSE 0 END) + SUM(CASE WHEN tipo='USCITA' THEN importo ELSE 0 END)) DESC
                 """, (self.user_id,))
-                spese_per_cat = c.fetchall()
+                dati_categorie = c.fetchall()
 
         except Exception as e:
             print("Errore caricamento dati dashboard:", e)
@@ -218,7 +222,7 @@ class DashboardPage(QWidget):
         self.lbl_spese.findChildren(QLabel)[1].setText(f"{spese:,.2f} €")
         self.lbl_utile.findChildren(QLabel)[1].setText(f"{utile:,.2f} €")
         
-        # Colore dinamico per l'utile (Rosso se negativo, Blu/Verde se positivo)
+        # Colore dinamico per l'utile
         if utile < 0:
             self.lbl_utile.setStyleSheet("border-left: 5px solid #dc3545; background-color: #f8f9fa; padding: 8px; border-radius: 5px;")
             self.lbl_utile.findChildren(QLabel)[1].setStyleSheet("color: #dc3545; font-size: 22px; font-weight: 900; border: none; background: transparent;")
@@ -226,15 +230,15 @@ class DashboardPage(QWidget):
             self.lbl_utile.setStyleSheet("border-left: 5px solid #007bff; background-color: #f8f9fa; padding: 8px; border-radius: 5px;")
             self.lbl_utile.findChildren(QLabel)[1].setStyleSheet("color: #007bff; font-size: 22px; font-weight: 900; border: none; background: transparent;")
 
-        # 2. Aggiornamento Grafico a Barre
+        # 2. Aggiornamento Grafico a Barre Doppie
         self.plot_spese.clear()
-        if not spese_per_cat:
-            self.plot_spese.setTitle("Inizia a registrare le spese per vedere l'analisi.", color='#7f8c8d', size="11pt")
+        if not dati_categorie:
+            self.plot_spese.setTitle("Nessun movimento registrato.", color='#7f8c8d', size="11pt")
             return
 
         self.plot_spese.setTitle("")
         
-        # Dizionario per "accorciare" intelligentemente i nomi lunghi affinché entrino sotto le barre
+        # Abbreviazioni per far entrare i testi sotto le barre
         abbreviazioni = {
             "Sementi/Piantine": "Sementi",
             "Concimi/Fertilizzanti": "Concimi",
@@ -243,22 +247,43 @@ class DashboardPage(QWidget):
             "Lavorazioni Conto Terzi": "Terzisti",
             "Manodopera": "Lavoro",
             "Assicurazioni (Risarcimenti)": "Assicuraz.",
-            "Irrigazione": "Acqua"
+            "Irrigazione": "Acqua",
+            "Non categorizzato": "Varie"
         }
         
-        # Mappiamo le etichette per abbreviarle
-        x_labels = [abbreviazioni.get(str(row[0]), str(row[0])) for row in spese_per_cat]
-        y_values = [float(row[1]) for row in spese_per_cat]
-        x_pos = list(range(len(x_labels)))
-        ticks = [list(zip(x_pos, x_labels))]
+        x_labels = []
+        y_entrate = []
+        y_uscite = []
+        
+        # Prepariamo le liste separate per entrate e uscite
+        for row in dati_categorie:
+            cat_nome = str(row[0])
+            x_labels.append(abbreviazioni.get(cat_nome, cat_nome))
+            y_entrate.append(float(row[1]))
+            y_uscite.append(float(row[2]))
 
+        # Creiamo le posizioni sfalsate sull'asse X (larghezza barra = 0.35)
+        # Offset di -0.2 per le entrate e +0.2 per le uscite
+        x_pos_entrate = [i - 0.2 for i in range(len(x_labels))]
+        x_pos_uscite = [i + 0.2 for i in range(len(x_labels))]
+        
+        # Posizioniamo le etichette di testo esattamente al centro (su i)
+        ticks = [list(zip(range(len(x_labels)), x_labels))]
         ax = self.plot_spese.getAxis('bottom')
         ax.setTicks(ticks)
 
-        bar_width = 0.4
-        bar_chart = pg.BarGraphItem(x=x_pos, height=y_values, width=bar_width, brush='#e74c3c', pen='w')
-        self.plot_spese.addItem(bar_chart)
+        bar_width = 0.35
+        
+        # Creazione delle due serie di barre
+        bar_chart_entrate = pg.BarGraphItem(x=x_pos_entrate, height=y_entrate, width=bar_width, brush='#28a745', pen='w', name="Entrate")
+        bar_chart_uscite = pg.BarGraphItem(x=x_pos_uscite, height=y_uscite, width=bar_width, brush='#dc3545', pen='w', name="Uscite")
 
-        margine_destro = max(5.5, len(x_pos) - 0.5)
+        self.plot_spese.addItem(bar_chart_entrate)
+        self.plot_spese.addItem(bar_chart_uscite)
+
+        # Regolazione dinamica della vista
+        margine_destro = max(5.5, len(x_labels) - 0.5)
         self.plot_spese.setXRange(-0.5, margine_destro, padding=0)
-        self.plot_spese.setYRange(0, max(y_values) * 1.2 if y_values else 100, padding=0)
+        
+        max_y = max(max(y_entrate + [0]), max(y_uscite + [0]))
+        self.plot_spese.setYRange(0, max_y * 1.2 if max_y > 0 else 100, padding=0)
