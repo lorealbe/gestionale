@@ -2,7 +2,6 @@ from qt_app.pages.agricoltura_page import AgricolturaPage
 from qt_app.pages.attrezzature_page import AttrezzaturePage
 from qt_app.pages.azienda_animali_page import AziendaAnimaliPage
 from qt_app.pages.azienda_fatture_page import AziendaFatturePage
-from qt_app.pages.azienda_info_page import AziendaInfoPage
 from qt_app.pages.azienda_movimenti_page import AziendaMovimentiPage
 from qt_app.pages.azienda_nuovo_movimento_page import AziendaNuovoMovimentoPage
 from qt_app.pages.azienda_page import AziendaPage
@@ -16,7 +15,6 @@ from qt_app.pages.zootecnia_page import ZootecniaPage
 __all__ = [
     "AgricolturaPage",
     "AttrezzaturePage",
-    "AziendaInfoPage",
     "AziendaReportPage",
     "AziendaAnimaliPage",
     "AziendaMovimentiPage",

@@ -1,7 +1,6 @@
 from PySide6.QtWidgets import QTabWidget, QVBoxLayout, QWidget
 
 from qt_app.pages.azienda_fatture_page import AziendaFatturePage
-from qt_app.pages.azienda_info_page import AziendaInfoPage
 from qt_app.pages.azienda_report_page import AziendaReportPage
 
 
@@ -20,6 +19,5 @@ class AziendaPage(QWidget):
         tabs = QTabWidget(self)
         tabs.addTab(AziendaReportPage(self.user_id, tabs), "Report Azienda")
         tabs.addTab(AziendaFatturePage(self.user_id, tabs), "Fatture")
-        tabs.addTab(AziendaInfoPage(self.user_id, tabs), "Dati Azienda - Informazioni")
-
+        
         layout.addWidget(tabs)
