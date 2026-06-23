@@ -334,12 +334,12 @@ class AziendaNuovoMovimentoPage(QWidget):
         header_prodotti_layout.addWidget(prodotti_title)
         
         # --- NUOVO: Pulsanti Aggiungi/Rimuovi ---
-        self.btn_add_riga = QPushButton("➕ Aggiungi Riga")
+        self.btn_add_riga = QPushButton("➕ Aggiungi prodotto")
         self.btn_add_riga.setStyleSheet("background-color: #27ae60; color: white; border-radius: 4px; padding: 5px; font-weight: bold;")
         self.btn_add_riga.clicked.connect(self._aggiungi_riga_prodotto)
         header_prodotti_layout.addWidget(self.btn_add_riga)
         
-        self.btn_remove_riga = QPushButton("➖ Rimuovi Riga")
+        self.btn_remove_riga = QPushButton("➖ Rimuovi prodotto selezionato")
         self.btn_remove_riga.setStyleSheet("background-color: #e74c3c; color: white; border-radius: 4px; padding: 5px; font-weight: bold;")
         self.btn_remove_riga.clicked.connect(self._rimuovi_riga_prodotto)
         header_prodotti_layout.addWidget(self.btn_remove_riga)
