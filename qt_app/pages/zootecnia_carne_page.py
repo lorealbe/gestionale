@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
     QTableWidgetItem,
     QVBoxLayout,
     QWidget,
+    QSplitter
 )
 
 from app_utils import format_eur, format_number, is_blank, parse_decimal
@@ -63,69 +64,134 @@ class ZootecniaCarnePage(ZootecniaParserSupport, QWidget):
         self.carica_produzioni_carne(show_errors=False)
 
     def _build_ui(self):
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(12, 12, 12, 12)
-        layout.setSpacing(10)
+        STYLE_BTN_SALVA = "background-color: #28a745; color: white; font-weight: bold; padding: 8px; border-radius: 5px;"
+        STYLE_BTN_MODIFICA = "background-color: #ffc107; color: black; font-weight: bold; padding: 8px; border-radius: 5px;"
+        STYLE_BTN_ELIMINA = "background-color: #dc3545; color: white; font-weight: bold; padding: 8px; border-radius: 5px;"
+        STYLE_BTN_SECONDARIO = "background-color: #6c757d; color: white; font-weight: bold; padding: 8px; border-radius: 5px;"
+        STYLE_BTN_INFO = "background-color: #17a2b8; color: white; font-weight: bold; padding: 8px; border-radius: 5px;"
 
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(10)
+
+        main_splitter = QSplitter(Qt.Vertical)
+
+        # --- WIDGET SUPERIORE ---
+        top_widget = QWidget()
+        top_layout = QVBoxLayout(top_widget)
+        top_layout.setContentsMargins(0, 0, 0, 0)
+        
+        cards_layout = QHBoxLayout()
+        cards_layout.setSpacing(15)
+
+        # -- Colonna Sinistra (Form + Fattura)
+        left_col = QVBoxLayout()
+        left_col.setSpacing(15)
+
+        # Form Produzione
         frame_form = QFrame(self)
+        frame_form.setStyleSheet("background-color: #f8f9fa; border: 1px solid #ddd; border-radius: 8px;")
         form_layout = QGridLayout(frame_form)
-        form_layout.setContentsMargins(10, 10, 10, 10)
-        form_layout.setHorizontalSpacing(8)
-        form_layout.setVerticalSpacing(8)
+        form_layout.setContentsMargins(15, 15, 15, 15)
+        
+        lbl_form = QLabel("🥩 Dati Produzione Carne")
+        lbl_form.setStyleSheet("font-size: 16px; font-weight: bold; color: #34495e; border: none;")
+        form_layout.addWidget(lbl_form, 0, 0, 1, 3)
 
         self.input_data = QDateEdit(self)
+        self.input_data.setStyleSheet("padding: 5px;")
         self.input_data.setDisplayFormat("dd/MM/yyyy")
         self.input_data.setCalendarPopup(True)
         self.input_data.setDate(QDate.currentDate())
 
         self.input_quantita = QLineEdit(self)
+        self.input_quantita.setStyleSheet("padding: 5px;")
         self.input_quantita.setPlaceholderText("Quantita venduta")
 
         self.combo_unita_quantita = QComboBox(self)
+        self.combo_unita_quantita.setStyleSheet("padding: 5px;")
         self.combo_unita_quantita.addItems(self._UNITA_QTA)
 
         self.input_prezzo = QLineEdit(self)
+        self.input_prezzo.setStyleSheet("padding: 5px;")
         self.input_prezzo.setText("0,00")
 
         self.combo_unita_prezzo = QComboBox(self)
+        self.combo_unita_prezzo.setStyleSheet("padding: 5px;")
         self.combo_unita_prezzo.addItems(self._UNITA_PREZZO)
 
-        form_layout.addWidget(QLabel("Data produzione:"), 0, 0)
-        form_layout.addWidget(self.input_data, 0, 1)
+        form_layout.addWidget(QLabel("<b>Data produzione:</b>"), 1, 0)
+        form_layout.addWidget(self.input_data, 1, 1, 1, 2)
 
-        form_layout.addWidget(QLabel("Quantita venduta:"), 1, 0)
-        form_layout.addWidget(self.input_quantita, 1, 1)
-        form_layout.addWidget(self.combo_unita_quantita, 1, 2)
+        form_layout.addWidget(QLabel("<b>Quantita:</b>"), 2, 0)
+        form_layout.addWidget(self.input_quantita, 2, 1)
+        form_layout.addWidget(self.combo_unita_quantita, 2, 2)
 
-        form_layout.addWidget(QLabel("Prezzo:"), 2, 0)
-        form_layout.addWidget(self.input_prezzo, 2, 1)
-        form_layout.addWidget(self.combo_unita_prezzo, 2, 2)
+        form_layout.addWidget(QLabel("<b>Prezzo:</b>"), 3, 0)
+        form_layout.addWidget(self.input_prezzo, 3, 1)
+        form_layout.addWidget(self.combo_unita_prezzo, 3, 2)
 
-        layout.addWidget(frame_form)
+        left_col.addWidget(frame_form)
 
+        # Form Fattura
+        frame_fattura = QFrame(self)
+        frame_fattura.setStyleSheet("background-color: #f8f9fa; border: 1px solid #ddd; border-radius: 8px;")
+        fattura_layout = QVBoxLayout(frame_fattura)
+        fattura_layout.setContentsMargins(15, 15, 15, 15)
+        
+        lbl_fattura = QLabel("📄 Fattura Collegata")
+        lbl_fattura.setStyleSheet("font-size: 16px; font-weight: bold; color: #34495e; border: none;")
+        fattura_layout.addWidget(lbl_fattura)
+        
+        row_fatt_info = QHBoxLayout()
+        self.label_nome_fattura = QLabel("Nessuna fattura caricata")
+        self.label_nome_fattura.setStyleSheet("color: #e67e22; font-weight: bold; border: none;")
+        row_fatt_info.addWidget(self.label_nome_fattura, 1)
+        fattura_layout.addLayout(row_fatt_info)
+
+        row_fatt_btn = QHBoxLayout()
+        self.button_importa_fattura = QPushButton("📥 Carica Fattura")
+        self.button_importa_fattura.setStyleSheet(STYLE_BTN_INFO)
+        self.button_importa_fattura.clicked.connect(self.seleziona_fattura_carne)
+        
+        self.button_rimuovi_fattura = QPushButton("Rimuovi")
+        self.button_rimuovi_fattura.setStyleSheet(STYLE_BTN_SECONDARIO)
+        self.button_rimuovi_fattura.clicked.connect(self.rimuovi_fattura_carne)
+        
+        row_fatt_btn.addWidget(self.button_importa_fattura)
+        row_fatt_btn.addWidget(self.button_rimuovi_fattura)
+        row_fatt_btn.addStretch(1)
+        fattura_layout.addLayout(row_fatt_btn)
+        
+        left_col.addWidget(frame_fattura)
+        left_col.addStretch(1)
+
+        # -- Colonna Destra (Gruppi)
         frame_gruppi = QFrame(self)
+        frame_gruppi.setStyleSheet("background-color: #f8f9fa; border: 1px solid #ddd; border-radius: 8px;")
         gruppi_layout = QVBoxLayout(frame_gruppi)
-        gruppi_layout.setContentsMargins(10, 10, 10, 10)
-        gruppi_layout.setSpacing(8)
-
-        gruppi_layout.addWidget(QLabel("Gruppi da carne"))
+        gruppi_layout.setContentsMargins(15, 15, 15, 15)
+        
+        lbl_gruppi = QLabel("🐄 Gruppi da Carne")
+        lbl_gruppi.setStyleSheet("font-size: 16px; font-weight: bold; color: #34495e; border: none;")
+        gruppi_layout.addWidget(lbl_gruppi)
 
         row_gruppi = QHBoxLayout()
-        row_gruppi.setSpacing(8)
-
+        
         self.list_gruppi = QListWidget(self)
+        self.list_gruppi.setStyleSheet("background-color: white; border: 1px solid #ccc; border-radius: 4px;")
         self.list_gruppi.setSelectionMode(QAbstractItemView.MultiSelection)
         self.list_gruppi.itemSelectionChanged.connect(self._on_selezione_gruppi_carne)
         row_gruppi.addWidget(self.list_gruppi, 1)
 
         col_buttons = QVBoxLayout()
-        col_buttons.setSpacing(6)
-
         button_tutti = QPushButton("Seleziona tutti", self)
+        button_tutti.setStyleSheet(STYLE_BTN_INFO)
         button_tutti.clicked.connect(self.seleziona_tutti_gruppi_carne)
         col_buttons.addWidget(button_tutti)
 
         button_nessuno = QPushButton("Deseleziona", self)
+        button_nessuno.setStyleSheet(STYLE_BTN_SECONDARIO)
         button_nessuno.clicked.connect(self.deseleziona_gruppi_carne)
         col_buttons.addWidget(button_nessuno)
 
@@ -135,89 +201,80 @@ class ZootecniaCarnePage(ZootecniaParserSupport, QWidget):
         gruppi_layout.addLayout(row_gruppi)
 
         row_rimozione = QHBoxLayout()
-        row_rimozione.setSpacing(8)
-
-        self.check_rimuovi_capi = QCheckBox(
-            "Rimuovi capi dai gruppi selezionati durante il salvataggio",
-            self,
-        )
+        self.check_rimuovi_capi = QCheckBox("Rimuovi capi salvando", self)
+        self.check_rimuovi_capi.setStyleSheet("font-weight: bold; border: none;")
         self.check_rimuovi_capi.toggled.connect(self._on_toggle_rimozione_capi_carne)
-        row_rimozione.addWidget(self.check_rimuovi_capi, 1)
+        row_rimozione.addWidget(self.check_rimuovi_capi)
 
-        row_rimozione.addWidget(QLabel("Capi da rimuovere:"))
         self.input_capi_da_rimuovere = QLineEdit(self)
-        self.input_capi_da_rimuovere.setPlaceholderText("Numero intero")
+        self.input_capi_da_rimuovere.setStyleSheet("padding: 5px; background: white;")
+        self.input_capi_da_rimuovere.setPlaceholderText("Numero capi")
         self.input_capi_da_rimuovere.textChanged.connect(lambda _t: self._aggiorna_stato_gruppi_carne())
         row_rimozione.addWidget(self.input_capi_da_rimuovere)
-
+        
         gruppi_layout.addLayout(row_rimozione)
 
         self.label_gruppi_stato = QLabel("")
         self.label_gruppi_stato.setWordWrap(True)
+        self.label_gruppi_stato.setStyleSheet("color: #7f8c8d; font-style: italic; border: none;")
         gruppi_layout.addWidget(self.label_gruppi_stato)
 
-        layout.addWidget(frame_gruppi)
+        cards_layout.addLayout(left_col, 1)
+        cards_layout.addWidget(frame_gruppi, 1)
+        top_layout.addLayout(cards_layout)
 
+        # Bottoni Azione
         row_actions = QHBoxLayout()
-        row_actions.setSpacing(8)
-
-        self.button_salva = QPushButton("Salva Produzione Carne", self)
+        self.button_salva = QPushButton("✅ Salva Produzione")
+        self.button_salva.setStyleSheet(STYLE_BTN_SALVA)
         self.button_salva.clicked.connect(self.salva_produzione_carne)
         row_actions.addWidget(self.button_salva)
 
-        button_modifica = QPushButton("Modifica selezionata", self)
+        button_modifica = QPushButton("Modifica Selezionata")
+        button_modifica.setStyleSheet(STYLE_BTN_MODIFICA)
         button_modifica.clicked.connect(self.modifica_produzione_carne_selezionata)
         row_actions.addWidget(button_modifica)
 
-        self.button_annulla = QPushButton("Annulla modifica", self)
+        self.button_annulla = QPushButton("Annulla Modifica")
+        self.button_annulla.setStyleSheet(STYLE_BTN_SECONDARIO)
         self.button_annulla.setEnabled(False)
         self.button_annulla.clicked.connect(lambda: self.annulla_modifica_produzione_carne(reset_fields=True))
         row_actions.addWidget(self.button_annulla)
 
-        button_ricarica = QPushButton("Ricarica storico", self)
+        button_ricarica = QPushButton("Ricarica")
+        button_ricarica.setStyleSheet(STYLE_BTN_SECONDARIO)
         button_ricarica.clicked.connect(lambda: self.carica_produzioni_carne(show_errors=True))
         row_actions.addWidget(button_ricarica)
 
-        button_elimina = QPushButton("Elimina selezionata", self)
+        button_elimina = QPushButton("Elimina Selezionata")
+        button_elimina.setStyleSheet(STYLE_BTN_ELIMINA)
         button_elimina.clicked.connect(self.elimina_produzione_carne_selezionata)
         row_actions.addWidget(button_elimina)
 
         row_actions.addStretch(1)
-        layout.addLayout(row_actions)
+        top_layout.addLayout(row_actions)
 
         self.label_modifica_stato = QLabel("")
-        self.label_modifica_stato.setStyleSheet("color: #1f5f3f;")
-        layout.addWidget(self.label_modifica_stato)
-
-        frame_fattura = QFrame(self)
-        fattura_layout = QHBoxLayout(frame_fattura)
-        fattura_layout.setContentsMargins(10, 10, 10, 10)
-        fattura_layout.setSpacing(8)
-
-        fattura_layout.addWidget(QLabel("Fattura carne:"))
-        self.label_nome_fattura = QLabel("Nessuna fattura caricata")
-        fattura_layout.addWidget(self.label_nome_fattura, 1)
-
-        self.button_importa_fattura = QPushButton("Carica Fattura", self)
-        self.button_importa_fattura.clicked.connect(self.seleziona_fattura_carne)
-        fattura_layout.addWidget(self.button_importa_fattura)
-
-        self.button_rimuovi_fattura = QPushButton("Rimuovi", self)
-        self.button_rimuovi_fattura.clicked.connect(self.rimuovi_fattura_carne)
-        fattura_layout.addWidget(self.button_rimuovi_fattura)
-
-        layout.addWidget(frame_fattura)
+        self.label_modifica_stato.setStyleSheet("color: #1f5f3f; font-weight: bold;")
+        top_layout.addWidget(self.label_modifica_stato)
 
         self.progress_parser = QProgressBar(self)
         self.progress_parser.setRange(0, 0)
         self.progress_parser.setTextVisible(False)
         self.progress_parser.setFixedHeight(8)
         self.progress_parser.setVisible(False)
-        layout.addWidget(self.progress_parser)
+        top_layout.addWidget(self.progress_parser)
+        
+        main_splitter.addWidget(top_widget)
 
-        riepilogo_label = QLabel("Riepilogo produzione carne")
-        riepilogo_label.setStyleSheet("font-size: 15px; font-weight: 600;")
-        layout.addWidget(riepilogo_label)
+        # --- WIDGET INFERIORE ---
+        bottom_widget = QWidget()
+        bottom_layout = QVBoxLayout(bottom_widget)
+        bottom_layout.setContentsMargins(0, 0, 0, 0)
+
+        riepilogo_label = QLabel("Riepilogo Storico")
+        riepilogo_label.setStyleSheet("font-size: 16px; font-weight: bold; color: #34495e;")
+        bottom_layout.addWidget(riepilogo_label)
 
         self.table_produzione = QTableWidget(0, 5, self)
         self.table_produzione.setHorizontalHeaderLabels(["ID", "Data", "Kg", "Prezzo / Kg", "Totale"])
@@ -226,17 +283,23 @@ class ZootecniaCarnePage(ZootecniaParserSupport, QWidget):
         self.table_produzione.setSelectionMode(QAbstractItemView.SingleSelection)
         self.table_produzione.setAlternatingRowColors(True)
         self.table_produzione.verticalHeader().setVisible(False)
+        self.table_produzione.setStyleSheet("QTableWidget { border: 1px solid #ccc; border-radius: 5px; } QHeaderView::section { background-color: #f8f9fa; font-weight: bold; border: 1px solid #ddd; padding: 4px; }")
         self.table_produzione.itemSelectionChanged.connect(self._on_selezione_produzione_carne)
         self.table_produzione.cellDoubleClicked.connect(lambda _r, _c: self.modifica_produzione_carne_selezionata())
 
         table_header = self.table_produzione.horizontalHeader()
         table_header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
-        table_header.setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        table_header.setSectionResizeMode(1, QHeaderView.Stretch)
         table_header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
         table_header.setSectionResizeMode(3, QHeaderView.ResizeToContents)
         table_header.setSectionResizeMode(4, QHeaderView.ResizeToContents)
 
-        layout.addWidget(self.table_produzione, 1)
+        bottom_layout.addWidget(self.table_produzione, 1)
+        main_splitter.addWidget(bottom_widget)
+
+        main_splitter.setSizes([500, 300])
+        main_layout.addWidget(main_splitter, 1)
+
         self._on_toggle_rimozione_capi_carne()
 
     def _append_row(self, row_index: int, values: list[str], right_align_indexes=None):
@@ -681,7 +744,7 @@ class ZootecniaCarnePage(ZootecniaParserSupport, QWidget):
         self.check_rimuovi_capi.setChecked(False)
         self.input_capi_da_rimuovere.clear()
 
-        self.button_salva.setText("Aggiorna Produzione Carne")
+        self.button_salva.setText("Aggiorna Produzione")
         self.button_annulla.setEnabled(True)
         self.label_modifica_stato.setText(
             f"Modifica produzione carne ID {self.produzione_carne_in_modifica_id} attiva."
@@ -718,7 +781,7 @@ class ZootecniaCarnePage(ZootecniaParserSupport, QWidget):
 
     def annulla_modifica_produzione_carne(self, reset_fields=False):
         self.produzione_carne_in_modifica_id = None
-        self.button_salva.setText("Salva Produzione Carne")
+        self.button_salva.setText("✅ Salva Produzione")
         self.button_annulla.setEnabled(False)
         self.label_modifica_stato.setText("")
         self.table_produzione.clearSelection()

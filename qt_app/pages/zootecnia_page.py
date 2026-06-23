@@ -1,4 +1,4 @@
-from PySide6.QtWidgets import QTabWidget, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QTabWidget, QVBoxLayout, QWidget, QLabel
 
 from qt_app.pages.azienda_animali_page import AziendaAnimaliPage
 from qt_app.pages.zootecnia_carne_page import ZootecniaCarnePage
@@ -14,10 +14,23 @@ class ZootecniaPage(QWidget):
 
     def _build_ui(self):
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(12, 12, 12, 12)
-        layout.setSpacing(10)
+        layout.setContentsMargins(15, 15, 15, 15)
+        layout.setSpacing(15)
+
+        # HEADER
+        header_layout = QVBoxLayout()
+        header_layout.setSpacing(2)
+        titolo = QLabel("🐄 Gestione Zootecnia e Allevamento")
+        titolo.setStyleSheet("font-size: 24px; font-weight: bold; color: #2c3e50;")
+        sottotitolo = QLabel("Gestisci i gruppi di animali, la produzione di latte e la vendita di carne.")
+        sottotitolo.setStyleSheet("font-size: 14px; color: #7f8c8d;")
+        header_layout.addWidget(titolo)
+        header_layout.addWidget(sottotitolo)
+        layout.addLayout(header_layout)
 
         self.tabs = QTabWidget(self)
+        self.tabs.setStyleSheet("QTabWidget::pane { border: 1px solid #ccc; border-radius: 4px; background-color: white; }")
+        
         self.page_animali = AziendaAnimaliPage(self.user_id, self.tabs)
         self.page_latte = ZootecniaLattePage(self.user_id, self.tabs)
         self.page_carne = ZootecniaCarnePage(self.user_id, self.tabs)

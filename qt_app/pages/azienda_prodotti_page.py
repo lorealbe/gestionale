@@ -40,47 +40,53 @@ class AziendaProdottiPage(QWidget):
         self.carica_storico_prodotti(show_errors=False)
 
     def _build_ui(self):
+        STYLE_BTN_INFO = "background-color: #17a2b8; color: white; font-weight: bold; padding: 8px; border-radius: 5px;"
+        STYLE_BTN_SECONDARIO = "background-color: #6c757d; color: white; font-weight: bold; padding: 8px; border-radius: 5px;"
+
         main_layout = QVBoxLayout(self)
-        main_layout.setContentsMargins(14, 14, 14, 14)
-        main_layout.setSpacing(10)
+        main_layout.setContentsMargins(15, 15, 15, 15)
+        main_layout.setSpacing(15)
 
-        top_row = QHBoxLayout()
-        top_row.setSpacing(8)
+        # HEADER
+        header_layout = QVBoxLayout()
+        titolo = QLabel("📦 Archivio Prodotti Acquistati")
+        titolo.setStyleSheet("font-size: 24px; font-weight: bold; color: #2c3e50;")
+        sottotitolo = QLabel("Cerca e analizza i singoli articoli (es. concimi, sementi) estratti dalle tue fatture.")
+        sottotitolo.setStyleSheet("font-size: 14px; color: #7f8c8d;")
+        header_layout.addWidget(titolo)
+        header_layout.addWidget(sottotitolo)
+        main_layout.addLayout(header_layout)
 
-        self.label_stato = QLabel("Nessun prodotto caricato.")
-        top_row.addWidget(self.label_stato)
-        top_row.addStretch(1)
-
-        button_ricarica = QPushButton("Ricarica", self)
-        button_ricarica.clicked.connect(lambda: self.carica_storico_prodotti(show_errors=True))
-        top_row.addWidget(button_ricarica)
-
-        main_layout.addLayout(top_row)
-
+        # FILTRI E STATO
         frame_filtri = QFrame(self)
-        frame_filtri.setFrameShape(QFrame.StyledPanel)
+        frame_filtri.setStyleSheet("background-color: #f8f9fa; border: 1px solid #ddd; border-radius: 8px;")
         layout_filtri = QGridLayout(frame_filtri)
-        layout_filtri.setContentsMargins(10, 10, 10, 10)
-        layout_filtri.setHorizontalSpacing(8)
-        layout_filtri.setVerticalSpacing(8)
+        layout_filtri.setContentsMargins(15, 15, 15, 15)
+        layout_filtri.setHorizontalSpacing(10)
+        layout_filtri.setVerticalSpacing(10)
 
-        self.check_data_da = QCheckBox("Data mov. da", self)
+        self.check_data_da = QCheckBox("Data da:", self)
+        self.check_data_da.setStyleSheet("font-weight: bold;")
         self.check_data_da.toggled.connect(self._on_toggle_data_filters)
         self.date_data_da = QDateEdit(self)
+        self.date_data_da.setStyleSheet("padding: 5px;")
         self.date_data_da.setDisplayFormat("dd/MM/yyyy")
         self.date_data_da.setCalendarPopup(True)
         self.date_data_da.setDate(QDate.currentDate())
         self.date_data_da.setEnabled(False)
 
-        self.check_data_a = QCheckBox("a", self)
+        self.check_data_a = QCheckBox("Data a:", self)
+        self.check_data_a.setStyleSheet("font-weight: bold;")
         self.check_data_a.toggled.connect(self._on_toggle_data_filters)
         self.date_data_a = QDateEdit(self)
+        self.date_data_a.setStyleSheet("padding: 5px;")
         self.date_data_a.setDisplayFormat("dd/MM/yyyy")
         self.date_data_a.setCalendarPopup(True)
         self.date_data_a.setDate(QDate.currentDate())
         self.date_data_a.setEnabled(False)
 
         self.combo_tipo_costo = QComboBox(self)
+        self.combo_tipo_costo.setStyleSheet("padding: 5px;")
         self.combo_tipo_costo.addItems(["Tutti", "Variabili", "Fissi"])
         self.combo_tipo_costo.currentIndexChanged.connect(self._on_filter_changed)
 
@@ -88,57 +94,69 @@ class AziendaProdottiPage(QWidget):
         layout_filtri.addWidget(self.date_data_da, 0, 1)
         layout_filtri.addWidget(self.check_data_a, 0, 2)
         layout_filtri.addWidget(self.date_data_a, 0, 3)
-        layout_filtri.addWidget(QLabel("Tipo costo:"), 0, 4)
+        layout_filtri.addWidget(QLabel("<b>Tipo costo:</b>"), 0, 4)
         layout_filtri.addWidget(self.combo_tipo_costo, 0, 5)
 
         self.input_numero_fattura = QLineEdit(self)
+        self.input_numero_fattura.setStyleSheet("padding: 5px;")
         self.input_numero_fattura.setPlaceholderText("N. fattura")
         self.input_numero_fattura.returnPressed.connect(lambda: self.carica_storico_prodotti(show_errors=True))
 
         self.input_fornitore = QLineEdit(self)
-        self.input_fornitore.setPlaceholderText("Fornitore")
+        self.input_fornitore.setStyleSheet("padding: 5px;")
+        self.input_fornitore.setPlaceholderText("Cerca Fornitore...")
         self.input_fornitore.returnPressed.connect(lambda: self.carica_storico_prodotti(show_errors=True))
 
-        layout_filtri.addWidget(QLabel("N. fattura:"), 1, 0)
+        layout_filtri.addWidget(QLabel("<b>N. fattura:</b>"), 1, 0)
         layout_filtri.addWidget(self.input_numero_fattura, 1, 1)
-        layout_filtri.addWidget(QLabel("Fornitore:"), 1, 2)
+        layout_filtri.addWidget(QLabel("<b>Fornitore:</b>"), 1, 2)
         layout_filtri.addWidget(self.input_fornitore, 1, 3, 1, 3)
 
         self.input_prodotto = QLineEdit(self)
-        self.input_prodotto.setPlaceholderText("Prodotto")
+        self.input_prodotto.setStyleSheet("padding: 5px;")
+        self.input_prodotto.setPlaceholderText("Nome Prodotto...")
         self.input_prodotto.returnPressed.connect(lambda: self.carica_storico_prodotti(show_errors=True))
 
         self.combo_categoria = QComboBox(self)
+        self.combo_categoria.setStyleSheet("padding: 5px;")
         self.combo_categoria.addItems(["Tutte", *PRODUCT_CATEGORY_OPTIONS])
         self.combo_categoria.currentIndexChanged.connect(self._on_filter_changed)
 
         self.input_gruppo = QLineEdit(self)
-        self.input_gruppo.setPlaceholderText("Gruppo")
+        self.input_gruppo.setStyleSheet("padding: 5px;")
+        self.input_gruppo.setPlaceholderText("Gruppo (Campo/Stalla)")
         self.input_gruppo.returnPressed.connect(lambda: self.carica_storico_prodotti(show_errors=True))
 
-        layout_filtri.addWidget(QLabel("Prodotto:"), 2, 0)
+        layout_filtri.addWidget(QLabel("<b>Prodotto:</b>"), 2, 0)
         layout_filtri.addWidget(self.input_prodotto, 2, 1)
-        layout_filtri.addWidget(QLabel("Categoria:"), 2, 2)
+        layout_filtri.addWidget(QLabel("<b>Categoria:</b>"), 2, 2)
         layout_filtri.addWidget(self.combo_categoria, 2, 3)
-        layout_filtri.addWidget(QLabel("Gruppo:"), 2, 4)
+        layout_filtri.addWidget(QLabel("<b>Gruppo:</b>"), 2, 4)
         layout_filtri.addWidget(self.input_gruppo, 2, 5)
 
         row_buttons = QHBoxLayout()
-        row_buttons.setSpacing(8)
+        row_buttons.setSpacing(10)
 
-        button_applica = QPushButton("Applica filtri", self)
+        button_applica = QPushButton("Cerca Prodotti")
+        button_applica.setStyleSheet(STYLE_BTN_INFO)
         button_applica.clicked.connect(lambda: self.carica_storico_prodotti(show_errors=True))
         row_buttons.addWidget(button_applica)
 
-        button_pulisci = QPushButton("Pulisci", self)
+        button_pulisci = QPushButton("Reset Filtri")
+        button_pulisci.setStyleSheet(STYLE_BTN_SECONDARIO)
         button_pulisci.clicked.connect(self.pulisci_filtri)
         row_buttons.addWidget(button_pulisci)
+        
+        self.label_stato = QLabel("Nessun prodotto caricato.")
+        self.label_stato.setStyleSheet("color: #e67e22; font-weight: bold;")
+        row_buttons.addWidget(self.label_stato)
 
         row_buttons.addStretch(1)
         layout_filtri.addLayout(row_buttons, 3, 0, 1, 6)
 
         main_layout.addWidget(frame_filtri)
 
+        # TABELLA PRODOTTI
         self.table_prodotti = QTableWidget(0, 10, self)
         self.table_prodotti.setHorizontalHeaderLabels(
             [
@@ -159,6 +177,7 @@ class AziendaProdottiPage(QWidget):
         self.table_prodotti.setSelectionMode(QAbstractItemView.SingleSelection)
         self.table_prodotti.setAlternatingRowColors(True)
         self.table_prodotti.verticalHeader().setVisible(False)
+        self.table_prodotti.setStyleSheet("QTableWidget { border: 1px solid #ccc; border-radius: 5px; } QHeaderView::section { background-color: #f8f9fa; font-weight: bold; border: 1px solid #ddd; }")
 
         header = self.table_prodotti.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.ResizeToContents)

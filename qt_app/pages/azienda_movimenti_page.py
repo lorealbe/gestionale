@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
     QTableWidgetItem,
     QVBoxLayout,
     QWidget,
+    QSplitter
 )
 
 from app_utils import format_number, parse_decimal
@@ -49,56 +50,81 @@ class AziendaMovimentiPage(QWidget):
         self.carica_movimenti(show_errors=False)
 
     def _build_ui(self):
-        main_layout = QVBoxLayout(self)
-        main_layout.setContentsMargins(14, 14, 14, 14)
-        main_layout.setSpacing(10)
+        STYLE_BTN_MODIFICA = "background-color: #ffc107; color: black; font-weight: bold; padding: 8px; border-radius: 5px;"
+        STYLE_BTN_ELIMINA = "background-color: #dc3545; color: white; font-weight: bold; padding: 8px; border-radius: 5px;"
+        STYLE_BTN_SECONDARIO = "background-color: #6c757d; color: white; font-weight: bold; padding: 8px; border-radius: 5px;"
+        STYLE_BTN_INFO = "background-color: #17a2b8; color: white; font-weight: bold; padding: 8px; border-radius: 5px;"
 
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(15, 15, 15, 15)
+        main_layout.setSpacing(15)
+
+        # HEADER
+        header_layout = QVBoxLayout()
+        titolo = QLabel("📜 Storico Movimenti e Fatture")
+        titolo.setStyleSheet("font-size: 24px; font-weight: bold; color: #2c3e50;")
+        sottotitolo = QLabel("Consulta le entrate, le uscite e apri rapidamente i documenti PDF.")
+        sottotitolo.setStyleSheet("font-size: 14px; color: #7f8c8d;")
+        header_layout.addWidget(titolo)
+        header_layout.addWidget(sottotitolo)
+        main_layout.addLayout(header_layout)
+
+        # FILTRI
         frame_filtri = QFrame(self)
-        frame_filtri.setFrameShape(QFrame.StyledPanel)
+        frame_filtri.setStyleSheet("background-color: #f8f9fa; border: 1px solid #ddd; border-radius: 8px;")
         layout_filtri = QGridLayout(frame_filtri)
-        layout_filtri.setContentsMargins(10, 10, 10, 10)
-        layout_filtri.setHorizontalSpacing(8)
-        layout_filtri.setVerticalSpacing(8)
+        layout_filtri.setContentsMargins(15, 15, 15, 15)
+        layout_filtri.setHorizontalSpacing(10)
+        layout_filtri.setVerticalSpacing(10)
 
         self.combo_categoria = QComboBox(self)
+        self.combo_categoria.setStyleSheet("padding: 5px;")
         self.combo_categoria.addItem("Tutte")
         self.combo_categoria.currentIndexChanged.connect(self._on_filter_changed)
 
         self.combo_gruppo_animale = QComboBox(self)
+        self.combo_gruppo_animale.setStyleSheet("padding: 5px;")
         self.combo_gruppo_animale.addItem("Tutti")
         self.combo_gruppo_animale.currentIndexChanged.connect(self._on_filter_changed)
 
         self.input_descrizione = QLineEdit(self)
+        self.input_descrizione.setStyleSheet("padding: 5px;")
         self.input_descrizione.setPlaceholderText("Filtro descrizione")
         self.input_descrizione.returnPressed.connect(lambda: self.carica_movimenti(show_errors=True))
 
-        layout_filtri.addWidget(QLabel("Categoria:"), 0, 0)
+        layout_filtri.addWidget(QLabel("<b>Categoria:</b>"), 0, 0)
         layout_filtri.addWidget(self.combo_categoria, 0, 1)
-        layout_filtri.addWidget(QLabel("Gruppo animale:"), 0, 2)
+        layout_filtri.addWidget(QLabel("<b>Gruppo animale:</b>"), 0, 2)
         layout_filtri.addWidget(self.combo_gruppo_animale, 0, 3)
-        layout_filtri.addWidget(QLabel("Descrizione:"), 0, 4)
+        layout_filtri.addWidget(QLabel("<b>Descrizione:</b>"), 0, 4)
         layout_filtri.addWidget(self.input_descrizione, 0, 5)
 
         self.check_data_da = QCheckBox("Data da", self)
+        self.check_data_da.setStyleSheet("font-weight: bold;")
         self.check_data_da.toggled.connect(self._on_toggle_data_filter)
         self.date_data_da = QDateEdit(self)
+        self.date_data_da.setStyleSheet("padding: 5px;")
         self.date_data_da.setDisplayFormat("dd/MM/yyyy")
         self.date_data_da.setCalendarPopup(True)
         self.date_data_da.setDate(QDate.currentDate())
         self.date_data_da.setEnabled(False)
 
         self.check_data_a = QCheckBox("Data a", self)
+        self.check_data_a.setStyleSheet("font-weight: bold;")
         self.check_data_a.toggled.connect(self._on_toggle_data_filter)
         self.date_data_a = QDateEdit(self)
+        self.date_data_a.setStyleSheet("padding: 5px;")
         self.date_data_a.setDisplayFormat("dd/MM/yyyy")
         self.date_data_a.setCalendarPopup(True)
         self.date_data_a.setDate(QDate.currentDate())
         self.date_data_a.setEnabled(False)
 
         button_applica = QPushButton("Applica filtri", self)
+        button_applica.setStyleSheet(STYLE_BTN_INFO)
         button_applica.clicked.connect(lambda: self.carica_movimenti(show_errors=True))
 
         button_pulisci = QPushButton("Pulisci", self)
+        button_pulisci.setStyleSheet(STYLE_BTN_SECONDARIO)
         button_pulisci.clicked.connect(self.pulisci_filtri)
 
         layout_filtri.addWidget(self.check_data_da, 1, 0)
@@ -110,6 +136,14 @@ class AziendaMovimentiPage(QWidget):
 
         main_layout.addWidget(frame_filtri)
 
+        # SPLITTER PRINCIPALE VERTICALE
+        main_splitter = QSplitter(Qt.Vertical)
+
+        # WIDGET SUPERIORE (Tabella + Pulsanti Azione)
+        top_widget = QWidget()
+        top_layout = QVBoxLayout(top_widget)
+        top_layout.setContentsMargins(0, 0, 0, 0)
+
         self.table_movimenti = QTableWidget(0, 7, self)
         self.table_movimenti.setHorizontalHeaderLabels(["ID", "Data", "Tipo", "Categoria", "Descrizione", "Importo", "IVA"])
         self.table_movimenti.setEditTriggers(QAbstractItemView.NoEditTriggers)
@@ -117,6 +151,7 @@ class AziendaMovimentiPage(QWidget):
         self.table_movimenti.setSelectionMode(QAbstractItemView.SingleSelection)
         self.table_movimenti.setAlternatingRowColors(True)
         self.table_movimenti.verticalHeader().setVisible(False)
+        self.table_movimenti.setStyleSheet("QTableWidget { border: 1px solid #ccc; border-radius: 5px; } QHeaderView::section { background-color: #f8f9fa; font-weight: bold; border: 1px solid #ddd; }")
         self.table_movimenti.itemSelectionChanged.connect(self.carica_dettagli_fattura_movimento_selezionato)
         self.table_movimenti.cellDoubleClicked.connect(lambda _row, _col: self.richiedi_modifica_movimento())
 
@@ -129,47 +164,62 @@ class AziendaMovimentiPage(QWidget):
         header.setSectionResizeMode(5, QHeaderView.ResizeToContents)
         header.setSectionResizeMode(6, QHeaderView.ResizeToContents)
 
-        main_layout.addWidget(self.table_movimenti, 1)
+        top_layout.addWidget(self.table_movimenti)
 
         row_actions = QHBoxLayout()
-        row_actions.setSpacing(8)
+        row_actions.setSpacing(10)
 
-        button_ricarica = QPushButton("Ricarica", self)
+        button_ricarica = QPushButton("Ricarica")
+        button_ricarica.setStyleSheet(STYLE_BTN_SECONDARIO)
         button_ricarica.clicked.connect(lambda: self.carica_movimenti(show_errors=True))
         row_actions.addWidget(button_ricarica)
 
-        button_modifica = QPushButton("Modifica selezionato", self)
+        button_modifica = QPushButton("Modifica Selezionato")
+        button_modifica.setStyleSheet(STYLE_BTN_MODIFICA)
         button_modifica.clicked.connect(self.richiedi_modifica_movimento)
         row_actions.addWidget(button_modifica)
 
-        button_apri_fattura = QPushButton("Apri fattura", self)
+        button_apri_fattura = QPushButton("Apri PDF Fattura")
+        button_apri_fattura.setStyleSheet(STYLE_BTN_INFO)
         button_apri_fattura.clicked.connect(self.apri_fattura_movimento_selezionato)
         row_actions.addWidget(button_apri_fattura)
 
-        button_elimina = QPushButton("Elimina selezionato", self)
+        button_elimina = QPushButton("Elimina Selezionato")
+        button_elimina.setStyleSheet(STYLE_BTN_ELIMINA)
         button_elimina.clicked.connect(self.elimina_movimento_selezionato)
         row_actions.addWidget(button_elimina)
 
-        row_actions.addStretch(1)
-        main_layout.addLayout(row_actions)
+        row_actions.addStretch()
+        top_layout.addLayout(row_actions)
+        main_splitter.addWidget(top_widget)
 
-        dettagli_title = QLabel("Dati fattura del movimento selezionato")
-        dettagli_title.setStyleSheet("font-size: 15px; font-weight: 600;")
-        main_layout.addWidget(dettagli_title)
+        # WIDGET INFERIORE (Dettagli)
+        bottom_widget = QWidget()
+        bottom_layout = QVBoxLayout(bottom_widget)
+        bottom_layout.setContentsMargins(0, 0, 0, 0)
+
+        dettagli_title = QLabel("📄 Dati della Fattura collegata")
+        dettagli_title.setStyleSheet("font-size: 16px; font-weight: bold; color: #34495e; padding-top: 10px;")
+        bottom_layout.addWidget(dettagli_title)
 
         self.table_dettagli = QTableWidget(0, 2, self)
-        self.table_dettagli.setHorizontalHeaderLabels(["Campo", "Valore"])
+        self.table_dettagli.setHorizontalHeaderLabels(["Campo", "Valore Letto da PDF"])
         self.table_dettagli.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table_dettagli.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table_dettagli.setSelectionMode(QAbstractItemView.SingleSelection)
         self.table_dettagli.setAlternatingRowColors(True)
         self.table_dettagli.verticalHeader().setVisible(False)
+        self.table_dettagli.setStyleSheet("QTableWidget { border: 1px solid #ccc; border-radius: 5px; } QHeaderView::section { background-color: #f8f9fa; font-weight: bold; border: 1px solid #ddd; }")
 
         dettagli_header = self.table_dettagli.horizontalHeader()
         dettagli_header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
         dettagli_header.setSectionResizeMode(1, QHeaderView.Stretch)
 
-        main_layout.addWidget(self.table_dettagli, 1)
+        bottom_layout.addWidget(self.table_dettagli)
+        main_splitter.addWidget(bottom_widget)
+
+        main_splitter.setSizes([500, 300]) # Proporzioni iniziali
+        main_layout.addWidget(main_splitter, 1)
 
         self._azzera_dettagli_fattura()
 

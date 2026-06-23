@@ -1,4 +1,7 @@
-from PySide6.QtCore import Qt, Signal, QTimer
+import os
+import shutil
+import csv
+from PySide6.QtCore import Qt, Signal, QTimer, QDate
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
     QFrame,
@@ -9,7 +12,8 @@ from PySide6.QtWidgets import (
     QStackedWidget,
     QVBoxLayout,
     QWidget,
-    QSizePolicy
+    QSizePolicy,
+    QFileDialog
 )
 
 from qt_app.pages import (
@@ -20,6 +24,7 @@ from qt_app.pages import (
     ZootecniaPage,
 )
 from qt_app.pages.dashboard_page import DashboardPage
+from database import get_conn
 
 
 class MainWindow(QMainWindow):
@@ -46,8 +51,38 @@ class MainWindow(QMainWindow):
         self.user_id = int(user_id)
         self.username = username
 
-        self.setWindowTitle(f"Gestione Fatture - {self.username}")
+        self.setWindowTitle(f"Gestione Azienda Agricola - {self.username}")
         self.resize(1200, 800)
+
+        # Stile globale per correggere l'invisibilità di mese e anno nei calendari
+        self.setStyleSheet("""
+            QCalendarWidget QWidget#qt_calendar_navigationbar {
+                background-color: #f8f9fa;
+                border-bottom: 1px solid #ddd;
+            }
+            QCalendarWidget QToolButton {
+                color: #2c3e50;
+                font-weight: bold;
+                background-color: transparent;
+                padding: 4px;
+            }
+            QCalendarWidget QToolButton:hover {
+                background-color: #e2e6ea;
+                border-radius: 4px;
+            }
+            QCalendarWidget QMenu {
+                background-color: white;
+                color: #2c3e50;
+                border: 1px solid #ccc;
+            }
+            QCalendarWidget QSpinBox {
+                color: #2c3e50;
+                background-color: white;
+                border: 1px solid #ccc;
+                border-radius: 3px;
+                padding: 2px;
+            }
+        """)
 
         self.stack = QStackedWidget(self)
         self.stack.currentChanged.connect(self._adatta_altezza_dinamica)
@@ -70,21 +105,141 @@ class MainWindow(QMainWindow):
     def _build_menu(self):
         menu_bar = self.menuBar()
         
-
+        # --- MENU NAVIGAZIONE ---
         for category in self.CATEGORIES:
             action = QAction(category, self)
             action.triggered.connect(lambda _checked=False, name=category: self.show_category(name))
             menu_bar.addAction(action)
 
-        account_menu = menu_bar.addMenu("Account")
-        change_user_action = QAction("Cambia utente", self)
+        # --- MENU DATI E BACKUP (NUOVO) ---
+        menu_dati = menu_bar.addMenu("💾 Gestione Dati")
+        
+        action_backup = QAction("📦 Crea Backup Database", self)
+        action_backup.triggered.connect(self._esegui_backup)
+        menu_dati.addAction(action_backup)
+        
+        action_ripristina = QAction("🔄 Ripristina Backup", self)
+        action_ripristina.triggered.connect(self._ripristina_backup)
+        menu_dati.addAction(action_ripristina)
+        
+        menu_dati.addSeparator()
+        
+        action_esporta_csv = QAction("📊 Esporta Movimenti (Excel / Fogli Google)", self)
+        action_esporta_csv.triggered.connect(self._esporta_csv)
+        menu_dati.addAction(action_esporta_csv)
+
+        # --- MENU ACCOUNT ---
+        account_menu = menu_bar.addMenu("👤 Account")
+        change_user_action = QAction("Cambia utente / Esci", self)
         change_user_action.triggered.connect(self._request_change_user)
         account_menu.addAction(change_user_action)
 
+    # ==========================================
+    # LOGICA DI BACKUP, RIPRISTINO ED EXPORT
+    # ==========================================
+    def _get_db_path(self):
+        """Trova il percorso esatto del file database SQLite attualmente in uso."""
+        with get_conn() as conn:
+            # PRAGMA database_list restituisce: seq, name, file_path
+            return conn.execute("PRAGMA database_list").fetchone()[2]
+
+    def _esegui_backup(self):
+        db_path = self._get_db_path()
+        if not db_path or not os.path.exists(db_path):
+            QMessageBox.critical(self, "Errore", "Impossibile localizzare il database attuale.")
+            return
+
+        dest_path, _ = QFileDialog.getSaveFileName(
+            self, 
+            "Salva Backup Database",
+            f"Backup_Azienda_{QDate.currentDate().toString('yyyy_MM_dd')}.db",
+            "Database SQLite (*.db)"
+        )
+        
+        if not dest_path:
+            return
+
+        try:
+            shutil.copy2(db_path, dest_path)
+            QMessageBox.information(self, "Successo", "Backup salvato correttamente in:\n" + dest_path)
+        except Exception as e:
+            QMessageBox.critical(self, "Errore", f"Errore durante il backup:\n{e}")
+
+    def _ripristina_backup(self):
+        db_path = self._get_db_path()
+        src_path, _ = QFileDialog.getOpenFileName(
+            self, 
+            "Seleziona file di Backup da ripristinare", 
+            "", 
+            "Database SQLite (*.db)"
+        )
+        
+        if not src_path:
+            return
+
+        risposta = QMessageBox.warning(
+            self, 
+            "Attenzione Pericolo Sovrascrittura",
+            "Il ripristino SOVRASCRIVERÀ tutti i dati attuali con quelli del backup selezionato.\n\n"
+            "Sei sicuro di voler procedere?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+        
+        if risposta == QMessageBox.Yes:
+            try:
+                shutil.copy2(src_path, db_path)
+                QMessageBox.information(self, "Ripristino Completato", "Backup ripristinato con successo!\n\nL'applicazione verrà ora chiusa per applicare le modifiche in sicurezza. Riaprila per continuare.")
+                self.close() # Chiudiamo l'app per forzare il ricaricamento del DB
+            except Exception as e:
+                QMessageBox.critical(self, "Errore", f"Errore durante il ripristino:\n{e}")
+
+    def _esporta_csv(self):
+        percorso_salvataggio, _ = QFileDialog.getSaveFileName(
+            self, 
+            "Esporta per Excel / Fogli Google",
+            f"Export_Fatture_{self.username}_{QDate.currentDate().toString('yyyy_MM_dd')}.csv",
+            "File CSV (*.csv)"
+        )
+        
+        if not percorso_salvataggio:
+            return
+
+        try:
+            with get_conn() as conn:
+                c = conn.cursor()
+                c.execute("""
+                    SELECT id, data_op, tipo, categoria, descrizione, importo, iva_importo, stato_pagamento
+                    FROM movimenti 
+                    WHERE user_id=? 
+                    ORDER BY data_op DESC
+                """, (self.user_id,))
+                rows = c.fetchall()
+
+            # Usiamo 'utf-8-sig' per far capire automaticamente a Excel che è un file codificato in UTF-8
+            with open(percorso_salvataggio, mode='w', newline='', encoding='utf-8-sig') as f:
+                # Usiamo il punto e virgola ';' perché i fogli di calcolo in Italia lo preferiscono alla virgola
+                writer = csv.writer(f, delimiter=';') 
+                writer.writerow(["ID Movimento", "Data", "Tipo (E/U)", "Categoria", "Descrizione", "Imponibile EUR", "IVA EUR", "Stato"])
+                
+                for r in rows:
+                    # Convertiamo i punti decimali in virgole, così Excel riconosce i numeri e permette di fare le somme
+                    imponibile_it = str(r[5]).replace('.', ',') if r[5] is not None else "0,00"
+                    iva_it = str(r[6]).replace('.', ',') if r[6] is not None else "0,00"
+                    
+                    writer.writerow([r[0], r[1], r[2], r[3], r[4], imponibile_it, iva_it, r[7]])
+
+            QMessageBox.information(self, "Esportazione Completata", "Dati esportati con successo!\n\nPuoi ora aprire il file con Excel, LibreOffice o importarlo su Fogli Google.")
+        except Exception as e:
+            QMessageBox.critical(self, "Errore", f"Errore durante l'esportazione:\n{e}")
+
+
+    # ==========================================
+    # LOGICA DI NAVIGAZIONE E UI
+    # ==========================================
     def _create_category_page(self, category: str) -> QWidget:
         if category == self.CATEGORIA_DASHBOARD:         
             page = DashboardPage(self.user_id, self)
-            # --- FIX: Connettiamo la Dashboard alla MainWindow ---
             page.richiesta_navigazione.connect(self._gestisci_navigazione_dashboard)
             return page
         elif category == self.CATEGORIA_AZIENDA:
@@ -99,18 +254,16 @@ class MainWindow(QMainWindow):
             return ZootecniaPage(user_id=self.user_id, parent=self)
         return self._create_placeholder_page(category)
 
-    # --- NUOVO METODO: Fa da vigile urbano per le richieste della Dashboard ---
     def _gestisci_navigazione_dashboard(self, destinazione: str):
         mappa_destinazioni = {
             "agricoltura": self.CATEGORIA_AGRICOLTURA,
-            "fatture": self.CATEGORIA_AZIENDA, # Mandiamo Fatture nella sezione Azienda
+            "fatture": self.CATEGORIA_AZIENDA,
             "macchinari": self.CATEGORIA_MACCHINARI,
             "zootecnia": self.CATEGORIA_ZOOTECNIA
         }
         categoria_target = mappa_destinazioni.get(destinazione)
         if categoria_target:
             self.show_category(categoria_target)
-    # -------------------------------------------------------------------------
 
     def _create_placeholder_page(self, category: str) -> QWidget:
         page = QWidget(self)
@@ -138,7 +291,6 @@ class MainWindow(QMainWindow):
         container.setFrameShape(QFrame.NoFrame)
         container.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         
-        # La barra verticale ora apparirà SOLO quando realmente necessario
         container.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         container.setWidget(page)
         return container
@@ -166,25 +318,19 @@ class MainWindow(QMainWindow):
         if not current_widget:
             return
 
-        # Impostiamo le policy senza forzare il layout immediatamente
         for i in range(self.stack.count()):
             w = self.stack.widget(i)
-            # Usiamo Expanding per assicurare che prendano tutto lo spazio
             w.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         
-        # Usiamo un timer a 0ms: questo forza il ricalcolo nel ciclo di eventi successivo
-        # dando tempo a Qt di completare la transizione del cambio pagina
         QTimer.singleShot(0, lambda: self._finalize_layout(current_widget))
 
     def _finalize_layout(self, widget):
-        """Metodo di supporto per finalizzare il layout dopo il cambio pagina"""
         if not widget:
             return
         
         widget.updateGeometry()
         if widget.layout():
             widget.layout().activate()
-            # Questo forza il ridisegno dei figli
             widget.layout().update()
         
         self.stack.adjustSize()
