@@ -4,6 +4,7 @@ import csv
 from PySide6.QtCore import Qt, Signal, QTimer, QDate
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
+    QApplication,
     QFrame,
     QLabel,
     QMainWindow,
@@ -16,14 +17,6 @@ from PySide6.QtWidgets import (
     QFileDialog
 )
 
-from qt_app.pages import (
-    AgricolturaPage,
-    AttrezzaturePage,
-    AziendaPage,
-    MacchinariPage,
-    ZootecniaPage,
-)
-from qt_app.pages.dashboard_page import DashboardPage
 from database import get_conn
 
 
@@ -89,17 +82,13 @@ class MainWindow(QMainWindow):
         self.pages = {}
         self.page_containers = {}
 
-        for category in self.CATEGORIES:
-            page = self._create_category_page(category)
-            self.pages[category] = page
-            container = self._create_scrollable_container(page)
-            self.page_containers[category] = container
-            self.stack.addWidget(container)
+        # ---> RIMOSSO IL CICLO FOR CHE CARICAVA TUTTO ALL'AVVIO <---
 
         self.setCentralWidget(self.stack)
         self._build_menu()
         self.statusBar().showMessage(f"Accesso effettuato come: {self.username}")
         
+        # Questa riga chiamerà la nuova logica e caricherà in memoria SOLO la dashboard
         self.show_category(self.CATEGORIA_DASHBOARD)
 
     def _build_menu(self):
@@ -238,20 +227,27 @@ class MainWindow(QMainWindow):
     # LOGICA DI NAVIGAZIONE E UI
     # ==========================================
     def _create_category_page(self, category: str) -> QWidget:
-        if category == self.CATEGORIA_DASHBOARD:         
+        if category == self.CATEGORIA_DASHBOARD:    
+            from qt_app.pages.dashboard_page import DashboardPage     
             page = DashboardPage(self.user_id, self)
             page.richiesta_navigazione.connect(self._gestisci_navigazione_dashboard)
             return page
         elif category == self.CATEGORIA_AZIENDA:
+            from qt_app.pages.azienda_page import AziendaPage
             return AziendaPage(user_id=self.user_id, parent=self)
         if category == self.CATEGORIA_AGRICOLTURA:
+            from qt_app.pages.agricoltura_page import AgricolturaPage
             return AgricolturaPage(user_id=self.user_id, parent=self)
         if category == self.CATEGORIA_ATTREZZATURE:
+            from qt_app.pages.attrezzature_page import AttrezzaturePage
             return AttrezzaturePage(user_id=self.user_id, parent=self)
         if category == self.CATEGORIA_MACCHINARI:
+            from qt_app.pages.macchinari_page import MacchinariPage
             return MacchinariPage(user_id=self.user_id, parent=self)
         if category == self.CATEGORIA_ZOOTECNIA:
+            from qt_app.pages.zootecnia_page import ZootecniaPage
             return ZootecniaPage(user_id=self.user_id, parent=self)
+            
         return self._create_placeholder_page(category)
 
     def _gestisci_navigazione_dashboard(self, destinazione: str):
@@ -296,9 +292,26 @@ class MainWindow(QMainWindow):
         return container
 
     def show_category(self, category: str):
+        # LAZY LOADING: Crea la pagina la primissima volta che l'utente ci clicca
+        if category not in self.pages:
+            # Imposta il cursore di "Attesa/Caricamento"
+            QApplication.setOverrideCursor(Qt.WaitCursor)
+            
+            try:
+                page = self._create_category_page(category)
+                self.pages[category] = page
+                container = self._create_scrollable_container(page)
+                self.page_containers[category] = container
+                self.stack.addWidget(container)
+            finally:
+                # Ripristina il cursore normale anche se ci sono stati errori
+                QApplication.restoreOverrideCursor()
+
+        # Ora la pagina esiste di sicuro, la recuperiamo e la mostriamo
         page_container = self.page_containers.get(category)
         if page_container is None:
             return
+            
         self.stack.setCurrentWidget(page_container)
         self.statusBar().showMessage(f"Categoria attiva: {category}")
 

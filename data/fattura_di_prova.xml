@@ -1,0 +1,78 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<p:FatturaElettronica xmlns:p="http://ivaservizi.agenziaentrate.gov.it/docs/xsd/fatture/v1.2" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" versione="FPR12">
+	<FatturaElettronicaHeader>
+		<DatiTrasmissione>
+			<IdTrasmittente>
+				<IdPaese>IT</IdPaese>
+				<IdCodice>12345678901</IdCodice>
+			</IdTrasmittente>
+			<ProgressivoInvio>00001</ProgressivoInvio>
+			<FormatoTrasmissione>FPR12</FormatoTrasmissione>
+			<CodiceDestinatario>0000000</CodiceDestinatario>
+		</DatiTrasmissione>
+		<CedentePrestatore>
+			<DatiAnagrafici>
+				<IdFiscaleIVA>
+					<IdPaese>IT</IdPaese>
+					<IdCodice>12345678901</IdCodice>
+				</IdFiscaleIVA>
+				<Anagrafica>
+					<Denominazione>Alfa Srl</Denominazione>
+				</Anagrafica>
+				<RegimeFiscale>RF01</RegimeFiscale>
+			</DatiAnagrafici>
+			<Sede>
+				<Indirizzo>Via Roma 1</Indirizzo>
+				<CAP>20100</CAP>
+				<Comune>Milano</Comune>
+				<Provincia>MI</Provincia>
+				<Nazione>IT</Nazione>
+			</Sede>
+		</CedentePrestatore>
+		<CessionarioCommittente>
+			<DatiAnagrafici>
+				<IdFiscaleIVA>
+					<IdPaese>IT</IdPaese>
+					<IdCodice>09876543210</IdCodice>
+				</IdFiscaleIVA>
+				<Anagrafica>
+					<Denominazione>Cliente Demo SpA</Denominazione>
+				</Anagrafica>
+			</DatiAnagrafici>
+			<Sede>
+				<Indirizzo>Corso Italia 10</Indirizzo>
+				<CAP>00100</CAP>
+				<Comune>Roma</Comune>
+				<Provincia>RM</Provincia>
+				<Nazione>IT</Nazione>
+			</Sede>
+		</CessionarioCommittente>
+	</FatturaElettronicaHeader>
+	<FatturaElettronicaBody>
+		<DatiGenerali>
+			<DatiGeneraliDocumento>
+				<TipoDocumento>TD01</TipoDocumento>
+				<Divisa>EUR</Divisa>
+				<Data>2026-06-24</Data>
+				<Numero>1</Numero>
+				<ImportoTotaleDocumento>122.00</ImportoTotaleDocumento>
+			</DatiGeneraliDocumento>
+		</DatiGenerali>
+		<DatiBeniServizi>
+			<DettaglioLinee>
+				<NumeroLinea>1</NumeroLinea>
+				<Descrizione>Servizio di consulenza</Descrizione>
+				<Quantita>1.00</Quantita>
+				<PrezzoUnitario>100.00</PrezzoUnitario>
+				<PrezzoTotale>100.00</PrezzoTotale>
+				<AliquotaIVA>22.00</AliquotaIVA>
+			</DettaglioLinee>
+			<DatiRiepilogo>
+				<AliquotaIVA>22.00</AliquotaIVA>
+				<ImponibileImporto>100.00</ImponibileImporto>
+				<Imposta>22.00</Imposta>
+				<EsigibilitaIVA>I</EsigibilitaIVA>
+			</DatiRiepilogo>
+		</DatiBeniServizi>
+	</FatturaElettronicaBody>
+</p:FatturaElettronica>

@@ -1,13 +1,14 @@
 import sqlite3
 from datetime import datetime
 import pyqtgraph as pg
+import csv
 
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QFont, QColor
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame, QPushButton, 
     QGridLayout, QSizePolicy, QTableWidget, QHeaderView, QTableWidgetItem, 
-    QAbstractItemView, QMessageBox
+    QAbstractItemView, QMessageBox, QFileDialog
 )
 from database import get_conn
 
@@ -81,10 +82,14 @@ class DashboardPage(QWidget):
         btn_animali = self._crea_bottone_azione("🐄 Stalla", "#8e44ad")
         btn_animali.clicked.connect(lambda: self.richiesta_navigazione.emit("zootecnia"))
 
+        btn_esporta = self._crea_bottone_azione("📤 Esporta (Excel)", "#34495e")
+        btn_esporta.clicked.connect(self._esporta_commercialista_csv)
+
         grid_azioni.addWidget(btn_mappa)
         grid_azioni.addWidget(btn_spesa)
         grid_azioni.addWidget(btn_macchinari)
         grid_azioni.addWidget(btn_animali)
+        grid_azioni.addWidget(btn_esporta)
 
         azioni_layout.addLayout(grid_azioni)
         layout.addWidget(azioni_frame)
@@ -428,3 +433,46 @@ class DashboardPage(QWidget):
             
             # Ricarichiamo la tabella: la fattura scomparirà automaticamente dalle pendenze!
             self._carica_fatture_da_pagare()
+    
+    def _esporta_commercialista_csv(self):
+        percorso, _ = QFileDialog.getSaveFileName(
+            self, "Esporta Movimenti per Commercialista", "movimenti_agricoli.csv", "CSV Excel (*.csv)"
+        )
+        if not percorso:
+            return
+            
+        try:
+            with get_conn() as conn:
+                c = conn.cursor()
+                c.execute("""
+                    SELECT data_op, tipo, categoria, descrizione, importo, iva_importo, 
+                           stato_pagamento, parser_supplier_name, parser_invoice_number
+                    FROM movimenti 
+                    WHERE user_id=? 
+                    ORDER BY data_op ASC
+                """, (self.user_id,))
+                righe = c.fetchall()
+                
+            # Usiamo utf-8-sig per garantire che Excel legga correttamente accenti e valute
+            with open(percorso, 'w', newline='', encoding='utf-8-sig') as f:
+                writer = csv.writer(f, delimiter=';') # Il punto e virgola divide le colonne per l'Excel italiano
+                writer.writerow(["Data", "Tipo", "Categoria", "Descrizione", "Fornitore/Cliente", "Num. Fattura", "Imponibile", "IVA", "Totale", "Stato"])
+                
+                for r in righe:
+                    data, tipo, cat, desc, imp, iva, stato, fornitore, num_fat = r
+                    imp_val = float(imp or 0)
+                    iva_val = float(iva or 0)
+                    tot_val = imp_val + iva_val
+                    
+                    # Convertiamo i numeri in formato italiano (virgola invece del punto)
+                    writer.writerow([
+                        data, tipo, cat, desc, fornitore, num_fat, 
+                        f"{imp_val:.2f}".replace('.', ','), 
+                        f"{iva_val:.2f}".replace('.', ','), 
+                        f"{tot_val:.2f}".replace('.', ','), 
+                        stato
+                    ])
+                    
+            QMessageBox.information(self, "Successo", f"Dati esportati correttamente in:\n{percorso}")
+        except Exception as e:
+            QMessageBox.critical(self, "Errore", f"Impossibile esportare i dati: {e}")
