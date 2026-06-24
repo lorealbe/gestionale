@@ -29,6 +29,7 @@ class MainWindow(QMainWindow):
     CATEGORIA_ATTREZZATURE = "Attrezzature"
     CATEGORIA_MACCHINARI = "Macchinari"
     CATEGORIA_ZOOTECNIA = "Zootecnia"
+    CATEGORIA_ANAGRAFICA = "Anagrafica"
 
     CATEGORIES = (
         CATEGORIA_DASHBOARD,
@@ -37,6 +38,7 @@ class MainWindow(QMainWindow):
         CATEGORIA_ATTREZZATURE,
         CATEGORIA_MACCHINARI,
         CATEGORIA_ZOOTECNIA,
+        CATEGORIA_ANAGRAFICA,
     )
 
     def __init__(self, user_id: int, username: str):
@@ -110,7 +112,6 @@ class MainWindow(QMainWindow):
         action_ripristina = QAction("🔄 Ripristina Backup", self)
         action_ripristina.triggered.connect(self._ripristina_backup)
         menu_dati.addAction(action_ripristina)
-        
         menu_dati.addSeparator()
         
         action_esporta_csv = QAction("📊 Esporta Movimenti (Excel / Fogli Google)", self)
@@ -247,6 +248,9 @@ class MainWindow(QMainWindow):
         if category == self.CATEGORIA_ZOOTECNIA:
             from qt_app.pages.zootecnia_page import ZootecniaPage
             return ZootecniaPage(user_id=self.user_id, parent=self)
+        if category == self.CATEGORIA_ANAGRAFICA:
+            from qt_app.pages.anagrafica_page import AnagraficaPage
+            return AnagraficaPage(user_id=self.user_id, parent=self)
             
         return self._create_placeholder_page(category)
 

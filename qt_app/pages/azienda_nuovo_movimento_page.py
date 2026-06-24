@@ -221,7 +221,7 @@ class AziendaNuovoMovimentoPage(QWidget):
         header_layout = QVBoxLayout()
         titolo = QLabel("➕ Registra Movimento e Importa Fattura")
         titolo.setStyleSheet("font-size: 24px; font-weight: bold; color: #2c3e50;")
-        sottotitolo = QLabel("Carica un file PDF per compilare automaticamente i campi oppure procedi manualmente.")
+        sottotitolo = QLabel("Carica un file PDF/XML per compilare automaticamente i campi oppure procedi manualmente. Si consiglia di caricare la fattura in XML quando disponibile per una maggiore precisione.")
         sottotitolo.setStyleSheet("font-size: 14px; color: #7f8c8d;")
         header_layout.addWidget(titolo)
         header_layout.addWidget(sottotitolo)
@@ -266,7 +266,18 @@ class AziendaNuovoMovimentoPage(QWidget):
         self.input_descrizione = QLineEdit(self)
         self.input_descrizione.setStyleSheet("padding: 5px;")
         self.input_descrizione.setPlaceholderText("Es. Fattura Consorzio Agrario...")
-
+        from PySide6.QtWidgets import QCompleter
+        from database import list_soggetti
+        try:
+            soggetti = list_soggetti(self.user_id)
+            nomi = [s["ragione_sociale"] for s in soggetti]
+            completer = QCompleter(nomi, self)
+            completer.setCaseSensitivity(Qt.CaseInsensitive)
+            # Permette di cercare anche se si salta la prima parola
+            completer.setFilterMode(Qt.MatchContains) 
+            self.input_descrizione.setCompleter(completer)
+        except Exception:
+            pass
         self.input_importo = QLineEdit(self)
         self.input_importo.setStyleSheet("padding: 5px;")
         self.input_importo.setPlaceholderText("Imponibile")

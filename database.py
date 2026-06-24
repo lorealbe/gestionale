@@ -3088,16 +3088,34 @@ def init_db():
                       FOREIGN KEY(user_id) REFERENCES utenti(id) ON DELETE CASCADE)''')
 
         # Informazioni aziendali principali.
-        c.execute(
-            '''CREATE TABLE IF NOT EXISTS azienda_info
-                     (user_id INTEGER PRIMARY KEY,
-                      nome_azienda TEXT NOT NULL DEFAULT '',
-                      piva TEXT NOT NULL DEFAULT '',
-                      occupazione TEXT NOT NULL DEFAULT '',
-                      data_creazione TEXT NOT NULL DEFAULT '',
-                      updated_at TEXT NOT NULL DEFAULT '',
-                      FOREIGN KEY(user_id) REFERENCES utenti(id) ON DELETE CASCADE)'''
-        )
+        #c.execute(
+        #    '''CREATE TABLE IF NOT EXISTS azienda_info
+        #             (user_id INTEGER PRIMARY KEY,
+        #              nome_azienda TEXT NOT NULL DEFAULT '',
+        #              piva TEXT NOT NULL DEFAULT '',
+        #              occupazione TEXT NOT NULL DEFAULT '',
+        #              data_creazione TEXT NOT NULL DEFAULT '',
+        #              updated_at TEXT NOT NULL DEFAULT '',
+        #              FOREIGN KEY(user_id) REFERENCES utenti(id) ON DELETE CASCADE)'''
+        #)
+
+        # --- ANAGRAFICA SOGGETTI (CRM) ---
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS anagrafica (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                tipo TEXT NOT NULL DEFAULT 'Fornitore', 
+                ragione_sociale TEXT NOT NULL,
+                partita_iva TEXT,
+                codice_fiscale TEXT,
+                indirizzo TEXT,
+                email TEXT,
+                telefono TEXT,
+                note TEXT,
+                created_at TEXT,
+                updated_at TEXT
+            )
+        ''')
 
         c.execute("PRAGMA table_info(azienda_info)")
         colonne_azienda_info = {row[1] for row in c.fetchall()}
@@ -3693,3 +3711,39 @@ def init_db():
                  ON manutenzioni_macchinari(user_id, data_manutenzione DESC, id DESC)''')
         c.execute('''CREATE INDEX IF NOT EXISTS idx_manutenzioni_user_macchinario
                  ON manutenzioni_macchinari(user_id, macchinario_id, data_manutenzione DESC, id DESC)''')
+# ==========================================
+# FUNZIONI PER ANAGRAFICA (CRM)
+# ==========================================
+def add_soggetto(user_id, tipo, ragione_sociale, partita_iva="", codice_fiscale="", indirizzo="", email="", telefono="", note=""):
+    now_text = datetime.now().isoformat(timespec="seconds")
+    with get_conn() as conn:
+        c = conn.cursor()
+        c.execute("""
+            INSERT INTO anagrafica (user_id, tipo, ragione_sociale, partita_iva, codice_fiscale, indirizzo, email, telefono, note, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (user_id, tipo, ragione_sociale, partita_iva, codice_fiscale, indirizzo, email, telefono, note, now_text, now_text))
+        return c.lastrowid
+
+def update_soggetto(user_id, soggetto_id, tipo, ragione_sociale, partita_iva="", codice_fiscale="", indirizzo="", email="", telefono="", note=""):
+    now_text = datetime.now().isoformat(timespec="seconds")
+    with get_conn() as conn:
+        c = conn.cursor()
+        c.execute("""
+            UPDATE anagrafica 
+            SET tipo=?, ragione_sociale=?, partita_iva=?, codice_fiscale=?, indirizzo=?, email=?, telefono=?, note=?, updated_at=?
+            WHERE id=? AND user_id=?
+        """, (tipo, ragione_sociale, partita_iva, codice_fiscale, indirizzo, email, telefono, note, now_text, soggetto_id, user_id))
+        return c.rowcount > 0
+
+def delete_soggetto(user_id, soggetto_id):
+    with get_conn() as conn:
+        c = conn.cursor()
+        c.execute("DELETE FROM anagrafica WHERE id=? AND user_id=?", (soggetto_id, user_id))
+        return c.rowcount > 0
+
+def list_soggetti(user_id):
+    with get_conn() as conn:
+        c = conn.cursor()
+        c.execute("SELECT * FROM anagrafica WHERE user_id=? ORDER BY ragione_sociale ASC", (user_id,))
+        cols = [desc[0] for desc in c.description]
+        return [dict(zip(cols, row)) for row in c.fetchall()]
