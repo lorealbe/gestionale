@@ -143,14 +143,12 @@ class DashboardPage(QWidget):
         self.plot_spese.setMouseEnabled(x=False, y=False)
         self.plot_spese.setMenuEnabled(False)
         self.plot_spese.hideButtons()
-        self.legend = self.plot_spese.addLegend(offset=(10, 10))
+        self.legend = self.plot_spese.addLegend(offset=(-10, 10))
         
-        # FIX IMPORTANTE: Garantisce uno spazio fisso di 50px in basso affinché le scritte non escano fuori
         self.plot_spese.getPlotItem().getAxis('bottom').setHeight(50)
         
         grafico_vbox.addWidget(self.plot_spese)
 
-        grafico_vbox.addWidget(self.plot_spese)
 
         # ==========================================
         # NUOVO ASSEGNO DEGLI SPAZI (20% KPI, 45% Grafico, 35% Scadenze)
