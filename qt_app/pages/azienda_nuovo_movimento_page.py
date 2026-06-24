@@ -400,11 +400,16 @@ class AziendaNuovoMovimentoPage(QWidget):
         prodotti_header.setSectionResizeMode(8, QHeaderView.ResizeToContents)
         prodotti_header.setSectionResizeMode(9, QHeaderView.ResizeToContents)
 
+        self.table_prodotti.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.table_prodotti.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+
         bottom_layout.addWidget(self.table_prodotti)
+        
+
         main_splitter.addWidget(bottom_widget)
 
         main_splitter.setSizes([350, 450])
-        main_layout.addWidget(main_splitter, 1)
+        main_layout.addWidget(main_splitter)
 
         action_row = QHBoxLayout()
         action_row.setSpacing(10)
@@ -421,6 +426,8 @@ class AziendaNuovoMovimentoPage(QWidget):
 
         action_row.addStretch()
         main_layout.addLayout(action_row)
+
+        main_layout.addStretch()
 
     def _format_tipo_animale_report(self, tipo_animale, altro_label):
         tipo = (tipo_animale or "").strip().upper()
@@ -517,6 +524,7 @@ class AziendaNuovoMovimentoPage(QWidget):
     def _aggiorna_tabella_prodotti_fattura_movimento(self, parser_data):
         self._table_prodotti_updating = True
         try:
+            self.table_prodotti.clearSpans() 
             self.table_prodotti.setRowCount(0)
 
             righe = []
@@ -527,6 +535,7 @@ class AziendaNuovoMovimentoPage(QWidget):
 
             if not righe:
                 self.label_prodotti_stato.setText("Nessun prodotto rilevato nella fattura selezionata.")
+                self._mostra_riga_vuota_tabella()
                 return
 
             try:
@@ -596,7 +605,7 @@ class AziendaNuovoMovimentoPage(QWidget):
                 self.table_prodotti.setCellWidget(idx - 1, 9, combo_gruppi)
 
             self.label_prodotti_stato.setText(f"Prodotti rilevati: {len(righe)}")
-            
+            self._adatta_altezza_tabella()
         finally:
             self._table_prodotti_updating = False
     
@@ -1472,16 +1481,19 @@ class AziendaNuovoMovimentoPage(QWidget):
             QMessageBox.information(self, "Successo", msg_ok)
             self.movimento_saved.emit(movimento_id)
     def _aggiungi_riga_prodotto(self):
-        # Assicura che la struttura dati esista
         if not isinstance(self.pending_parser_movimento_data, dict):
             self.pending_parser_movimento_data = {"products_rows": []}
+            
+        # Controlla se è presente la riga placeholder vuota e la rimuove
+        if self.table_prodotti.rowCount() == 1 and self.table_prodotti.columnSpan(0, 0) > 1:
+            self.table_prodotti.clearSpans()
+            self.table_prodotti.setRowCount(0)
             
         row_count = self.table_prodotti.rowCount()
         idx = row_count + 1
         
         self._table_prodotti_updating = True
         try:
-            # Aggiunge una riga vuota modificabile
             self._append_row(
                 self.table_prodotti,
                 row_count,
@@ -1490,7 +1502,6 @@ class AziendaNuovoMovimentoPage(QWidget):
                 editable_columns=[1, 2, 3, 4, 5, 6, 7],
             )
             
-            # Crea e aggancia i menu a tendina "Tipo costo" e "Gruppi" per la nuova riga
             combo_costo = QComboBox(self)
             combo_costo.addItems(["Variabili", "Fissi"])
             self.table_prodotti.setCellWidget(row_count, 8, combo_costo)
@@ -1505,16 +1516,67 @@ class AziendaNuovoMovimentoPage(QWidget):
             except sqlite3.Error:
                 pass
             self.table_prodotti.setCellWidget(row_count, 9, combo_gruppi)
+            
+            # Adatta l'altezza dopo aver aggiunto la nuova riga
+            self._adatta_altezza_tabella()
         finally:
             self._table_prodotti_updating = False
 
     def _rimuovi_riga_prodotto(self):
+        # Impedisce la rimozione accidentale della riga placeholder
+        if self.table_prodotti.rowCount() == 1 and self.table_prodotti.columnSpan(0, 0) > 1:
+            return
+            
         current_row = self.table_prodotti.currentRow()
         if current_row >= 0:
             self.table_prodotti.removeRow(current_row)
             
-            # Riaggiorna la numerazione progressiva della colonna #
+            # Riaggiorna il numeretto della colonna '#'
             for row in range(self.table_prodotti.rowCount()):
                 item = self.table_prodotti.item(row, 0)
                 if item:
                     item.setText(str(row + 1))
+                    
+            # Se ha rimosso l'ultima riga attiva il placeholder, altrimenti adatta l'altezza
+            if self.table_prodotti.rowCount() == 0:
+                self._mostra_riga_vuota_tabella()
+            else:
+                self._adatta_altezza_tabella()
+    
+    def _adatta_altezza_tabella(self):
+        """Regola l'altezza della tabella in base al numero esatto di righe per eliminare lo scorrimento interno."""
+        header_h = self.table_prodotti.horizontalHeader().height()
+        if header_h < 20: 
+            header_h = 30 # Altezza di fallback se Qt non l'ha ancora renderizzata
+            
+        rows_h = 0
+        for i in range(self.table_prodotti.rowCount()):
+            rh = self.table_prodotti.rowHeight(i)
+            rows_h += rh if rh > 0 else 30
+            
+        # Altezza totale = intestazione + righe + 2px di margini per i bordi
+        altezza_totale = header_h + rows_h + 2
+        
+        self.table_prodotti.setFixedHeight(altezza_totale)
+
+    def _mostra_riga_vuota_tabella(self):
+        """Mostra una singola riga estesa con un messaggio informativo se non ci sono prodotti."""
+        self.table_prodotti.clearSpans()
+        self.table_prodotti.setRowCount(1)
+        
+        item_empty = QTableWidgetItem("Nessun prodotto. Importa una fattura PDF o usa 'Aggiungi prodotto'.")
+        item_empty.setTextAlignment(Qt.AlignCenter)
+        
+        from PySide6.QtGui import QColor
+        item_empty.setForeground(QColor("#7f8c8d"))
+        
+        # Impedisce la modifica o la selezione di questa riga speciale
+        item_empty.setFlags(Qt.ItemIsEnabled)
+        
+        self.table_prodotti.setItem(0, 0, item_empty)
+        # Unisce le celle affinché la scritta occupi tutta la larghezza
+        self.table_prodotti.setSpan(0, 0, 1, self.table_prodotti.columnCount())
+        
+        # Diamo un po' più di respiro a questa riga singola
+        self.table_prodotti.setRowHeight(0, 50)
+        self._adatta_altezza_tabella()

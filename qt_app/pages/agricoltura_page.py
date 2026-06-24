@@ -611,6 +611,7 @@ class AgricolturaPage(QWidget):
         
         self.list_campi = QListWidget()
         self.list_campi.setStyleSheet("font-size: 14px; border: 1px solid #ddd; border-radius: 5px;")
+        self.list_campi.itemSelectionChanged.connect(self._centra_mappa_su_selezionato)
         control_layout.addWidget(self.list_campi)
         
         btn_layout_mappa = QHBoxLayout()
@@ -1368,6 +1369,16 @@ class AgricolturaPage(QWidget):
                 self._aggiorna_combo_campi()
             except Exception: pass
 
+    def _centra_mappa_su_selezionato(self):
+        """Invia l'input al JavaScript per inquadrare il campo selezionato."""
+        items = self.list_campi.selectedItems()
+        if not items:
+            return
+        
+        campo_id = items[0].data(Qt.UserRole)
+        # Esegue la funzione Javascript creata nel template HTML
+        self.web_view.page().runJavaScript(f"centraSuCampo({campo_id});")
+
     def _carica_campi_salvati(self, centra_mappa=False):
         self.list_campi.clear()
         campi_dati = []
@@ -1482,6 +1493,16 @@ class AgricolturaPage(QWidget):
                 });
 
                 function rimuoviUltimoDisegno() { if (tempLayer) { map.removeLayer(tempLayer); tempLayer = null; } }
+
+                function centraSuCampo(campoId) {
+                    campiLayer.eachLayer(function(layer) {
+                        // Verifica che il layer abbia l'ID corretto e che sia un poligono (ha getBounds)
+                        if (layer.campo_id === campoId && typeof layer.getBounds === 'function') {
+                            map.fitBounds(layer.getBounds(), {maxZoom: 18});
+                            layer.openPopup(); // Opzionale: apre automaticamente l'etichetta del campo
+                        }
+                    });
+                }
 
                 function getCropStyle(campo) {
                     if (campo.tipo_campo === "Uliveto") return { icon: "fa-tree", color: "#556b2f", fill: "#8f9779" };

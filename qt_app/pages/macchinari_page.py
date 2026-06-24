@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMessageBox,
     QPushButton,
+    QSizePolicy,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -216,6 +217,7 @@ class MacchinariPage(QWidget):
         # PARTE 2: MANUTENZIONI
         # ==========================================
         self.frame_manutenzione = QWidget(self)
+        self.frame_manutenzione.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         manut_layout = QVBoxLayout(self.frame_manutenzione)
         manut_layout.setContentsMargins(0, 0, 0, 0)
         manut_layout.setSpacing(10)
@@ -230,7 +232,7 @@ class MacchinariPage(QWidget):
         self.label_manutenzione_non_disponibile.setWordWrap(True)
         manut_layout.addWidget(self.label_manutenzione_non_disponibile)
 
-        h_split_manut = QSplitter(Qt.Horizontal)
+        self.h_split_manut = QSplitter(Qt.Horizontal)
 
         # --- Form Manutenzioni (Sinistra) ---
         frame_form_manut = QFrame()
@@ -311,7 +313,7 @@ class MacchinariPage(QWidget):
         layout_form_manut.addWidget(self.label_stato_manutenzione)
         layout_form_manut.addStretch()
 
-        h_split_manut.addWidget(frame_form_manut)
+        self.h_split_manut.addWidget(frame_form_manut)
 
         # --- Tabella Manutenzioni (Destra) ---
         frame_tab_manut = QFrame(self)
@@ -382,11 +384,11 @@ class MacchinariPage(QWidget):
         header_manut.setSectionResizeMode(6, QHeaderView.Stretch)
 
         layout_tab_manut.addWidget(self.table_manutenzioni)
-        h_split_manut.addWidget(frame_tab_manut)
+        self.h_split_manut.addWidget(frame_tab_manut)
         
         # Imposta proporzioni splitter 35% sx, 65% dx
-        h_split_manut.setSizes([350, 650])
-        manut_layout.addWidget(h_split_manut)
+        self.h_split_manut.setSizes([350, 650])
+        manut_layout.addWidget(self.h_split_manut, 1)
 
         main_splitter.addWidget(self.frame_manutenzione)
         
@@ -597,7 +599,7 @@ class MacchinariPage(QWidget):
         self.label_stato_manutenzione.setText("")
 
     def _set_manutenzione_visibility(self, has_macchinari: bool):
-        self.frame_manutenzione.setVisible(has_macchinari)
+        self.h_split_manut.setVisible(has_macchinari)
         self.label_manutenzione_non_disponibile.setVisible(not has_macchinari)
 
         if not has_macchinari:
