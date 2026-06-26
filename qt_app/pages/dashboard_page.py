@@ -146,6 +146,11 @@ class DashboardPage(QWidget):
         self.legend = self.plot_spese.addLegend(offset=(-10, 10))
         
         self.plot_spese.getPlotItem().getAxis('bottom').setHeight(50)
+
+        font_assi = QFont()
+        font_assi.setPointSize(9) # Impostiamo un point-size esplicito > 0
+        self.plot_spese.getPlotItem().getAxis('bottom').setTickFont(font_assi)
+        self.plot_spese.getPlotItem().getAxis('left').setTickFont(font_assi)
         
         grafico_vbox.addWidget(self.plot_spese)
 

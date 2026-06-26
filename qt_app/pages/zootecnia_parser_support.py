@@ -1,85 +1,53 @@
-import importlib
 import re
 import shutil
-import sqlite3
-import sys
 import uuid
+import importlib
+import sys
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 
-from PySide6.QtCore import QObject, QThread, Signal, Slot
+from PySide6.QtCore import QObject, Signal, Slot, QRunnable, QThreadPool
 
 from app_utils import format_number, parse_decimal
 from database import get_conn, get_fatture_user_dir, resolve_fattura_path, to_storage_fattura_path
 from services.product_parser_utils import (
-    build_basic_product_storage_line,
-    normalize_cost_type,
-    normalize_product_category,
-    serialize_product_storage_lines,
+    build_basic_product_storage_line, normalize_cost_type, normalize_product_category, serialize_product_storage_lines
 )
 
-
-class _InvoiceParserWorker(QObject):
+# 1. Definizione Segnali per il Runnable (I QRunnable non possono avere segnali nativi)
+class ParserSignals(QObject):
     success = Signal(object)
     error = Signal(str)
     progress = Signal(str)
     finished = Signal()
 
-    def __init__(self, parse_fn, file_path: str):
+# 2. Il Task snello gestito dal Pool
+class InvoiceParserTask(QRunnable):
+    def __init__(self, parse_fn, file_path: str, on_success, on_error, on_done, on_progress):
         super().__init__()
         self._parse_fn = parse_fn
         self._file_path = str(file_path)
+        self.signals = ParserSignals()
+        
+        # Colleghiamo direttamente i callback passati dalla GUI ai segnali thread-safe
+        if on_success: self.signals.success.connect(on_success)
+        if on_error: self.signals.error.connect(on_error)
+        if on_progress: self.signals.progress.connect(on_progress)
+        if on_done: self.signals.finished.connect(on_done)
 
     @Slot()
     def run(self):
         try:
             try:
-                result = self._parse_fn(self._file_path, progress_cb=self.progress.emit)
+                result = self._parse_fn(self._file_path, progress_cb=self.signals.progress.emit)
             except TypeError:
                 result = self._parse_fn(self._file_path)
-            self.success.emit(result)
+            self.signals.success.emit(result)
         except Exception as exc:
-            self.error.emit(str(exc))
+            self.signals.error.emit(str(exc))
         finally:
-            self.finished.emit()
-
-
-class _InvoiceParserCallbackProxy(QObject):
-    """Routes worker callbacks to GUI thread slots before touching UI widgets."""
-
-    def __init__(self, on_success=None, on_error=None, on_done=None, on_progress=None, release_cb=None, parent=None):
-        super().__init__(parent)
-        self._on_success = on_success if callable(on_success) else None
-        self._on_error = on_error if callable(on_error) else None
-        self._on_done = on_done if callable(on_done) else None
-        self._on_progress = on_progress if callable(on_progress) else None
-        self._release_cb = release_cb
-
-    @Slot(object)
-    def handle_success(self, payload):
-        if self._on_success is not None:
-            self._on_success(payload)
-
-    @Slot(str)
-    def handle_error(self, message):
-        if self._on_error is not None:
-            self._on_error(message)
-
-    @Slot(str)
-    def handle_progress(self, message):
-        if self._on_progress is not None:
-            self._on_progress(message)
-
-    @Slot()
-    def handle_finished(self):
-        try:
-            if self._on_done is not None:
-                self._on_done()
-        finally:
-            if callable(self._release_cb):
-                self._release_cb(self)
-
+            self.signals.finished.emit()
 
 class ZootecniaParserSupport:
     _PARSER_DB_FIELDS = (
@@ -159,50 +127,12 @@ class ZootecniaParserSupport:
         return parse_invoice_pdf
 
     def avvia_parser_fattura_async(self, file_path, on_success, on_error, on_done=None, on_progress=None):
+        """Avvia il parsing in modo asincrono usando il ThreadPool globale nativo di Qt."""
         parse_fn = self._get_parser_fatture_function()
-
-        thread = QThread(self)
-        worker = _InvoiceParserWorker(parse_fn, str(file_path))
-        if not hasattr(self, "_parser_callback_proxies_in_corso"):
-            self._parser_callback_proxies_in_corso = set()
-
-        def _release_proxy(proxy):
-            self._parser_callback_proxies_in_corso.discard(proxy)
-            proxy.deleteLater()
-
-        proxy = _InvoiceParserCallbackProxy(
-            on_success=on_success,
-            on_error=on_error,
-            on_done=on_done,
-            on_progress=on_progress,
-            release_cb=_release_proxy,
-            parent=self,
-        )
-        worker.moveToThread(thread)
-        self._parser_callback_proxies_in_corso.add(proxy)
-
-        thread.started.connect(worker.run)
-        worker.success.connect(proxy.handle_success)
-        worker.error.connect(proxy.handle_error)
-        worker.progress.connect(proxy.handle_progress)
-        worker.finished.connect(proxy.handle_finished)
-
-        worker.finished.connect(thread.quit)
-        worker.finished.connect(worker.deleteLater)
-        thread.finished.connect(thread.deleteLater)
-
-        if not hasattr(self, "_parser_threads_in_corso"):
-            self._parser_threads_in_corso = set()
-        if not hasattr(self, "_parser_workers_in_corso"):
-            self._parser_workers_in_corso = set()
-
-        self._parser_threads_in_corso.add(thread)
-        self._parser_workers_in_corso.add(worker)
-
-        thread.finished.connect(lambda: self._parser_threads_in_corso.discard(thread))
-        thread.finished.connect(lambda: self._parser_workers_in_corso.discard(worker))
-
-        thread.start()
+        task = InvoiceParserTask(parse_fn, file_path, on_success, on_error, on_done, on_progress)
+        
+        # QThreadPool prende in carico il task, lo esegue e lo distrugge appena ha finito. Zero Memory Leaks.
+        QThreadPool.globalInstance().start(task)
 
     def _estrai_valore_campo_parser(self, fields, field_name):
         field = fields.get(field_name)

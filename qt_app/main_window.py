@@ -16,8 +16,7 @@ from PySide6.QtWidgets import (
     QSizePolicy,
     QFileDialog
 )
-
-from database import get_conn
+from database import get_db_path, Movimento
 
 
 class MainWindow(QMainWindow):
@@ -128,10 +127,33 @@ class MainWindow(QMainWindow):
     # LOGICA DI BACKUP, RIPRISTINO ED EXPORT
     # ==========================================
     def _get_db_path(self):
-        """Trova il percorso esatto del file database SQLite attualmente in uso."""
-        with get_conn() as conn:
-            # PRAGMA database_list restituisce: seq, name, file_path
-            return conn.execute("PRAGMA database_list").fetchone()[2]
+        """Metodo pulito: usa la funzione centralizzata invece del cursore SQL."""
+        return str(get_db_path())
+
+    def _esporta_csv(self):
+        percorso_salvataggio, _ = QFileDialog.getSaveFileName(
+            self, "Esporta per Excel / Fogli Google",
+            f"Export_Movimenti_{self.username}_{QDate.currentDate().toString('yyyy_MM_dd')}.csv",
+            "File CSV (*.csv)"
+        )
+        if not percorso_salvataggio: return
+
+        try:
+            # Una riga per estrarre tutti i movimenti grazie all'ORM!
+            movimenti = Movimento.select().where(Movimento.user == self.user_id).order_by(Movimento.data_op.desc()).dicts()
+
+            with open(percorso_salvataggio, mode='w', newline='', encoding='utf-8-sig') as f:
+                writer = csv.writer(f, delimiter=';') 
+                writer.writerow(["ID Movimento", "Data", "Tipo", "Categoria", "Descrizione", "Imponibile EUR", "IVA EUR", "Stato"])
+                
+                for r in movimenti:
+                    imp = str(r['importo']).replace('.', ',') if r['importo'] is not None else "0,00"
+                    iva = str(r['iva_importo']).replace('.', ',') if r['iva_importo'] is not None else "0,00"
+                    writer.writerow([r['id'], r['data_op'], r['tipo'], r['categoria'], r['descrizione'], imp, iva, r['stato_pagamento']])
+
+            QMessageBox.information(self, "Completato", "Dati esportati con successo!\nApri il file con Excel o Fogli Google.")
+        except Exception as e:
+            QMessageBox.critical(self, "Errore", f"Errore durante l'esportazione:\n{e}")
 
     def _esegui_backup(self):
         db_path = self._get_db_path()
@@ -184,45 +206,7 @@ class MainWindow(QMainWindow):
             except Exception as e:
                 QMessageBox.critical(self, "Errore", f"Errore durante il ripristino:\n{e}")
 
-    def _esporta_csv(self):
-        percorso_salvataggio, _ = QFileDialog.getSaveFileName(
-            self, 
-            "Esporta per Excel / Fogli Google",
-            f"Export_Fatture_{self.username}_{QDate.currentDate().toString('yyyy_MM_dd')}.csv",
-            "File CSV (*.csv)"
-        )
-        
-        if not percorso_salvataggio:
-            return
-
-        try:
-            with get_conn() as conn:
-                c = conn.cursor()
-                c.execute("""
-                    SELECT id, data_op, tipo, categoria, descrizione, importo, iva_importo, stato_pagamento
-                    FROM movimenti 
-                    WHERE user_id=? 
-                    ORDER BY data_op DESC
-                """, (self.user_id,))
-                rows = c.fetchall()
-
-            # Usiamo 'utf-8-sig' per far capire automaticamente a Excel che è un file codificato in UTF-8
-            with open(percorso_salvataggio, mode='w', newline='', encoding='utf-8-sig') as f:
-                # Usiamo il punto e virgola ';' perché i fogli di calcolo in Italia lo preferiscono alla virgola
-                writer = csv.writer(f, delimiter=';') 
-                writer.writerow(["ID Movimento", "Data", "Tipo (E/U)", "Categoria", "Descrizione", "Imponibile EUR", "IVA EUR", "Stato"])
-                
-                for r in rows:
-                    # Convertiamo i punti decimali in virgole, così Excel riconosce i numeri e permette di fare le somme
-                    imponibile_it = str(r[5]).replace('.', ',') if r[5] is not None else "0,00"
-                    iva_it = str(r[6]).replace('.', ',') if r[6] is not None else "0,00"
-                    
-                    writer.writerow([r[0], r[1], r[2], r[3], r[4], imponibile_it, iva_it, r[7]])
-
-            QMessageBox.information(self, "Esportazione Completata", "Dati esportati con successo!\n\nPuoi ora aprire il file con Excel, LibreOffice o importarlo su Fogli Google.")
-        except Exception as e:
-            QMessageBox.critical(self, "Errore", f"Errore durante l'esportazione:\n{e}")
-
+    
 
     # ==========================================
     # LOGICA DI NAVIGAZIONE E UI

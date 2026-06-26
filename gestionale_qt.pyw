@@ -1,5 +1,5 @@
-from database import init_db
-
+# Importiamo la nuova funzione di inizializzazione
+from database import ensure_data_paths
 
 def _show_dependency_error(message: str):
     try:
@@ -16,7 +16,8 @@ def _show_dependency_error(message: str):
 
 
 if __name__ == "__main__":
-    init_db()
+    # Avviamo il nuovo motore del database Peewee
+    ensure_data_paths()
 
     try:
         from qt_app.bootstrap import run_qt_app
@@ -24,7 +25,7 @@ if __name__ == "__main__":
         missing_name = str(exc.name or "")
         if "PySide6" in missing_name or missing_name == "shiboken6":
             _show_dependency_error(
-                "PySide6 non e installato.\n\n"
+                "PySide6 non è installato.\n\n"
                 "Installa con:\n"
                 "pip install PySide6"
             )
