@@ -1,4 +1,4 @@
-import sqlite3
+
 from datetime import datetime
 
 from PySide6.QtCore import QDate, Qt
@@ -463,7 +463,7 @@ class AziendaAnimaliPage(QWidget):
     def carica_report_animali(self, show_errors=True):
         try:
             entries = list_azienda_animali_entries(self.user_id)
-        except sqlite3.Error as exc:
+        except Exception as exc:
             if show_errors:
                 QMessageBox.critical(self, "Errore DB", f"Errore database: {exc}")
             return
@@ -545,7 +545,7 @@ class AziendaAnimaliPage(QWidget):
                 group_name=group_name,
                 riproduzione=bool(self.check_add_riproduzione.isChecked()),
             )
-        except (sqlite3.Error, ValueError) as exc:
+        except (Exception, ValueError) as exc:
             QMessageBox.critical(self, "Errore", str(exc))
             return
 
@@ -564,7 +564,7 @@ class AziendaAnimaliPage(QWidget):
 
         try:
             categoria_azzerata = remove_azienda_animale_capi(self.user_id, entry_id, capi_da_rimuovere)
-        except (sqlite3.Error, ValueError) as exc:
+        except (Exception, ValueError) as exc:
             QMessageBox.critical(self, "Errore", str(exc))
             return
 
@@ -590,7 +590,7 @@ class AziendaAnimaliPage(QWidget):
 
         try:
             categoria_rimossa = set_azienda_animale_capi(self.user_id, entry_id, nuovo_capi)
-        except (sqlite3.Error, ValueError) as exc:
+        except (Exception, ValueError) as exc:
             QMessageBox.critical(self, "Errore", str(exc))
             return
 
@@ -621,7 +621,7 @@ class AziendaAnimaliPage(QWidget):
 
         try:
             nome_aggiornato = set_azienda_animale_group_name(self.user_id, entry_id, nuovo_nome)
-        except (sqlite3.Error, ValueError) as exc:
+        except (Exception, ValueError) as exc:
             QMessageBox.critical(self, "Errore", str(exc))
             return
 
@@ -649,7 +649,7 @@ class AziendaAnimaliPage(QWidget):
 
         try:
             categoria_unificata = set_azienda_animale_finalita(self.user_id, entry_id, finalita_db)
-        except (sqlite3.Error, ValueError) as exc:
+        except (Exception, ValueError) as exc:
             QMessageBox.critical(self, "Errore", str(exc))
             return
 
@@ -674,7 +674,7 @@ class AziendaAnimaliPage(QWidget):
 
         try:
             aggiornata = set_azienda_animale_riproduzione(self.user_id, entry_id, riproduzione_attiva)
-        except (sqlite3.Error, ValueError) as exc:
+        except (Exception, ValueError) as exc:
             QMessageBox.critical(self, "Errore", str(exc))
             return
 
@@ -707,7 +707,7 @@ class AziendaAnimaliPage(QWidget):
 
         try:
             delete_azienda_animale_entry(self.user_id, entry_id)
-        except (sqlite3.Error, ValueError) as exc:
+        except (Exception, ValueError) as exc:
             QMessageBox.critical(self, "Errore", str(exc))
             return
 
@@ -760,7 +760,7 @@ class AziendaAnimaliPage(QWidget):
                 capi_nuovo_gruppo,
                 nuovo_nome,
             )
-        except (sqlite3.Error, ValueError) as exc:
+        except (Exception, ValueError) as exc:
             QMessageBox.critical(self, "Errore", str(exc))
             return
 
@@ -830,7 +830,7 @@ class AziendaAnimaliPage(QWidget):
                 nuovo_nome,
                 merge_date=merge_date_db,
             )
-        except (sqlite3.Error, ValueError) as exc:
+        except (Exception, ValueError) as exc:
             QMessageBox.critical(self, "Errore", str(exc))
             return
 

@@ -1,7 +1,6 @@
 import importlib
 import re
 import shutil
-import sqlite3
 import sys
 import uuid
 from datetime import datetime
@@ -22,8 +21,6 @@ from PySide6.QtWidgets import (
     QHeaderView,
     QLabel,
     QLineEdit,
-    QListWidget,
-    QListWidgetItem,
     QMessageBox,
     QProgressBar,
     QPushButton,
@@ -32,17 +29,18 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
     QSplitter,
-    QSizePolicy
+    QSizePolicy,
+    QCompleter
 )
 
 from app_utils import format_number, is_blank, parse_decimal, TabellaIsolata
 from database import (
-    get_conn,
     get_fatture_user_dir,
     get_movimento_animali_entry_ids,
     list_azienda_animali_entries,
     set_movimento_animali_links,
     to_storage_fattura_path,
+    list_soggetti
 )
 from services.product_parser_utils import (
     build_basic_product_storage_line,
@@ -52,6 +50,11 @@ from services.product_parser_utils import (
     normalize_product_category,
     serialize_product_storage_lines,
 )
+
+# IMPORTIAMO I MODELLI PEEWEE
+from models import db, Movimento, Fattura
+
+
 class CheckableComboBox(QComboBox):
     class Delegate(QStyledItemDelegate):
         def sizeHint(self, option, index):
@@ -109,6 +112,7 @@ class CheckableComboBox(QComboBox):
                 item.setCheckState(Qt.Unchecked)
         self.model().blockSignals(False)
         self._update_text()
+
 
 class _InvoiceParserWorker(QObject):
     success = Signal(object)
@@ -174,20 +178,10 @@ class AziendaNuovoMovimentoPage(QWidget):
     edit_cancelled = Signal()
 
     _PARSER_DB_FIELDS = (
-        "invoice_number",
-        "invoice_date",
-        "due_date",
-        "supplier_name",
-        "supplier_vat",
-        "customer_name",
-        "customer_vat",
-        "total_amount",
-        "taxable_total",
-        "vat_total",
-        "payment_terms",
-        "warnings",
-        "products",
-        "fields_view",
+        "invoice_number", "invoice_date", "due_date", "supplier_name",
+        "supplier_vat", "customer_name", "customer_vat", "total_amount",
+        "taxable_total", "vat_total", "payment_terms", "warnings",
+        "products", "fields_view",
     )
 
     def __init__(self, user_id: int, parent=None):
@@ -217,11 +211,10 @@ class AziendaNuovoMovimentoPage(QWidget):
         main_layout.setContentsMargins(15, 15, 15, 15)
         main_layout.setSpacing(15)
 
-        # HEADER
         header_layout = QVBoxLayout()
         titolo = QLabel("➕ Registra Movimento e Importa Fattura")
         titolo.setStyleSheet("font-size: 24px; font-weight: bold; color: #2c3e50;")
-        sottotitolo = QLabel("Carica un file PDF/XML per compilare automaticamente i campi oppure procedi manualmente. Si consiglia di caricare la fattura in XML quando disponibile per una maggiore precisione.")
+        sottotitolo = QLabel("Carica un file PDF/XML per compilare automaticamente i campi oppure procedi manualmente.")
         sottotitolo.setStyleSheet("font-size: 14px; color: #7f8c8d;")
         header_layout.addWidget(titolo)
         header_layout.addWidget(sottotitolo)
@@ -238,8 +231,6 @@ class AziendaNuovoMovimentoPage(QWidget):
         frame_form.setStyleSheet("background-color: #f8f9fa; border: 1px solid #ddd; border-radius: 8px;")
         form_layout = QGridLayout(frame_form)
         form_layout.setContentsMargins(15, 15, 15, 15)
-        form_layout.setHorizontalSpacing(10)
-        form_layout.setVerticalSpacing(10)
 
         self.input_data = QDateEdit(self)
         self.input_data.setStyleSheet("padding: 5px;")
@@ -266,18 +257,17 @@ class AziendaNuovoMovimentoPage(QWidget):
         self.input_descrizione = QLineEdit(self)
         self.input_descrizione.setStyleSheet("padding: 5px;")
         self.input_descrizione.setPlaceholderText("Es. Fattura Consorzio Agrario...")
-        from PySide6.QtWidgets import QCompleter
-        from database import list_soggetti
+        
         try:
             soggetti = list_soggetti(self.user_id)
             nomi = [s["ragione_sociale"] for s in soggetti]
             completer = QCompleter(nomi, self)
             completer.setCaseSensitivity(Qt.CaseInsensitive)
-            # Permette di cercare anche se si salta la prima parola
             completer.setFilterMode(Qt.MatchContains) 
             self.input_descrizione.setCompleter(completer)
         except Exception:
             pass
+            
         self.input_importo = QLineEdit(self)
         self.input_importo.setStyleSheet("padding: 5px;")
         self.input_importo.setPlaceholderText("Imponibile")
@@ -338,14 +328,13 @@ class AziendaNuovoMovimentoPage(QWidget):
         bottom_widget = QWidget()
         bottom_layout = QVBoxLayout(bottom_widget)
         bottom_layout.setContentsMargins(0,0,0,0)
-        bottom_layout.setSpacing(5) # FIX: Ridotta la spaziatura tra i titoli e la tabella
+        bottom_layout.setSpacing(5)
 
         header_prodotti_layout = QHBoxLayout()
         prodotti_title = QLabel("🛒 Prodotti rilevati in fattura")
         prodotti_title.setStyleSheet("font-size: 16px; font-weight: bold; color: #34495e; padding-top: 5px;")
         header_prodotti_layout.addWidget(prodotti_title)
         
-        # --- NUOVO: Pulsanti Aggiungi/Rimuovi ---
         self.btn_add_riga = QPushButton("➕ Aggiungi prodotto")
         self.btn_add_riga.setStyleSheet("background-color: #27ae60; color: white; border-radius: 4px; padding: 5px; font-weight: bold;")
         self.btn_add_riga.clicked.connect(self._aggiungi_riga_prodotto)
@@ -359,7 +348,7 @@ class AziendaNuovoMovimentoPage(QWidget):
         header_prodotti_layout.addStretch()
         bottom_layout.addLayout(header_prodotti_layout)
 
-        self.label_prodotti_stato = QLabel("Importa una fattura PDF per vederne il riepilogo.")
+        self.label_prodotti_stato = QLabel("Importa una fattura PDF/XML per vederne il riepilogo.")
         self.label_prodotti_stato.setStyleSheet("color: #7f8c8d; font-style: italic;")
         bottom_layout.addWidget(self.label_prodotti_stato)
 
@@ -372,24 +361,9 @@ class AziendaNuovoMovimentoPage(QWidget):
 
         self.table_prodotti = TabellaIsolata(0, 10, self)
         self.table_prodotti.setHorizontalHeaderLabels(
-            [
-                "#",
-                "Descrizione",
-                "Categoria",
-                "Qta",
-                "Prezzo",
-                "Prezzo unit.",
-                "IVA %",
-                "Totale",
-                "Tipo costo",
-                "Gruppi",
-            ]
+            ["#", "Descrizione", "Categoria", "Qta", "Prezzo", "Prezzo unit.", "IVA %", "Totale", "Tipo costo", "Gruppi"]
         )
-        self.table_prodotti.setEditTriggers(
-            QAbstractItemView.DoubleClicked
-            | QAbstractItemView.SelectedClicked
-            | QAbstractItemView.EditKeyPressed
-        )
+        self.table_prodotti.setEditTriggers(QAbstractItemView.DoubleClicked | QAbstractItemView.SelectedClicked | QAbstractItemView.EditKeyPressed)
         self.table_prodotti.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table_prodotti.setSelectionMode(QAbstractItemView.SingleSelection)
         self.table_prodotti.setAlternatingRowColors(True)
@@ -397,29 +371,18 @@ class AziendaNuovoMovimentoPage(QWidget):
         self.table_prodotti.setStyleSheet("QTableWidget { border: 1px solid #ccc; border-radius: 5px; } QHeaderView::section { background-color: #f8f9fa; font-weight: bold; border: 1px solid #ddd; }")
         self.table_prodotti.itemChanged.connect(self._on_table_prodotti_item_changed)
         
-        # FIX: Forziamo la tabella a riempire nativamente tutto lo spazio senza ricalcoli manuali
         self.table_prodotti.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
         prodotti_header = self.table_prodotti.horizontalHeader()
-        prodotti_header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
         prodotti_header.setSectionResizeMode(1, QHeaderView.Stretch)
-        prodotti_header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
-        prodotti_header.setSectionResizeMode(3, QHeaderView.ResizeToContents)
-        prodotti_header.setSectionResizeMode(4, QHeaderView.ResizeToContents)
-        prodotti_header.setSectionResizeMode(5, QHeaderView.ResizeToContents)
-        prodotti_header.setSectionResizeMode(6, QHeaderView.ResizeToContents)
-        prodotti_header.setSectionResizeMode(7, QHeaderView.ResizeToContents)
-        prodotti_header.setSectionResizeMode(8, QHeaderView.ResizeToContents)
-        prodotti_header.setSectionResizeMode(9, QHeaderView.ResizeToContents)
+        for i in [0, 2, 3, 4, 5, 6, 7, 8, 9]:
+            prodotti_header.setSectionResizeMode(i, QHeaderView.ResizeToContents)
 
         self.table_prodotti.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.table_prodotti.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
 
         bottom_layout.addWidget(self.table_prodotti)
-        
-
         main_splitter.addWidget(bottom_widget)
-
         main_splitter.setSizes([350, 450])
         main_layout.addWidget(main_splitter)
 
@@ -438,7 +401,6 @@ class AziendaNuovoMovimentoPage(QWidget):
 
         action_row.addStretch()
         main_layout.addLayout(action_row)
-
         main_layout.addStretch()
 
     def _format_tipo_animale_report(self, tipo_animale, altro_label):
@@ -450,10 +412,8 @@ class AziendaNuovoMovimentoPage(QWidget):
 
     def _format_finalita_report(self, finalita):
         value = (finalita or "").strip().upper()
-        if value == "LATTE":
-            return "Da Latte"
-        if value == "CARNE":
-            return "Da Carne"
+        if value == "LATTE": return "Da Latte"
+        if value == "CARNE": return "Da Carne"
         return "-"
 
     def _label_gruppo_animale_movimento(self, entry):
@@ -467,26 +427,12 @@ class AziendaNuovoMovimentoPage(QWidget):
     def _carica_categorie_salvate(self, show_errors=True):
         current_text = self.combo_categoria.currentText().strip()
         try:
-            with get_conn() as conn:
-                c = conn.cursor()
-                c.execute(
-                    """
-                    SELECT DISTINCT TRIM(categoria) AS cat
-                    FROM movimenti
-                    WHERE user_id=?
-                      AND categoria IS NOT NULL
-                      AND TRIM(categoria) <> ''
-                    ORDER BY cat COLLATE NOCASE
-                """,
-                    (self.user_id,),
-                )
-                rows = c.fetchall()
-        except sqlite3.Error as exc:
-            if show_errors:
-                QMessageBox.critical(self, "Errore DB", f"Errore database: {exc}")
+            # PEEWEE ORM (1 RIGA)
+            query = Movimento.select(Movimento.categoria).where((Movimento.user == self.user_id) & Movimento.categoria.is_null(False)).distinct()
+            values = sorted([m.categoria.strip() for m in query if m.categoria.strip()], key=str.lower)
+        except Exception as exc:
+            if show_errors: QMessageBox.critical(self, "Errore DB", f"Errore database: {exc}")
             return
-
-        values = [row[0] for row in rows if row[0]]
 
         self.combo_categoria.blockSignals(True)
         self.combo_categoria.clear()
@@ -494,43 +440,26 @@ class AziendaNuovoMovimentoPage(QWidget):
         self.combo_categoria.setCurrentText(current_text)
         self.combo_categoria.blockSignals(False)
 
-
-    def _get_selected_group_entry_ids(self):
-        return self._get_selected_group_entry_ids_from_table()
-
     def _get_selected_group_entry_ids_from_table(self):
-        if not isinstance(self.pending_parser_movimento_data, dict):
-            return []
+        if not isinstance(self.pending_parser_movimento_data, dict): return []
         righe = self.pending_parser_movimento_data.get("products_rows", [])
         ids = set()
         for riga in righe:
-            for gid in riga.get("groups_ids", []):
-                ids.add(int(gid))
+            for gid in riga.get("groups_ids", []): ids.add(int(gid))
         return list(ids)
 
-    def _append_row(
-        self,
-        table: QTableWidget,
-        row_index: int,
-        values: list[str],
-        right_align_indexes=None,
-        editable_columns=None,
-    ):
-        if right_align_indexes is None:
-            right_align_indexes = []
+    def _append_row(self, table: QTableWidget, row_index: int, values: list[str], right_align_indexes=None, editable_columns=None):
+        if right_align_indexes is None: right_align_indexes = []
         editable_set = set(editable_columns or [])
-
         table.setRowCount(row_index + 1)
         for col_index, value in enumerate(values):
             item = QTableWidgetItem(value)
-            if col_index in right_align_indexes:
-                item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
-            else:
-                item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-            if col_index in editable_set:
-                item.setFlags(item.flags() | Qt.ItemIsEditable)
-            else:
-                item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+            if col_index in right_align_indexes: item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            else: item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+            
+            if col_index in editable_set: item.setFlags(item.flags() | Qt.ItemIsEditable)
+            else: item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+            
             table.setItem(row_index, col_index, item)
 
     def _aggiorna_tabella_prodotti_fattura_movimento(self, parser_data):
@@ -542,18 +471,15 @@ class AziendaNuovoMovimentoPage(QWidget):
             righe = []
             if isinstance(parser_data, dict):
                 raw_rows = parser_data.get("products_rows")
-                if isinstance(raw_rows, list):
-                    righe = raw_rows
+                if isinstance(raw_rows, list): righe = raw_rows
 
             if not righe:
                 self.label_prodotti_stato.setText("Nessun prodotto rilevato nella fattura selezionata.")
                 self._mostra_riga_vuota_tabella()
                 return
 
-            try:
-                entries = list_azienda_animali_entries(self.user_id)
-            except sqlite3.Error:
-                entries = []
+            try: entries = list_azienda_animali_entries(self.user_id)
+            except Exception: entries = []
 
             for idx, riga in enumerate(righe, start=1):
                 descrizione = str(riga.get("description") or "-").strip() or "-"
@@ -571,33 +497,23 @@ class AziendaNuovoMovimentoPage(QWidget):
                     if not testo_gruppi or testo_gruppi in ("-", "Tutti i gruppi"):
                         for entry in entries:
                             entry_id = int(entry.get("id", 0) or 0)
-                            if entry_id > 0:
-                                matched_ids.append(entry_id)
+                            if entry_id > 0: matched_ids.append(entry_id)
                     else:
                         for entry in entries:
                             label = self._label_gruppo_animale_movimento(entry)
-                            if label in testo_gruppi:
-                                matched_ids.append(int(entry.get("id", 0)))
+                            if label in testo_gruppi: matched_ids.append(int(entry.get("id", 0)))
                     riga["groups_ids"] = matched_ids
 
                 self._append_row(
-                    self.table_prodotti,
-                    idx - 1,
-                    [
-                        str(idx), descrizione, categoria, qta,
-                        prezzo, prezzo_unit, iva, totale, "", ""
-                    ],
-                    right_align_indexes=[3, 4, 5, 6, 7],
-                    # --- NUOVO: Sblocca le colonne (da 1 a 7) per la modifica manuale ---
-                    editable_columns=[1, 2, 3, 4, 5, 6, 7],
+                    self.table_prodotti, idx - 1,
+                    [str(idx), descrizione, categoria, qta, prezzo, prezzo_unit, iva, totale, "", ""],
+                    right_align_indexes=[3, 4, 5, 6, 7], editable_columns=[1, 2, 3, 4, 5, 6, 7],
                 )
 
                 combo_costo = QComboBox(self)
                 combo_costo.addItems(["Variabili", "Fissi"])
                 combo_costo.setCurrentText(tipo_costo if tipo_costo in ["Variabili", "Fissi"] else "Variabili")
-                combo_costo.currentTextChanged.connect(
-                    lambda testo, r_idx=idx-1: self._on_combo_costo_changed(r_idx, testo)
-                )
+                combo_costo.currentTextChanged.connect(lambda testo, r_idx=idx-1: self._on_combo_costo_changed(r_idx, testo))
                 self.table_prodotti.setCellWidget(idx - 1, 8, combo_costo)
 
                 combo_gruppi = CheckableComboBox(self)
@@ -638,39 +554,22 @@ class AziendaNuovoMovimentoPage(QWidget):
             self.button_rimuovi_fattura.setEnabled(False)
             self.button_salva.setEnabled(False)
             self.button_annulla.setEnabled(False)
-            if message is not None:
-                self.label_prodotti_stato.setText(message)
+            if message is not None: self.label_prodotti_stato.setText(message)
             return
 
         self.button_importa_fattura.setEnabled(self._parser_feedback_prev_enabled.get("importa", True))
         self.button_rimuovi_fattura.setEnabled(self._parser_feedback_prev_enabled.get("rimuovi", True))
         self.button_salva.setEnabled(self._parser_feedback_prev_enabled.get("salva", True))
         self.button_annulla.setEnabled(self._parser_feedback_prev_enabled.get("annulla", False))
-
-        if message is not None:
-            self.label_prodotti_stato.setText(message)
-
-    def _on_gruppi_selection_changed(self):
-        if not isinstance(self.pending_parser_movimento_data, dict):
-            return
-
-        self._sincronizza_products_parser_da_form(
-            self.pending_parser_movimento_data,
-            self._get_selected_group_entry_ids_from_table(),
-        )
-        self._aggiorna_tabella_prodotti_fattura_movimento(self.pending_parser_movimento_data)
+        if message is not None: self.label_prodotti_stato.setText(message)
 
     def _on_table_prodotti_item_changed(self, item: QTableWidgetItem):
-        if self._table_prodotti_updating:
-            return
-        if item is None or item.column() != 8:
-            return
-        if not isinstance(self.pending_parser_movimento_data, dict):
-            return
+        if self._table_prodotti_updating: return
+        if item is None or item.column() != 8: return
+        if not isinstance(self.pending_parser_movimento_data, dict): return
 
         righe = self.pending_parser_movimento_data.get("products_rows")
-        if not isinstance(righe, list) or item.row() >= len(righe):
-            return
+        if not isinstance(righe, list) or item.row() >= len(righe): return
 
         normalized = normalize_cost_type(item.text())
         righe[item.row()]["cost_type"] = normalized
@@ -681,23 +580,20 @@ class AziendaNuovoMovimentoPage(QWidget):
             self._table_prodotti_updating = False
 
     def _on_combo_costo_changed(self, row_idx, text):
-        if not isinstance(self.pending_parser_movimento_data, dict):
-            return
+        if not isinstance(self.pending_parser_movimento_data, dict): return
         righe = self.pending_parser_movimento_data.get("products_rows")
         if isinstance(righe, list) and row_idx < len(righe):
             righe[row_idx]["cost_type"] = text
 
     def _on_combo_gruppi_changed(self, row_idx, selected_ids, selected_text):
-        if not isinstance(self.pending_parser_movimento_data, dict):
-            return
+        if not isinstance(self.pending_parser_movimento_data, dict): return
         righe = self.pending_parser_movimento_data.get("products_rows")
         if isinstance(righe, list) and row_idx < len(righe):
             righe[row_idx]["groups_ids"] = selected_ids
             righe[row_idx]["groups"] = selected_text if selected_text else "Nessun gruppo"
 
     def _sincronizza_products_parser_da_form(self, parser_data, selected_group_ids):
-        if not isinstance(parser_data, dict):
-            return
+        if not isinstance(parser_data, dict): return
         
         righe_aggiornate = []
         for row in range(self.table_prodotti.rowCount()):
@@ -717,31 +613,24 @@ class AziendaNuovoMovimentoPage(QWidget):
             groups_ids = combo_gruppi.checked_data() if combo_gruppi else []
             
             righe_aggiornate.append({
-                "description": desc, "category": cat, "quantity": qta,
-                "price": prezzo, "unit_price": prezzo_u, "vat_rate": iva,
-                "line_total": totale, "cost_type": tipo_costo,
-                "groups": groups_text, "groups_ids": groups_ids
+                "description": desc, "category": cat, "quantity": qta, "price": prezzo,
+                "unit_price": prezzo_u, "vat_rate": iva, "line_total": totale, 
+                "cost_type": tipo_costo, "groups": groups_text, "groups_ids": groups_ids
             })
             
         parser_data["products_rows"] = righe_aggiornate
-
-
         righe = parser_data.get("products_rows")
-        if not isinstance(righe, list):
-            return
+        if not isinstance(righe, list): return
 
-        try:
-            entries = list_azienda_animali_entries(self.user_id)
-        except sqlite3.Error:
-            entries = []
+        try: entries = list_azienda_animali_entries(self.user_id)
+        except Exception: entries = []
 
         opzioni = []
         for entry in entries:
             entry_id = int(entry.get("id", 0) or 0)
             capi = int(entry.get("capi", 0) or 0)
-            if entry_id <= 0 or capi <= 0:
-                continue
-            opzioni.append((entry_id, self._label_gruppo_animale_movimento(entry)))
+            if entry_id > 0 and capi > 0:
+                opzioni.append((entry_id, self._label_gruppo_animale_movimento(entry)))
 
         labels_by_id = {entry_id: label for entry_id, label in opzioni}
         normalized_selected_ids = []
@@ -754,21 +643,16 @@ class AziendaNuovoMovimentoPage(QWidget):
             normalized_selected_ids = [entry_id for entry_id, _label in opzioni]
 
         selected_labels = [labels_by_id[entry_id] for entry_id in normalized_selected_ids if entry_id in labels_by_id]
-        if opzioni and normalized_selected_ids and len(normalized_selected_ids) == len(opzioni):
-            groups_text = "Tutti i gruppi"
-        elif selected_labels:
-            groups_text = ", ".join(selected_labels)
-        elif opzioni:
-            groups_text = "Nessun gruppo"
-        else:
-            groups_text = "Nessun gruppo disponibile"
+        if opzioni and normalized_selected_ids and len(normalized_selected_ids) == len(opzioni): groups_text = "Tutti i gruppi"
+        elif selected_labels: groups_text = ", ".join(selected_labels)
+        elif opzioni: groups_text = "Nessun gruppo"
+        else: groups_text = "Nessun gruppo disponibile"
 
         prodotti = []
         for riga in righe:
             descrizione = str(riga.get("description") or "-").strip() or "-"
             categoria = normalize_product_category(riga.get("category"))
             tipo_costo = normalize_cost_type(riga.get("cost_type"))
-
             quantita_text = str(riga.get("quantity") or "-").strip() or "-"
             prezzo_text = str(riga.get("price") or "-").strip() or "-"
             prezzo_unit_text = str(riga.get("unit_price") or "-").strip() or "-"
@@ -776,28 +660,17 @@ class AziendaNuovoMovimentoPage(QWidget):
             totale_text = str(riga.get("line_total") or "-").strip() or "-"
             quantita = parse_decimal(quantita_text, allow_zero=True, allow_negative=False)
             totale = parse_decimal(totale_text, allow_zero=True, allow_negative=False)
-            if quantita is None or totale is None or quantita <= 0 or totale <= 0:
-                continue
+            
+            if quantita is None or totale is None or quantita <= 0 or totale <= 0: continue
 
             riga["category"] = categoria
             riga["cost_type"] = tipo_costo
-            
-            if "groups" not in riga or riga["groups"] in (None, "", "-"):
-                riga["groups"] = groups_text
+            if "groups" not in riga or riga["groups"] in (None, "", "-"): riga["groups"] = groups_text
 
-            prodotti.append(
-                build_detailed_product_storage_line(
-                    descrizione,
-                    quantita_text,
-                    totale_text,
-                    tipo_costo,
-                    categoria,
-                    riga["groups"],
-                    price_text=prezzo_text,
-                    unit_price_text=prezzo_unit_text,
-                    vat_rate_text=iva_text,
-                )
-            )
+            prodotti.append(build_detailed_product_storage_line(
+                    descrizione, quantita_text, totale_text, tipo_costo, categoria, riga["groups"],
+                    price_text=prezzo_text, unit_price_text=prezzo_unit_text, vat_rate_text=iva_text,
+                ))
 
         parser_data["products"] = serialize_product_storage_lines(prodotti, separator="\n")
         
@@ -805,47 +678,34 @@ class AziendaNuovoMovimentoPage(QWidget):
         return parse_decimal(raw, allow_zero=allow_zero, allow_negative=False)
 
     def _valore_parser_to_float(self, value, allow_zero=False):
-        if value is None:
-            return None
-        if isinstance(value, (int, float)):
-            number = float(value)
+        if value is None: return None
+        if isinstance(value, (int, float)): number = float(value)
         else:
-            try:
-                number = float(value)
-            except (TypeError, ValueError):
-                return self._normalizza_importo(str(value), allow_zero=allow_zero)
-        if number < 0:
-            return None
-        if number == 0 and not allow_zero:
-            return None
+            try: number = float(value)
+            except (TypeError, ValueError): return self._normalizza_importo(str(value), allow_zero=allow_zero)
+        if number < 0: return None
+        if number == 0 and not allow_zero: return None
         return number
 
     def _valore_parser_to_text(self, value, decimals=2):
         number = self._valore_parser_to_float(value, allow_zero=True)
-        if number is not None:
-            return format_number(number, decimals)
-        if value in (None, ""):
-            return "-"
+        if number is not None: return format_number(number, decimals)
+        if value in (None, ""): return "-"
         return str(value).strip()
 
     def _estrai_valore_campo_parser(self, fields, field_name):
         field = fields.get(field_name)
-        if field is None:
-            return ""
+        if field is None: return ""
         valore = getattr(field, "normalized_value", None)
-        if valore in (None, ""):
-            valore = getattr(field, "raw_value", None)
+        if valore in (None, ""): valore = getattr(field, "raw_value", None)
         return str(valore).strip() if valore is not None else ""
 
     def _estrai_importo_parser(self, fields, field_name, allow_zero):
         field = fields.get(field_name)
-        if field is None:
-            return None
+        if field is None: return None
         valore = getattr(field, "normalized_value", None)
-        if valore in (None, ""):
-            valore = getattr(field, "raw_value", None)
-        if valore in (None, ""):
-            return None
+        if valore in (None, ""): valore = getattr(field, "raw_value", None)
+        if valore in (None, ""): return None
         if isinstance(valore, (int, float)):
             numero = float(valore)
             if numero < 0: return None
@@ -854,38 +714,30 @@ class AziendaNuovoMovimentoPage(QWidget):
         return self._normalizza_importo(str(valore), allow_zero=allow_zero)
 
     def _normalizza_data_fattura(self, raw_data):
-        if not raw_data:
-            return ""
+        if not raw_data: return ""
         testo_data = str(raw_data).strip().replace(".", "/").replace("-", "/")
         formati = []
-        if re.fullmatch(r"\d{4}/\d{1,2}/\d{1,2}", testo_data):
-            formati = ["%Y/%m/%d"]
-        elif re.fullmatch(r"\d{1,2}/\d{1,2}/\d{2,4}", testo_data):
-            formati = ["%d/%m/%Y", "%d/%m/%y"]
+        if re.fullmatch(r"\d{4}/\d{1,2}/\d{1,2}", testo_data): formati = ["%Y/%m/%d"]
+        elif re.fullmatch(r"\d{1,2}/\d{1,2}/\d{2,4}", testo_data): formati = ["%d/%m/%Y", "%d/%m/%y"]
         for formato in formati:
             try:
                 data = datetime.strptime(testo_data, formato)
                 return data.strftime("%d/%m/%Y")
-            except ValueError:
-                continue
+            except ValueError: continue
         return ""
 
     def _testo_da_struttura_parser(self, struttura):
-        if not isinstance(struttura, dict):
-            return ""
+        if not isinstance(struttura, dict): return ""
         righe = []
         for blocco in struttura.values():
-            if not isinstance(blocco, list):
-                continue
+            if not isinstance(blocco, list): continue
             for riga in blocco:
                 testo_riga = str(riga).strip()
-                if testo_riga:
-                    righe.append(testo_riga)
+                if testo_riga: righe.append(testo_riga)
         return "\n".join(righe)
 
     def _normalizza_risultato_parser(self, risultato):
-        if not isinstance(risultato, dict):
-            return risultato
+        if not isinstance(risultato, dict): return risultato
         fields = {}
         for key in (
             "invoice_number", "invoice_date", "due_date", "supplier_name",
@@ -902,25 +754,14 @@ class AziendaNuovoMovimentoPage(QWidget):
             if isinstance(item, dict):
                 normalized_items.append(
                     SimpleNamespace(
-                        description=item.get("description"),
-                        quantity=item.get("quantity"),
-                        price=item.get("price"),
-                        unit_price=item.get("unit_price", item.get("price")),
-                        line_total=item.get("line_total"),
-                        vat_rate=item.get("vat_rate", item.get("vat")),
-                        category=item.get("category"),
-                        cost_type=item.get("cost_type"),
+                        description=item.get("description"), quantity=item.get("quantity"), price=item.get("price"),
+                        unit_price=item.get("unit_price", item.get("price")), line_total=item.get("line_total"),
+                        vat_rate=item.get("vat_rate", item.get("vat")), category=item.get("category"), cost_type=item.get("cost_type"),
                     )
                 )
-            else:
-                normalized_items.append(item)
+            else: normalized_items.append(item)
 
-        return SimpleNamespace(
-            fields=fields,
-            line_items=normalized_items,
-            warnings=risultato.get("warnings", []) or [],
-            structure=risultato.get("structure", {}) or {},
-        )
+        return SimpleNamespace(fields=fields, line_items=normalized_items, warnings=risultato.get("warnings", []) or [], structure=risultato.get("structure", {}) or {})
 
     def _estrai_intestazione_fattura(self, testo, file_path):
         righe = []
@@ -932,21 +773,18 @@ class AziendaNuovoMovimentoPage(QWidget):
         parole_escluse = ("fattura", "invoice", "numero", "data", "date", "totale", "iva", "imponibile", "pagamento", "scadenza", "iban", "banca", "documento", "cliente", "fornitore",)
         for riga in righe[:40]:
             testo_riga = riga.lower()
-            if len(riga) < 3: continue
-            if not re.search(r"[A-Za-z]", riga): continue
+            if len(riga) < 3 or not re.search(r"[A-Za-z]", riga): continue
             if re.fullmatch(r"[0-9EUR.,/\\\-\s]+", riga): continue
             if any(parola in testo_riga for parola in parole_escluse): continue
             return riga[:120]
 
         for riga in righe[:15]:
-            if re.search(r"[A-Za-z]", riga):
-                return riga[:120]
+            if re.search(r"[A-Za-z]", riga): return riga[:120]
         return f"Fattura importata: {Path(file_path).name}"
 
     def _get_parser_fatture_function(self):
         parse_invoice_pdf = getattr(self, "_parser_fatture_parse_fn", None)
-        if parse_invoice_pdf is not None:
-            return parse_invoice_pdf
+        if parse_invoice_pdf is not None: return parse_invoice_pdf
 
         project_root = None
         current_file = Path(__file__).resolve()
@@ -958,14 +796,12 @@ class AziendaNuovoMovimentoPage(QWidget):
 
         if project_root is not None:
             project_root_str = str(project_root)
-            if project_root_str not in sys.path:
-                sys.path.insert(0, project_root_str)
+            if project_root_str not in sys.path: sys.path.insert(0, project_root_str)
 
         try:
             parser_module = importlib.import_module("parserFatture.parserFatture")
             parse_invoice_pdf = getattr(parser_module, "parse_invoice_pdf")
-        except Exception as exc:
-            raise RuntimeError("parserFatture non disponibile. Verifica il modulo parserFatture/parserFatture.py") from exc
+        except Exception as exc: raise RuntimeError("parserFatture non disponibile. Verifica il modulo parserFatture/parserFatture.py") from exc
 
         self._parser_fatture_parse_fn = parse_invoice_pdf
         return parse_invoice_pdf
@@ -974,8 +810,7 @@ class AziendaNuovoMovimentoPage(QWidget):
         parse_fn = self._get_parser_fatture_function()
         thread = QThread(self)
         worker = _InvoiceParserWorker(parse_fn, str(file_path))
-        if not hasattr(self, "_parser_callback_proxies_in_corso"):
-            self._parser_callback_proxies_in_corso = set()
+        if not hasattr(self, "_parser_callback_proxies_in_corso"): self._parser_callback_proxies_in_corso = set()
 
         def _release_proxy(proxy):
             self._parser_callback_proxies_in_corso.discard(proxy)
@@ -1025,29 +860,17 @@ class AziendaNuovoMovimentoPage(QWidget):
             quantita = self._valore_parser_to_float(quantita_raw, allow_zero=True)
             totale = self._valore_parser_to_float(totale_raw, allow_zero=True)
 
-            if not descrizione and quantita is None and totale is None and prezzo_unit_raw in (None, ""):
-                continue
+            if not descrizione and quantita is None and totale is None and prezzo_unit_raw in (None, ""): continue
 
-            prodotti_rows.append(
-                {
-                    "description": descrizione or "-",
-                    "category": normalize_product_category(categoria_raw),
-                    "quantity": self._valore_parser_to_text(quantita_raw, 3),
-                    "price": self._valore_parser_to_text(prezzo_raw, 4),
-                    "unit_price": self._valore_parser_to_text(prezzo_unit_raw, 4),
-                    "vat_rate": self._valore_parser_to_text(iva_raw, 2),
-                    "line_total": self._valore_parser_to_text(totale_raw, 2),
-                    "cost_type": normalize_cost_type(tipo_costo_raw),
-                    "groups": "-",
-                }
-            )
+            prodotti_rows.append({
+                    "description": descrizione or "-", "category": normalize_product_category(categoria_raw),
+                    "quantity": self._valore_parser_to_text(quantita_raw, 3), "price": self._valore_parser_to_text(prezzo_raw, 4),
+                    "unit_price": self._valore_parser_to_text(prezzo_unit_raw, 4), "vat_rate": self._valore_parser_to_text(iva_raw, 2),
+                    "line_total": self._valore_parser_to_text(totale_raw, 2), "cost_type": normalize_cost_type(tipo_costo_raw), "groups": "-",
+                })
 
-            if not descrizione or quantita is None or totale is None: continue
-            if quantita <= 0 or totale <= 0: continue
-
-            prodotti.append(
-                build_basic_product_storage_line(descrizione, format_number(quantita, 3), format_number(totale, 2))
-            )
+            if not descrizione or quantita is None or totale is None or quantita <= 0 or totale <= 0: continue
+            prodotti.append(build_basic_product_storage_line(descrizione, format_number(quantita, 3), format_number(totale, 2)))
 
         campi_riepilogo = []
         for field_name in sorted(fields):
@@ -1059,61 +882,39 @@ class AziendaNuovoMovimentoPage(QWidget):
             conf = getattr(field, "confidence", 0.0) or 0.0
             try: conf_pct = int(round(float(conf) * 100))
             except (TypeError, ValueError): conf_pct = 0
-
             needs_review = bool(getattr(field, "requires_confirmation", False))
-            suffisso = " [Conferma]" if needs_review else ""
-            label = field_name.replace("_", " ").title()
-            campi_riepilogo.append(f"{label}: {valore_text} ({conf_pct}%){suffisso}")
+            campi_riepilogo.append(f"{field_name.replace('_', ' ').title()}: {valore_text} ({conf_pct}%){' [Conferma]' if needs_review else ''}")
 
         return {
-            "invoice_number": self._estrai_valore_campo_parser(fields, "invoice_number"),
-            "invoice_date": self._estrai_valore_campo_parser(fields, "invoice_date"),
-            "due_date": self._estrai_valore_campo_parser(fields, "due_date"),
-            "supplier_name": self._estrai_valore_campo_parser(fields, "supplier_name"),
-            "supplier_vat": self._estrai_valore_campo_parser(fields, "supplier_vat"),
-            "customer_name": self._estrai_valore_campo_parser(fields, "customer_name"),
-            "customer_vat": self._estrai_valore_campo_parser(fields, "customer_vat"),
-            "total_amount": self._estrai_valore_campo_parser(fields, "total_amount"),
-            "taxable_total": self._estrai_valore_campo_parser(fields, "taxable_total"),
-            "vat_total": self._estrai_valore_campo_parser(fields, "vat_total"),
-            "payment_terms": self._estrai_valore_campo_parser(fields, "payment_terms"),
-            "warnings": " | ".join(str(w).strip() for w in warnings if str(w).strip()),
-            "products": serialize_product_storage_lines(prodotti, separator="\n"),
-            "products_rows": prodotti_rows,
-            "fields_view": " | ".join(campi_riepilogo),
+            "invoice_number": self._estrai_valore_campo_parser(fields, "invoice_number"), "invoice_date": self._estrai_valore_campo_parser(fields, "invoice_date"),
+            "due_date": self._estrai_valore_campo_parser(fields, "due_date"), "supplier_name": self._estrai_valore_campo_parser(fields, "supplier_name"),
+            "supplier_vat": self._estrai_valore_campo_parser(fields, "supplier_vat"), "customer_name": self._estrai_valore_campo_parser(fields, "customer_name"),
+            "customer_vat": self._estrai_valore_campo_parser(fields, "customer_vat"), "total_amount": self._estrai_valore_campo_parser(fields, "total_amount"),
+            "taxable_total": self._estrai_valore_campo_parser(fields, "taxable_total"), "vat_total": self._estrai_valore_campo_parser(fields, "vat_total"),
+            "payment_terms": self._estrai_valore_campo_parser(fields, "payment_terms"), "warnings": " | ".join(str(w).strip() for w in warnings if str(w).strip()),
+            "products": serialize_product_storage_lines(prodotti, separator="\n"), "products_rows": prodotti_rows, "fields_view": " | ".join(campi_riepilogo),
         }
 
     def _estrai_valori_parser_db(self, parser_data):
-        if not isinstance(parser_data, dict):
-            return (None,) * len(self._PARSER_DB_FIELDS)
+        if not isinstance(parser_data, dict): return (None,) * len(self._PARSER_DB_FIELDS)
         return tuple(parser_data.get(field_name) for field_name in self._PARSER_DB_FIELDS)
 
     def _applica_dati_parser_al_form(self, dati):
-        mapping = (
-            ("data", self.input_data),
-            ("tipo", self.combo_tipo),
-            ("categoria", self.combo_categoria),
-            ("descrizione", self.input_descrizione),
-            ("importo", self.input_importo),
-            ("iva", self.input_iva),
-        )
+        mapping = (("data", self.input_data), ("tipo", self.combo_tipo), ("categoria", self.combo_categoria), ("descrizione", self.input_descrizione), ("importo", self.input_importo), ("iva", self.input_iva))
         for chiave, widget in mapping:
             valore = dati.get(chiave)
             if not valore: continue
             if widget is self.input_data:
                 data = QDate.fromString(str(valore), "dd/MM/yyyy")
                 if data.isValid(): self.input_data.setDate(data)
-            elif widget is self.combo_tipo:
-                self.combo_tipo.setCurrentText(str(valore))
-            elif widget is self.combo_categoria:
-                self.combo_categoria.setCurrentText(str(valore))
-            else:
-                widget.setText(str(valore))
+            elif widget in (self.combo_tipo, self.combo_categoria): widget.setCurrentText(str(valore))
+            else: widget.setText(str(valore))
 
     def analizza_fattura_con_parser_fatture(self, pdf_path, file_path, risultato=None):
         if risultato is None:
             parse_invoice_pdf = self._get_parser_fatture_function()
             risultato = parse_invoice_pdf(str(pdf_path))
+            
         risultato = self._normalizza_risultato_parser(risultato)
         fields = getattr(risultato, "fields", {}) or {}
         parser_data = self._costruisci_dati_parser_movimento(risultato, fields)
@@ -1128,18 +929,14 @@ class AziendaNuovoMovimentoPage(QWidget):
         if imponibile is None and totale is not None:
             if iva is not None and totale >= iva: imponibile = totale - iva
             else: imponibile = totale
-
         if iva is None: iva = 0.0
 
         struttura = getattr(risultato, "structure", {}) or {}
         testo_struttura = self._testo_da_struttura_parser(struttura)
-        testo_struttura_lower = testo_struttura.lower()
-
-        tipo = "USCITA"
-        if "nota di credito" in testo_struttura_lower or "rimborso" in testo_struttura_lower:
-            tipo = "ENTRATA"
-
+        
+        tipo = "ENTRATA" if ("nota di credito" in testo_struttura.lower() or "rimborso" in testo_struttura.lower()) else "USCITA"
         descrizione = ""
+        
         if isinstance(struttura, dict):
             raw_headers = struttura.get("invoice_header")
             if isinstance(raw_headers, list):
@@ -1154,17 +951,12 @@ class AziendaNuovoMovimentoPage(QWidget):
         if not descrizione: descrizione = self._estrai_valore_campo_parser(fields, "supplier_name")
         if not descrizione:
             numero_fattura = self._estrai_valore_campo_parser(fields, "invoice_number")
-            if numero_fattura: descrizione = f"Fattura {numero_fattura}"
-            else: descrizione = f"Fattura importata: {Path(file_path).name}"
+            descrizione = f"Fattura {numero_fattura}" if numero_fattura else f"Fattura importata: {Path(file_path).name}"
 
         return {
-            "data": data_out or datetime.now().strftime("%d/%m/%Y"),
-            "tipo": tipo,
-            "categoria": "Fattura",
-            "descrizione": descrizione,
-            "importo": format_number(imponibile, 2) if imponibile is not None else "",
-            "iva": format_number(iva, 2),
-            "parser_data": parser_data,
+            "data": data_out or datetime.now().strftime("%d/%m/%Y"), "tipo": tipo, "categoria": "Fattura",
+            "descrizione": descrizione, "importo": format_number(imponibile, 2) if imponibile is not None else "",
+            "iva": format_number(iva, 2), "parser_data": parser_data,
         }
 
     def archivia_fattura_caricata(self, file_path, origine):
@@ -1178,23 +970,19 @@ class AziendaNuovoMovimentoPage(QWidget):
         shutil.copy2(src, dest)
         percorso_db = to_storage_fattura_path(dest)
 
-        with get_conn() as conn:
-            c = conn.cursor()
-            c.execute(
-                """
-                INSERT INTO fatture (user_id, origine, movimento_id, produzione_id, nome_originale, percorso_file, data_caricamento)
-                VALUES (?, ?, NULL, NULL, ?, ?, ?)
-            """,
-                (self.user_id, origine, src.name, percorso_db, datetime.now().isoformat(timespec="seconds"),),
-            )
-            fattura_id = c.lastrowid
-        return fattura_id, str(dest)
+        # PEEWEE ORM
+        fattura = Fattura.create(
+            user=self.user_id,
+            origine=origine,
+            nome_originale=src.name,
+            percorso_file=percorso_db,
+            data_caricamento=datetime.now().isoformat(timespec="seconds")
+        )
+        return fattura.id, str(dest)
 
     def importa_fattura_pdf(self):
-        if self.movimento_in_modifica_id is not None:
-            self.annulla_modifica()
-
-        file_paths, _ = QFileDialog.getOpenFileNames(self, "Seleziona Fatture (PDF, XML, P7M)", "", "Fatture (*.pdf *.xml *.p7m);;PDF (*.pdf);;XML (*.xml *.p7m)")
+        if self.movimento_in_modifica_id is not None: self.annulla_modifica()
+        file_paths, _ = QFileDialog.getOpenFileNames(self, "Seleziona Fatture", "", "Fatture (*.pdf *.xml *.p7m);;PDF (*.pdf);;XML (*.xml *.p7m)")
         if not file_paths: return
 
         self.fatture_queue.extend(file_paths)
@@ -1206,7 +994,6 @@ class AziendaNuovoMovimentoPage(QWidget):
         rimanenti = len(self.fatture_queue)
 
         try:
-            # QUI viene definita la variabile che non trovava!
             fattura_id, percorso_archiviato = self.archivia_fattura_caricata(file_path, "MOVIMENTO")
         except Exception as exc:
             QMessageBox.critical(self, "Importazione fallita", f"Impossibile salvare la fattura {Path(file_path).name}: {exc}")
@@ -1224,109 +1011,55 @@ class AziendaNuovoMovimentoPage(QWidget):
         
         self._aggiorna_tabella_prodotti_fattura_movimento(None)
         
-        # --- Smistamento: XML (Istantaneo) vs PDF (Lento/AI) ---
         is_xml = file_path.lower().endswith(('.xml', '.p7m'))
-        
         if is_xml:
             self._set_parser_feedback(True, "Lettura File XML in corso...")
             try:
                 risultato_xml = self._parse_xml_fattura(percorso_archiviato)
-                
-                # Ricostruiamo il dizionario "dati" affinché l'interfaccia lo riconosca perfettamente
                 dati = {
                     "data": self._normalizza_data_fattura(risultato_xml.get("invoice_date")) or datetime.now().strftime("%d/%m/%Y"),
-                    "tipo": "USCITA",
-                    "categoria": "Fattura",
-                    "descrizione": risultato_xml.get("supplier_name", "Fornitore XML"),
-                    "importo": format_number(risultato_xml.get("taxable_total", 0.0), 2),
-                    "iva": format_number(risultato_xml.get("vat_total", 0.0), 2),
+                    "tipo": "USCITA", "categoria": "Fattura", "descrizione": risultato_xml.get("supplier_name", "Fornitore XML"),
+                    "importo": format_number(risultato_xml.get("taxable_total", 0.0), 2), "iva": format_number(risultato_xml.get("vat_total", 0.0), 2),
                     "parser_data": risultato_xml
                 }
                 
-                # Adattiamo i prodotti per il salvataggio nel database
                 prodotti_testo = []
-                for riga in risultato_xml.get("line_items", []):
-                    prodotti_testo.append(f"{riga['description']} | {riga['quantity']} | {riga['line_total']}")
+                for riga in risultato_xml.get("line_items", []): prodotti_testo.append(f"{riga['description']} | {riga['quantity']} | {riga['line_total']}")
                 dati["parser_data"]["products"] = "\n".join(prodotti_testo)
                 dati["parser_data"]["products_rows"] = risultato_xml.get("line_items", [])
 
-                # Compiliamo i form e la tabella
                 self._applica_dati_parser_al_form(dati)
                 self.pending_parser_movimento_data = dati["parser_data"]
                 self._aggiorna_tabella_prodotti_fattura_movimento(self.pending_parser_movimento_data)
                 
-                if is_blank(self.input_importo.text()):
-                    QMessageBox.warning(self, "Attenzione", "Importo non trovato automaticamente. Verificalo manualmente.")
-                    
+                if is_blank(self.input_importo.text()): QMessageBox.warning(self, "Attenzione", "Importo non trovato automaticamente. Verificalo manualmente.")
                 self._set_parser_feedback(False)
             except Exception as exc:
                 self._set_parser_feedback(False)
-                QMessageBox.warning(self, "Errore Lettura XML", f"Impossibile analizzare il file XML: {exc}")
+                QMessageBox.warning(self, "Errore XML", f"Impossibile analizzare il file XML: {exc}")
         else:
-            # --- È un PDF, usiamo l'Intelligenza Artificiale in background come prima ---
             self._set_parser_feedback(True, f"Analisi AI di {Path(file_path).name} in corso...")
-
+            
             def _on_success(risultato):
-                try:
-                    dati = self.analizza_fattura_con_parser_fatture(percorso_archiviato, file_path, risultato=risultato,)
+                try: dati = self.analizza_fattura_con_parser_fatture(percorso_archiviato, file_path, risultato=risultato,)
                 except Exception as exc:
                     QMessageBox.warning(self, "Analisi non completata", f"Fattura salvata, ma analisi non disponibile: {exc}")
                     return
-
                 self._applica_dati_parser_al_form(dati)
                 self.pending_parser_movimento_data = dati.get("parser_data")
                 self._aggiorna_tabella_prodotti_fattura_movimento(self.pending_parser_movimento_data)
+                if is_blank(self.input_importo.text()): QMessageBox.warning(self, "Attenzione", "Importo non trovato automaticamente. Verificalo manualmente.")
 
-                if is_blank(self.input_importo.text()):
-                    QMessageBox.warning(self, "Attenzione", "Importo non trovato automaticamente. Verificalo manualmente.")
-
-            def _on_error(message):
-                QMessageBox.warning(self, "Analisi non completata", f"Fattura salvata, ma analisi non disponibile: {message}")
-
-            def _on_progress(message):
-                self._set_parser_feedback(True, f"Analisi fattura: {message}")
-
+            def _on_error(message): QMessageBox.warning(self, "Analisi non completata", f"Fattura salvata, ma analisi non disponibile: {message}")
+            def _on_progress(message): self._set_parser_feedback(True, f"Analisi fattura: {message}")
             def _on_done():
                 self._set_parser_feedback(False)
-                if self.pending_parser_movimento_data is None:
-                    self.label_prodotti_stato.setText("Analisi non completata.")
+                if self.pending_parser_movimento_data is None: self.label_prodotti_stato.setText("Analisi non completata.")
 
-            try:
-                self.avvia_parser_fattura_async(percorso_archiviato, on_success=_on_success, on_error=_on_error, on_done=_on_done, on_progress=_on_progress)
+            try: self.avvia_parser_fattura_async(percorso_archiviato, on_success=_on_success, on_error=_on_error, on_done=_on_done, on_progress=_on_progress)
             except Exception as exc:
                 self._set_parser_feedback(False)
                 QMessageBox.warning(self, "Errore", f"Il parser AI non si è avviato: {exc}")
-            
-        def _on_success(risultato):
-            try:
-                dati = self.analizza_fattura_con_parser_fatture(percorso_archiviato, file_path, risultato=risultato,)
-            except Exception as exc:
-                QMessageBox.warning(self, "Analisi non completata", f"Fattura salvata, ma analisi non disponibile: {exc}")
-                return
-
-            self._applica_dati_parser_al_form(dati)
-            self.pending_parser_movimento_data = dati.get("parser_data")
-            self._aggiorna_tabella_prodotti_fattura_movimento(self.pending_parser_movimento_data)
-
-            if is_blank(self.input_importo.text()):
-                QMessageBox.warning(self, "Attenzione", "Importo non trovato automaticamente. Verificalo manualmente.")
-
-        def _on_error(message):
-            QMessageBox.warning(self, "Analisi non completata", f"Fattura salvata, ma analisi non disponibile: {message}")
-
-        def _on_progress(message):
-            self._set_parser_feedback(True, f"Analisi fattura: {message}")
-
-        def _on_done():
-            self._set_parser_feedback(False)
-            if self.pending_parser_movimento_data is None:
-                self.label_prodotti_stato.setText("Analisi non completata.")
-
-        try:
-            self.avvia_parser_fattura_async(percorso_archiviato, on_success=_on_success, on_error=_on_error, on_done=_on_done, on_progress=_on_progress,)
-        except Exception as exc:
-            self._set_parser_feedback(False)
-            QMessageBox.warning(self, "Errore", f"Il parser non si è avviato: {exc}")
 
     def rimuovi_fattura_movimento(self, skip_queue_prompt=False):
         self.pending_fattura_movimento_id = None
@@ -1336,21 +1069,22 @@ class AziendaNuovoMovimentoPage(QWidget):
         self._aggiorna_tabella_prodotti_fattura_movimento(None)
         
         if not skip_queue_prompt and hasattr(self, "fatture_queue") and self.fatture_queue:
-            risposta = QMessageBox.question(self, "Coda attiva", "Fattura rimossa. Vuoi passare alla prossima fattura in coda?", QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
-            if risposta == QMessageBox.Yes: self._processa_prossima_fattura_in_coda()
+            if QMessageBox.question(self, "Coda attiva", "Fattura rimossa. Passare alla prossima in coda?", QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes) == QMessageBox.Yes:
+                self._processa_prossima_fattura_in_coda()
             else: self.fatture_queue.clear()
 
     def _carica_fattura_collegata_movimento(self, movimento_id: int, parser_products: str, parser_data: dict | None = None,):
         self.rimuovi_fattura_movimento()
         try:
-            with get_conn() as conn:
-                c = conn.cursor()
-                c.execute("SELECT nome_originale FROM fatture WHERE user_id=? AND movimento_id=? ORDER BY data_caricamento DESC, id DESC LIMIT 1", (self.user_id, movimento_id),)
-                row = c.fetchone()
-        except sqlite3.Error:
-            row = None
-
-        if row and row[0]: self.label_nome_fattura.setText(str(row[0]))
+            # PEEWEE ORM
+            fattura = (Fattura.select(Fattura.nome_originale)
+                        .where((Fattura.user == self.user_id) & (Fattura.movimento == movimento_id))
+                        .order_by(Fattura.data_caricamento.desc(), Fattura.id.desc())
+                        .first())
+            if fattura and fattura.nome_originale:
+                self.label_nome_fattura.setText(str(fattura.nome_originale))
+        except Exception:
+            pass
 
         active_data = parser_data if isinstance(parser_data, dict) else None
         rows = active_data.get("products_rows") if active_data is not None else None
@@ -1362,15 +1096,13 @@ class AziendaNuovoMovimentoPage(QWidget):
                     riga["category"] = normalize_product_category(riga.get("category"))
             if active_data is not None: active_data["products_rows"] = rows
 
-        if active_data is not None and "products" not in active_data:
-            active_data["products"] = parser_products
+        if active_data is not None and "products" not in active_data: active_data["products"] = parser_products
 
         if rows:
             if active_data is not None:
                 self.pending_parser_movimento_data = active_data
                 self._aggiorna_tabella_prodotti_fattura_movimento(active_data)
-            else:
-                self._aggiorna_tabella_prodotti_fattura_movimento({"products_rows": rows})
+            else: self._aggiorna_tabella_prodotti_fattura_movimento({"products_rows": rows})
         else:
             if active_data is not None: self.pending_parser_movimento_data = active_data
             self._aggiorna_tabella_prodotti_fattura_movimento(None)
@@ -1394,41 +1126,28 @@ class AziendaNuovoMovimentoPage(QWidget):
 
     def carica_movimento_in_modifica(self, movimento_id: int):
         movimento_id_value = int(movimento_id or 0)
-        if movimento_id_value <= 0:
-            QMessageBox.critical(self, "Errore", "Movimento non valido.")
-            return
+        if movimento_id_value <= 0: return QMessageBox.critical(self, "Errore", "Movimento non valido.")
 
         try:
-            with get_conn() as conn:
-                c = conn.cursor()
-                c.execute(
-                    """
-                    SELECT id, data_op, tipo, categoria, descrizione, importo, iva_importo, stato_pagamento,
-                           parser_invoice_number, parser_invoice_date, parser_due_date,
-                           parser_supplier_name, parser_supplier_vat,
-                           parser_customer_name, parser_customer_vat,
-                           parser_total_amount, parser_taxable_total, parser_vat_total,
-                           parser_payment_terms, parser_warnings, parser_products, parser_fields_view
-                    FROM movimenti WHERE id=? AND user_id=?
-                """, (movimento_id_value, self.user_id),
-                )
-                row = c.fetchone()
-        except sqlite3.Error as exc:
-            QMessageBox.critical(self, "Errore DB", f"Errore database: {exc}")
-            return
+            # PEEWEE ORM
+            m = Movimento.get_or_none((Movimento.id == movimento_id_value) & (Movimento.user == self.user_id))
+        except Exception as exc:
+            return QMessageBox.critical(self, "Errore DB", f"Errore database: {exc}")
 
-        if not row:
-            QMessageBox.critical(self, "Errore", "Movimento non trovato o non modificabile.")
-            return
+        if not m: return QMessageBox.critical(self, "Errore", "Movimento non trovato o non modificabile.")
 
-        (mov_id, data_op, tipo, categoria, descrizione, importo, iva_importo, stato_pagamento, *parser_values,) = row
+        parser_values = [
+            m.parser_invoice_number, m.parser_invoice_date, m.parser_due_date, m.parser_supplier_name, m.parser_supplier_vat,
+            m.parser_customer_name, m.parser_customer_vat, m.parser_total_amount, m.parser_taxable_total, m.parser_vat_total,
+            m.parser_payment_terms, m.parser_warnings, m.parser_products, m.parser_fields_view
+        ]
+        
         parser_data = None
         if parser_values and any(str(value or "").strip() for value in parser_values):
             parser_data = dict(zip(self._PARSER_DB_FIELDS, parser_values))
 
-        parser_products = ""
+        parser_products = str(m.parser_products or "")
         if parser_data is not None:
-            parser_products = str(parser_data.get("products") or "")
             rows = extract_products_rows_from_parser_text(parser_products)
             if rows:
                 for riga in rows:
@@ -1436,140 +1155,106 @@ class AziendaNuovoMovimentoPage(QWidget):
                     riga["category"] = normalize_product_category(riga.get("category"))
                 parser_data["products_rows"] = rows
 
-        try:
-            data_qt = QDate.fromString(str(data_op or ""), "yyyy-MM-dd")
-            if not data_qt.isValid(): data_qt = QDate.currentDate()
+        try: data_qt = QDate.fromString(str(m.data_op or ""), "yyyy-MM-dd")
         except Exception: data_qt = QDate.currentDate()
+        if not data_qt.isValid(): data_qt = QDate.currentDate()
 
-        try: gruppi_collegati_ids = get_movimento_animali_entry_ids(self.user_id, movimento_id_value)
-        except sqlite3.Error: gruppi_collegati_ids = []
-
-        self.movimento_in_modifica_id = int(mov_id)
+        self.movimento_in_modifica_id = int(m.id)
         self.button_salva.setText("🔄 Aggiorna Movimento")
         self.button_annulla.setEnabled(True)
 
         self.input_data.setDate(data_qt)
-        self.combo_tipo.setCurrentText(str(tipo or "ENTRATA"))
-        self.combo_stato_pagamento.setCurrentText(str(stato_pagamento or "PAGATO"))
-        self.combo_categoria.setCurrentText(str(categoria or ""))
-        self.input_descrizione.setText(str(descrizione or ""))
-        self.input_importo.setText(format_number(float(importo or 0), 2))
-        self.input_iva.setText(format_number(float(iva_importo or 0), 2))
+        self.combo_tipo.setCurrentText(str(m.tipo or "ENTRATA"))
+        self.combo_stato_pagamento.setCurrentText(str(m.stato_pagamento or "PAGATO"))
+        self.combo_categoria.setCurrentText(str(m.categoria or ""))
+        self.input_descrizione.setText(str(m.descrizione or ""))
+        self.input_importo.setText(format_number(float(m.importo or 0), 2))
+        self.input_iva.setText(format_number(float(m.iva_importo or 0), 2))
 
         self._carica_fattura_collegata_movimento(movimento_id_value, str(parser_products or ""), parser_data=parser_data,)
 
     def salva_movimento(self):
         data_qt = self.input_data.date()
-        if not data_qt.isValid():
-            QMessageBox.critical(self, "Errore", "Inserisci la data.")
-            return
+        if not data_qt.isValid(): return QMessageBox.critical(self, "Errore", "Inserisci la data.")
         data_db = data_qt.toString("yyyy-MM-dd")
 
         importo_text = self.input_importo.text().strip()
-        if not importo_text:
-            QMessageBox.critical(self, "Errore", "Inserisci l'importo.")
-            return
+        if not importo_text: return QMessageBox.critical(self, "Errore", "Inserisci l'importo.")
 
         importo_val = self._normalizza_importo(importo_text, allow_zero=False)
-        if importo_val is None:
-            QMessageBox.critical(self, "Errore", "Importo non valido.")
-            return
+        if importo_val is None: return QMessageBox.critical(self, "Errore", "Importo non valido.")
 
         iva_text = self.input_iva.text().strip()
         if not iva_text: iva_val = 0.0
         else:
             iva_val = self._normalizza_importo(iva_text, allow_zero=True)
-            if iva_val is None:
-                QMessageBox.critical(self, "Errore", "Valore IVA non valido.")
-                return
+            if iva_val is None: return QMessageBox.critical(self, "Errore", "Valore IVA non valido.")
 
         tipo_value = self.combo_tipo.currentText().strip() or "ENTRATA"
         stato_pagamento_value = self.combo_stato_pagamento.currentText().strip() or "PAGATO"
-        if tipo_value not in ("ENTRATA", "USCITA"):
-            QMessageBox.critical(self, "Errore", "Tipo movimento non valido.")
-            return
+        if tipo_value not in ("ENTRATA", "USCITA"): return QMessageBox.critical(self, "Errore", "Tipo movimento non valido.")
 
         categoria_value = self.combo_categoria.currentText().strip()
         descrizione_value = self.input_descrizione.text().strip()
         selected_gruppi_ids = self._get_selected_group_entry_ids_from_table()
-        parser_data = self.pending_parser_movimento_data if isinstance(self.pending_parser_movimento_data, dict) else None
         
-        if parser_data is not None:
-            self._sincronizza_products_parser_da_form(parser_data, selected_gruppi_ids)
+        parser_data = self.pending_parser_movimento_data if isinstance(self.pending_parser_movimento_data, dict) else None
+        if parser_data is not None: self._sincronizza_products_parser_da_form(parser_data, selected_gruppi_ids)
+        
         parser_values = self._estrai_valori_parser_db(parser_data)
+        parser_dict = dict(zip(self._PARSER_DB_FIELDS, parser_values))
 
         try:
-            with get_conn() as conn:
-                c = conn.cursor()
+            # TRANSAZIONE INDISTRUTTIBILE PEEWEE
+            with db.atomic():
                 if self.movimento_in_modifica_id is None:
-                    c.execute(
-                        """
-                        INSERT INTO movimenti (
-                            user_id, data_op, tipo, categoria, descrizione, importo, iva_importo, stato_pagamento,
-                            parser_invoice_number, parser_invoice_date, parser_due_date,
-                            parser_supplier_name, parser_supplier_vat,
-                            parser_customer_name, parser_customer_vat,
-                            parser_total_amount, parser_taxable_total, parser_vat_total,
-                            parser_payment_terms, parser_warnings, parser_products, parser_fields_view
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                        (self.user_id, data_db, tipo_value, categoria_value, descrizione_value, importo_val, iva_val, stato_pagamento_value, *parser_values,),
+                    mov = Movimento.create(
+                        user=self.user_id,
+                        data_op=data_db,
+                        tipo=tipo_value,
+                        categoria=categoria_value,
+                        descrizione=descrizione_value,
+                        importo=importo_val,
+                        iva_importo=iva_val,
+                        stato_pagamento=stato_pagamento_value,
+                        **{f"parser_{k}": v for k, v in parser_dict.items()}
                     )
-                    movimento_id = int(c.lastrowid or 0)
+                    movimento_id = mov.id
                     msg_ok = "Movimento salvato nel database!"
                 else:
-                    if parser_data is not None:
-                        c.execute(
-                            """
-                            UPDATE movimenti
-                            SET data_op=?, tipo=?, categoria=?, descrizione=?, importo=?, iva_importo=?, stato_pagamento=?,
-                                parser_invoice_number=?, parser_invoice_date=?, parser_due_date=?,
-                                parser_supplier_name=?, parser_supplier_vat=?,
-                                parser_customer_name=?, parser_customer_vat=?,
-                                parser_total_amount=?, parser_taxable_total=?, parser_vat_total=?,
-                                parser_payment_terms=?, parser_warnings=?, parser_products=?, parser_fields_view=?
-                            WHERE id=? AND user_id=?
-                        """, (data_db, tipo_value, categoria_value, descrizione_value, importo_val, iva_val, stato_pagamento_value, *parser_values, self.movimento_in_modifica_id, self.user_id,),
-                        )
-                    else:
-                        c.execute(
-                            """
-                            UPDATE movimenti
-                            SET data_op=?, tipo=?, categoria=?, descrizione=?, importo=?, iva_importo=?, stato_pagamento=?
-                            WHERE id=? AND user_id=?
-                        """, (data_db, tipo_value, categoria_value, descrizione_value, importo_val, iva_val, stato_pagamento_value, self.movimento_in_modifica_id, self.user_id,),
-                        )
-
-                    if c.rowcount == 0:
-                        QMessageBox.critical(self, "Errore", "Movimento non trovato o non modificabile.")
-                        return
-
+                    Movimento.update(
+                        data_op=data_db,
+                        tipo=tipo_value,
+                        categoria=categoria_value,
+                        descrizione=descrizione_value,
+                        importo=importo_val,
+                        iva_importo=iva_val,
+                        stato_pagamento=stato_pagamento_value,
+                        **{f"parser_{k}": v for k, v in parser_dict.items()}
+                    ).where((Movimento.id == self.movimento_in_modifica_id) & (Movimento.user == self.user_id)).execute()
+                    
                     movimento_id = int(self.movimento_in_modifica_id)
                     msg_ok = "Movimento aggiornato nel database!"
 
                 if movimento_id > 0:
-                    set_movimento_animali_links(self.user_id, movimento_id, selected_gruppi_ids, cursor=c,)
+                    set_movimento_animali_links(self.user_id, movimento_id, selected_gruppi_ids)
 
                 if self.pending_fattura_movimento_id is not None and movimento_id > 0:
-                    c.execute("UPDATE fatture SET movimento_id=? WHERE id=? AND user_id=?", (movimento_id, self.pending_fattura_movimento_id, self.user_id),)
+                    Fattura.update(movimento=movimento_id).where((Fattura.id == self.pending_fattura_movimento_id) & (Fattura.user == self.user_id)).execute()
 
-        except (sqlite3.Error, ValueError) as exc:
-            QMessageBox.critical(self, "Errore DB", f"Errore database: {exc}")
-            return
+        except Exception as exc:
+            return QMessageBox.critical(self, "Errore DB", f"Errore database: {exc}")
 
         self._reset_form(skip_queue_prompt=True)
         self._carica_categorie_salvate(show_errors=False)
 
-        if hasattr(self, "fatture_queue") and self.fatture_queue:
-            self._processa_prossima_fattura_in_coda()
+        if hasattr(self, "fatture_queue") and self.fatture_queue: self._processa_prossima_fattura_in_coda()
         else:
             QMessageBox.information(self, "Successo", msg_ok)
             self.movimento_saved.emit(movimento_id)
+
     def _aggiungi_riga_prodotto(self):
-        if not isinstance(self.pending_parser_movimento_data, dict):
-            self.pending_parser_movimento_data = {"products_rows": []}
-            
-        # Controlla se è presente la riga placeholder vuota e la rimuove
+        if not isinstance(self.pending_parser_movimento_data, dict): self.pending_parser_movimento_data = {"products_rows": []}
         if self.table_prodotti.rowCount() == 1 and self.table_prodotti.columnSpan(0, 0) > 1:
             self.table_prodotti.clearSpans()
             self.table_prodotti.setRowCount(0)
@@ -1580,11 +1265,9 @@ class AziendaNuovoMovimentoPage(QWidget):
         self._table_prodotti_updating = True
         try:
             self._append_row(
-                self.table_prodotti,
-                row_count,
+                self.table_prodotti, row_count,
                 [str(idx), "", "", "", "", "", "", "", "", ""],
-                right_align_indexes=[3, 4, 5, 6, 7],
-                editable_columns=[1, 2, 3, 4, 5, 6, 7],
+                right_align_indexes=[3, 4, 5, 6, 7], editable_columns=[1, 2, 3, 4, 5, 6, 7],
             )
             
             combo_costo = QComboBox(self)
@@ -1598,80 +1281,46 @@ class AziendaNuovoMovimentoPage(QWidget):
                     entry_id = int(entry.get("id", 0) or 0)
                     if entry_id > 0:
                         combo_gruppi.addItem(self._label_gruppo_animale_movimento(entry), data=entry_id)
-            except sqlite3.Error:
-                pass
-            self.table_prodotti.setCellWidget(row_count, 9, combo_gruppi)
+            except Exception: pass
             
-            # Adatta l'altezza dopo aver aggiunto la nuova riga
+            self.table_prodotti.setCellWidget(row_count, 9, combo_gruppi)
             self._adatta_altezza_tabella()
         finally:
             self._table_prodotti_updating = False
 
     def _rimuovi_riga_prodotto(self):
-        # Impedisce la rimozione accidentale della riga placeholder
-        if self.table_prodotti.rowCount() == 1 and self.table_prodotti.columnSpan(0, 0) > 1:
-            return
-            
+        if self.table_prodotti.rowCount() == 1 and self.table_prodotti.columnSpan(0, 0) > 1: return
         current_row = self.table_prodotti.currentRow()
         if current_row >= 0:
             self.table_prodotti.removeRow(current_row)
-            
-            # Riaggiorna il numeretto della colonna '#'
             for row in range(self.table_prodotti.rowCount()):
                 item = self.table_prodotti.item(row, 0)
-                if item:
-                    item.setText(str(row + 1))
-                    
-            # Se ha rimosso l'ultima riga attiva il placeholder, altrimenti adatta l'altezza
-            if self.table_prodotti.rowCount() == 0:
-                self._mostra_riga_vuota_tabella()
-            else:
-                self._adatta_altezza_tabella()
+                if item: item.setText(str(row + 1))
+            if self.table_prodotti.rowCount() == 0: self._mostra_riga_vuota_tabella()
+            else: self._adatta_altezza_tabella()
     
     def _adatta_altezza_tabella(self):
-        """Regola l'altezza della tabella in base al numero esatto di righe per eliminare lo scorrimento interno."""
         header_h = self.table_prodotti.horizontalHeader().height()
-        if header_h < 20: 
-            header_h = 30 # Altezza di fallback se Qt non l'ha ancora renderizzata
-            
-        rows_h = 0
-        for i in range(self.table_prodotti.rowCount()):
-            rh = self.table_prodotti.rowHeight(i)
-            rows_h += rh if rh > 0 else 30
-            
-        # Altezza totale = intestazione + righe + 2px di margini per i bordi
-        altezza_totale = header_h + rows_h + 2
-        
-        self.table_prodotti.setFixedHeight(altezza_totale)
+        if header_h < 20: header_h = 30
+        rows_h = sum((self.table_prodotti.rowHeight(i) if self.table_prodotti.rowHeight(i) > 0 else 30) for i in range(self.table_prodotti.rowCount()))
+        self.table_prodotti.setFixedHeight(header_h + rows_h + 2)
 
     def _mostra_riga_vuota_tabella(self):
-        """Mostra una singola riga estesa con un messaggio informativo se non ci sono prodotti."""
         self.table_prodotti.clearSpans()
         self.table_prodotti.setRowCount(1)
-        
         item_empty = QTableWidgetItem("Nessun prodotto. Importa una fattura PDF o usa 'Aggiungi prodotto'.")
         item_empty.setTextAlignment(Qt.AlignCenter)
         
         from PySide6.QtGui import QColor
         item_empty.setForeground(QColor("#7f8c8d"))
-        
-        # Impedisce la modifica o la selezione di questa riga speciale
         item_empty.setFlags(Qt.ItemIsEnabled)
-        
         self.table_prodotti.setItem(0, 0, item_empty)
-        # Unisce le celle affinché la scritta occupi tutta la larghezza
         self.table_prodotti.setSpan(0, 0, 1, self.table_prodotti.columnCount())
-        
-        # Diamo un po' più di respiro a questa riga singola
         self.table_prodotti.setRowHeight(0, 50)
         self._adatta_altezza_tabella()
     
     def _parse_xml_fattura(self, file_path):
-        """Motore di lettura nativo per fatture elettroniche XML e P7M (Senza AI)."""
-        with open(file_path, 'rb') as f:
-            content = f.read()
-            
-        # 1. Bypass della crittografia P7M per isolare l'XML puro
+        with open(file_path, 'rb') as f: content = f.read()
         xml_string = b""
         start_idx = content.find(b'<?xml')
         if start_idx == -1: start_idx = content.find(b'<FatturaElettronica')
@@ -1684,33 +1333,24 @@ class AziendaNuovoMovimentoPage(QWidget):
             if end_idx != -1:
                 end_tag = content[end_idx:].split(b'>')[0] + b'>'
                 xml_string = content[start_idx:end_idx + len(end_tag)]
-            else:
-                xml_string = content[start_idx:]
-        else:
-            xml_string = content
+            else: xml_string = content[start_idx:]
+        else: xml_string = content
 
-        # 2. Pulizia per semplificare la ricerca (rimuove namespace ostili)
         xml_string = re.sub(b' xmlns="[^"]+"', b'', xml_string, count=1)
         xml_string = re.sub(b'<[a-zA-Z0-9]+:', b'<', xml_string)
         xml_string = re.sub(b'</[a-zA-Z0-9]+:', b'</', xml_string)
         
-        try:
-            root = ET.fromstring(xml_string)
-        except Exception as e:
-            raise ValueError(f"Formato file XML/P7M danneggiato o non standard: {e}")
+        try: root = ET.fromstring(xml_string)
+        except Exception as e: raise ValueError(f"Formato file XML/P7M danneggiato o non standard: {e}")
 
-        # 3. Estrazione Fornitore
         supplier_name = "-"
         cedente = root.find('.//CedentePrestatore/DatiAnagrafici/Anagrafica/Denominazione')
-        if cedente is not None and cedente.text:
-            supplier_name = cedente.text
+        if cedente is not None and cedente.text: supplier_name = cedente.text
         else:
             nome = root.find('.//CedentePrestatore/DatiAnagrafici/Anagrafica/Nome')
             cognome = root.find('.//CedentePrestatore/DatiAnagrafici/Anagrafica/Cognome')
-            if nome is not None and cognome is not None:
-                supplier_name = f"{nome.text} {cognome.text}"
+            if nome is not None and cognome is not None: supplier_name = f"{nome.text} {cognome.text}"
 
-        # 4. Estrazione Dati Generali
         invoice_number = root.findtext('.//DatiGeneraliDocumento/Numero', "")
         invoice_date = root.findtext('.//DatiGeneraliDocumento/Data', "")
         
@@ -1721,24 +1361,20 @@ class AziendaNuovoMovimentoPage(QWidget):
             if imp is not None: taxable_total += float(imp.text)
             if iva is not None: vat_total += float(iva.text)
             
-        # 5. Estrazione Righe Prodotti
         products_rows = []
         for dettaglio in root.findall('.//DettaglioLinee'):
-            desc = dettaglio.findtext('Descrizione', "Prodotto da XML")
-            qta = dettaglio.findtext('Quantita', "1")
-            totale = dettaglio.findtext('PrezzoTotale', "0")
-            prezzo = dettaglio.findtext('PrezzoUnitario', totale)
-            iva = dettaglio.findtext('AliquotaIVA', "0")
-            
             products_rows.append({
-                "description": desc, "quantity": qta, "price": prezzo,
-                "unit_price": prezzo, "line_total": totale, "vat_rate": iva,
-                "category": "Da categorizzare", "cost_type": "Variabili"
+                "description": dettaglio.findtext('Descrizione', "Prodotto da XML"),
+                "quantity": dettaglio.findtext('Quantita', "1"),
+                "price": dettaglio.findtext('PrezzoUnitario', dettaglio.findtext('PrezzoTotale', "0")),
+                "unit_price": dettaglio.findtext('PrezzoUnitario', dettaglio.findtext('PrezzoTotale', "0")),
+                "line_total": dettaglio.findtext('PrezzoTotale', "0"),
+                "vat_rate": dettaglio.findtext('AliquotaIVA', "0"),
+                "category": "Da categorizzare",
+                "cost_type": "Variabili"
             })
 
         return {
-            "invoice_number": invoice_number, "invoice_date": invoice_date,
-            "supplier_name": supplier_name, "taxable_total": taxable_total,
-            "vat_total": vat_total, "total_amount": taxable_total + vat_total,
-            "line_items": products_rows
+            "invoice_number": invoice_number, "invoice_date": invoice_date, "supplier_name": supplier_name, 
+            "taxable_total": taxable_total, "vat_total": vat_total, "total_amount": taxable_total + vat_total, "line_items": products_rows
         }

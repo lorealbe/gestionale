@@ -10,10 +10,11 @@ from types import SimpleNamespace
 from PySide6.QtCore import QObject, Signal, Slot, QRunnable, QThreadPool
 
 from app_utils import format_number, parse_decimal
-from database import get_conn, get_fatture_user_dir, resolve_fattura_path, to_storage_fattura_path
+from database import get_fatture_user_dir, resolve_fattura_path, to_storage_fattura_path
 from services.product_parser_utils import (
     build_basic_product_storage_line, normalize_cost_type, normalize_product_category, serialize_product_storage_lines
 )
+from models import Fattura # <-- Il nostro modello ORM!
 
 # 1. Definizione Segnali per il Runnable (I QRunnable non possono avere segnali nativi)
 class ParserSignals(QObject):
@@ -49,58 +50,58 @@ class InvoiceParserTask(QRunnable):
         finally:
             self.signals.finished.emit()
 
+
 class ZootecniaParserSupport:
-    _PARSER_DB_FIELDS = (
-        "invoice_number",
-        "invoice_date",
-        "due_date",
-        "supplier_name",
-        "supplier_vat",
-        "customer_name",
-        "customer_vat",
-        "total_amount",
-        "taxable_total",
-        "vat_total",
-        "payment_terms",
-        "warnings",
-        "products",
-        "fields_view",
-    )
+    def archivia_fattura_caricata(self, file_path, origine):
+        src = Path(file_path)
+        if not src.exists():
+            raise RuntimeError("File fattura non trovato.")
 
-    def _normalizza_importo(self, raw, allow_zero=False):
-        return parse_decimal(raw, allow_zero=allow_zero, allow_negative=False)
+        archivio_dir = get_fatture_user_dir(self.user_id)
+        nome_pulito = re.sub(r"[^A-Za-z0-9._-]", "_", src.name)
+        nome_dest = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}_{nome_pulito}"
+        dest = archivio_dir / nome_dest
+        shutil.copy2(src, dest)
+        percorso_db = to_storage_fattura_path(dest)
 
-    def _valore_parser_to_float(self, value, allow_zero=False):
-        if value is None:
-            return None
+        # PEEWEE ORM
+        fattura = Fattura.create(
+            user=self.user_id,
+            origine=origine,
+            nome_originale=src.name,
+            percorso_file=percorso_db,
+            data_caricamento=datetime.now().isoformat(timespec="seconds")
+        )
 
-        if isinstance(value, (int, float)):
-            number = float(value)
-        else:
+        return int(fattura.id), str(dest)
+
+    def elimina_fatture_collegate_db(self, movimento_id):
+        # Usiamo ORM Peewee senza bisogno di passare cursori dal blocco transazionale
+        percorsi = [f.percorso_file for f in Fattura.select().where((Fattura.user == self.user_id) & (Fattura.movimento == movimento_id))]
+        Fattura.delete().where((Fattura.user == self.user_id) & (Fattura.movimento == movimento_id)).execute()
+        return len(percorsi), percorsi
+
+    def elimina_file_fatture(self, percorsi):
+        file_eliminati = 0
+        file_non_trovati = 0
+        errori = []
+
+        for percorso in sorted(set(p for p in percorsi if p)):
+            file_path = resolve_fattura_path(percorso)
             try:
-                number = float(value)
-            except (TypeError, ValueError):
-                return self._normalizza_importo(str(value), allow_zero=allow_zero)
+                if file_path.exists():
+                    file_path.unlink()
+                    file_eliminati += 1
+                else:
+                    file_non_trovati += 1
+            except Exception as e:
+                errori.append(f"{file_path} ({e})")
 
-        if number < 0:
-            return None
-        if number == 0 and not allow_zero:
-            return None
-        return number
-
-    def _valore_parser_to_text(self, value, decimals=2):
-        number = self._valore_parser_to_float(value, allow_zero=True)
-        if number is not None:
-            return format_number(number, decimals)
-
-        if value in (None, ""):
-            return "-"
-        return str(value).strip()
+        return file_eliminati, file_non_trovati, errori
 
     def _get_parser_fatture_function(self):
         parse_invoice_pdf = getattr(self, "_parser_fatture_parse_fn", None)
-        if parse_invoice_pdf is not None:
-            return parse_invoice_pdf
+        if parse_invoice_pdf is not None: return parse_invoice_pdf
 
         project_root = None
         current_file = Path(__file__).resolve()
@@ -119,135 +120,105 @@ class ZootecniaParserSupport:
             parser_module = importlib.import_module("parserFatture.parserFatture")
             parse_invoice_pdf = getattr(parser_module, "parse_invoice_pdf")
         except Exception as exc:
-            raise RuntimeError(
-                "parserFatture non disponibile. Verifica il modulo parserFatture/parserFatture.py e le dipendenze del parser."
-            ) from exc
+            raise RuntimeError("Modulo parserFatture non trovato.") from exc
 
         self._parser_fatture_parse_fn = parse_invoice_pdf
         return parse_invoice_pdf
 
     def avvia_parser_fattura_async(self, file_path, on_success, on_error, on_done=None, on_progress=None):
-        """Avvia il parsing in modo asincrono usando il ThreadPool globale nativo di Qt."""
         parse_fn = self._get_parser_fatture_function()
         task = InvoiceParserTask(parse_fn, file_path, on_success, on_error, on_done, on_progress)
-        
-        # QThreadPool prende in carico il task, lo esegue e lo distrugge appena ha finito. Zero Memory Leaks.
+        task.setAutoDelete(True)
         QThreadPool.globalInstance().start(task)
+
+    def _normalizza_importo(self, raw, allow_zero=False):
+        return parse_decimal(raw, allow_zero=allow_zero, allow_negative=False)
+
+    def _valore_parser_to_float(self, value, allow_zero=False):
+        if value is None: return None
+        if isinstance(value, (int, float)): number = float(value)
+        else:
+            try: number = float(value)
+            except (TypeError, ValueError): return self._normalizza_importo(str(value), allow_zero=allow_zero)
+        if number < 0: return None
+        if number == 0 and not allow_zero: return None
+        return number
+
+    def _valore_parser_to_text(self, value, decimals=2):
+        number = self._valore_parser_to_float(value, allow_zero=True)
+        if number is not None: return format_number(number, decimals)
+        if value in (None, ""): return "-"
+        return str(value).strip()
 
     def _estrai_valore_campo_parser(self, fields, field_name):
         field = fields.get(field_name)
-        if field is None:
-            return ""
-
+        if field is None: return ""
         valore = getattr(field, "normalized_value", None)
-        if valore in (None, ""):
-            valore = getattr(field, "raw_value", None)
-
+        if valore in (None, ""): valore = getattr(field, "raw_value", None)
         return str(valore).strip() if valore is not None else ""
 
-    def _estrai_importo_parser(self, fields, field_name, allow_zero):
-        field = fields.get(field_name)
-        if field is None:
-            return None
-
-        valore = getattr(field, "normalized_value", None)
-        if valore in (None, ""):
-            valore = getattr(field, "raw_value", None)
-        if valore in (None, ""):
-            return None
-
-        if isinstance(valore, (int, float)):
-            numero = float(valore)
-            if numero < 0:
-                return None
-            if not allow_zero and numero <= 0:
-                return None
-            return numero
-
-        return self._normalizza_importo(str(valore), allow_zero=allow_zero)
-
     def _normalizza_data_fattura(self, raw_data):
-        if not raw_data:
-            return ""
-
+        if not raw_data: return ""
         testo_data = str(raw_data).strip().replace(".", "/").replace("-", "/")
         formati = []
-
-        if re.fullmatch(r"\d{4}/\d{1,2}/\d{1,2}", testo_data):
-            formati = ["%Y/%m/%d"]
-        elif re.fullmatch(r"\d{1,2}/\d{1,2}/\d{2,4}", testo_data):
-            formati = ["%d/%m/%Y", "%d/%m/%y"]
-
+        if re.fullmatch(r"\d{4}/\d{1,2}/\d{1,2}", testo_data): formati = ["%Y/%m/%d"]
+        elif re.fullmatch(r"\d{1,2}/\d{1,2}/\d{2,4}", testo_data): formati = ["%d/%m/%Y", "%d/%m/%y"]
         for formato in formati:
             try:
                 data = datetime.strptime(testo_data, formato)
                 return data.strftime("%d/%m/%Y")
-            except ValueError:
-                continue
-
+            except ValueError: continue
         return ""
 
-    def _normalizza_risultato_parser(self, risultato):
-        if not isinstance(risultato, dict):
-            return risultato
+    def _calcola_aliquota_iva_parser(self, fields, risultato):
+        taxable_raw = self._estrai_valore_campo_parser(fields, "taxable_total")
+        vat_raw = self._estrai_valore_campo_parser(fields, "vat_total")
+        
+        taxable = self._normalizza_importo(taxable_raw, allow_zero=False)
+        vat = self._normalizza_importo(vat_raw, allow_zero=True)
+        
+        if taxable is not None and taxable > 0 and vat is not None:
+            aliquota_calcolata = (vat / taxable) * 100.0
+            aliquote_standard = [4.0, 5.0, 10.0, 22.0]
+            for std in aliquote_standard:
+                if abs(aliquota_calcolata - std) < 1.0: return std
+            return round(aliquota_calcolata, 1)
+        return 0.0
 
+    def _normalizza_risultato_parser(self, risultato):
+        if not isinstance(risultato, dict): return risultato
+        
         fields = {}
-        for key in (
-            "invoice_number",
-            "invoice_date",
-            "due_date",
-            "supplier_name",
-            "supplier_vat",
-            "customer_name",
-            "customer_vat",
-            "total_amount",
-            "taxable_total",
-            "vat_total",
-            "payment_terms",
-            "invoice_header",
-        ):
+        for key in ("invoice_number", "invoice_date", "due_date", "supplier_name", "supplier_vat", "customer_name", "customer_vat", "total_amount", "taxable_total", "vat_total", "payment_terms"):
             value = risultato.get(key)
             if value not in (None, ""):
                 fields[key] = SimpleNamespace(raw_value=value, normalized_value=value)
-
+                
         raw_items = risultato.get("line_items", []) or []
         normalized_items = []
         for item in raw_items:
             if isinstance(item, dict):
-                normalized_items.append(
-                    SimpleNamespace(
-                        description=item.get("description"),
-                        quantity=item.get("quantity"),
-                        price=item.get("price"),
-                        unit_price=item.get("unit_price", item.get("price")),
-                        line_total=item.get("line_total"),
-                        vat_rate=item.get("vat_rate", item.get("vat")),
-                        category=item.get("category"),
-                        cost_type=item.get("cost_type"),
-                    )
-                )
-            else:
-                normalized_items.append(item)
-
-        return SimpleNamespace(
-            fields=fields,
-            line_items=normalized_items,
-            warnings=risultato.get("warnings", []) or [],
-            structure=risultato.get("structure", {}) or {},
-        )
+                normalized_items.append(SimpleNamespace(
+                    description=item.get("description"), quantity=item.get("quantity"), price=item.get("price"),
+                    unit_price=item.get("unit_price", item.get("price")), line_total=item.get("line_total"),
+                    vat_rate=item.get("vat_rate", item.get("vat")), category=item.get("category"), cost_type=item.get("cost_type")
+                ))
+            else: normalized_items.append(item)
+            
+        return SimpleNamespace(fields=fields, line_items=normalized_items, warnings=risultato.get("warnings", []) or [])
 
     def _costruisci_dati_parser_movimento(self, risultato, fields):
         warnings = getattr(risultato, "warnings", []) or []
         line_items = getattr(risultato, "line_items", []) or []
 
         prodotti = []
-        prodotti_rows = []
-
         for line in line_items:
             descrizione = str(getattr(line, "description", "") or "").strip()
             categoria_raw = getattr(line, "category", None)
             quantita_raw = getattr(line, "quantity", None)
+            prezzo_raw = getattr(line, "price", None)
             prezzo_unit_raw = getattr(line, "unit_price", None)
+            if prezzo_raw in (None, ""): prezzo_raw = prezzo_unit_raw
             totale_raw = getattr(line, "line_total", None)
             iva_raw = getattr(line, "vat_rate", None)
             tipo_costo_raw = getattr(line, "cost_type", None)
@@ -255,55 +226,24 @@ class ZootecniaParserSupport:
             quantita = self._valore_parser_to_float(quantita_raw, allow_zero=True)
             totale = self._valore_parser_to_float(totale_raw, allow_zero=True)
 
-            if not descrizione and quantita is None and totale is None and prezzo_unit_raw in (None, ""):
-                continue
-
-            prodotti_rows.append(
-                {
-                    "description": descrizione or "-",
-                    "category": normalize_product_category(categoria_raw),
-                    "quantity": self._valore_parser_to_text(quantita_raw, 3),
-                    "unit_price": self._valore_parser_to_text(prezzo_unit_raw, 4),
-                    "vat_rate": self._valore_parser_to_text(iva_raw, 2),
-                    "line_total": self._valore_parser_to_text(totale_raw, 2),
-                    "cost_type": normalize_cost_type(tipo_costo_raw),
-                }
-            )
-
-            if not descrizione or quantita is None or totale is None:
-                continue
-            if quantita <= 0 or totale <= 0:
-                continue
-
-            prodotti.append(
-                build_basic_product_storage_line(
-                    descrizione,
-                    format_number(quantita, 3),
-                    format_number(totale, 2),
-                )
-            )
+            if not descrizione or quantita is None or totale is None or quantita <= 0 or totale <= 0: continue
+            
+            prodotti.append(build_basic_product_storage_line(descrizione, format_number(quantita, 3), format_number(totale, 2)))
 
         campi_riepilogo = []
         for field_name in sorted(fields):
             field = fields.get(field_name)
-            if field is None:
-                continue
-
+            if field is None: continue
             valore = getattr(field, "normalized_value", None)
-            if valore in (None, ""):
-                valore = getattr(field, "raw_value", None)
-
+            if valore in (None, ""): valore = getattr(field, "raw_value", None)
             valore_text = str(valore).strip() if valore not in (None, "") else "-"
+            
             conf = getattr(field, "confidence", 0.0) or 0.0
-            try:
-                conf_pct = int(round(float(conf) * 100))
-            except (TypeError, ValueError):
-                conf_pct = 0
-
+            try: conf_pct = int(round(float(conf) * 100))
+            except (TypeError, ValueError): conf_pct = 0
+            
             needs_review = bool(getattr(field, "requires_confirmation", False))
-            suffisso = " [Conferma]" if needs_review else ""
-            label = field_name.replace("_", " ").title()
-            campi_riepilogo.append(f"{label}: {valore_text} ({conf_pct}%){suffisso}")
+            campi_riepilogo.append(f"{field_name.replace('_', ' ').title()}: {valore_text} ({conf_pct}%){' [Conferma]' if needs_review else ''}")
 
         return {
             "invoice_number": self._estrai_valore_campo_parser(fields, "invoice_number"),
@@ -319,92 +259,15 @@ class ZootecniaParserSupport:
             "payment_terms": self._estrai_valore_campo_parser(fields, "payment_terms"),
             "warnings": " | ".join(str(w).strip() for w in warnings if str(w).strip()),
             "products": serialize_product_storage_lines(prodotti, separator="\n"),
-            "products_rows": prodotti_rows,
             "fields_view": " | ".join(campi_riepilogo),
         }
 
     def _estrai_valori_parser_db(self, parser_data):
-        if not isinstance(parser_data, dict):
-            return (None,) * len(self._PARSER_DB_FIELDS)
-        return tuple(parser_data.get(field_name) for field_name in self._PARSER_DB_FIELDS)
-
-    def _calcola_aliquota_iva_parser(self, fields, risultato=None):
-        vat_rows = getattr(risultato, "vat_breakdown", []) or []
-        for row in vat_rows:
-            vat_rate = self._valore_parser_to_float(getattr(row, "vat_rate", None), allow_zero=False)
-            if vat_rate is not None and vat_rate > 0:
-                return vat_rate
-
-        vat_total = self._estrai_importo_parser(fields, "vat_total", allow_zero=True)
-        taxable_total = self._estrai_importo_parser(fields, "taxable_total", allow_zero=False)
-
-        if vat_total is None or taxable_total is None or taxable_total <= 0:
-            total_amount = self._estrai_importo_parser(fields, "total_amount", allow_zero=False)
-            if total_amount is None or total_amount <= 0:
-                return None
-            taxable_total = total_amount - (vat_total or 0.0)
-            if taxable_total <= 0:
-                return None
-
-        return max((vat_total or 0.0) * 100.0 / taxable_total, 0.0)
-
-    def archivia_fattura_caricata(self, file_path, origine):
-        src = Path(file_path)
-        if not src.exists():
-            raise RuntimeError("File fattura non trovato.")
-
-        archivio_dir = get_fatture_user_dir(self.user_id)
-
-        nome_pulito = re.sub(r"[^A-Za-z0-9._-]", "_", src.name)
-        nome_dest = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}_{nome_pulito}"
-        dest = archivio_dir / nome_dest
-        shutil.copy2(src, dest)
-        percorso_db = to_storage_fattura_path(dest)
-
-        with get_conn() as conn:
-            c = conn.cursor()
-            c.execute(
-                """
-                INSERT INTO fatture (user_id, origine, movimento_id, produzione_id, nome_originale, percorso_file, data_caricamento)
-                VALUES (?, ?, NULL, NULL, ?, ?, ?)
-            """,
-                (
-                    self.user_id,
-                    origine,
-                    src.name,
-                    percorso_db,
-                    datetime.now().isoformat(timespec="seconds"),
-                ),
-            )
-            fattura_id = c.lastrowid
-
-        return int(fattura_id or 0), str(dest)
-
-    def elimina_fatture_collegate_db(self, cursor, movimento_id):
-        cursor.execute(
-            "SELECT percorso_file FROM fatture WHERE user_id=? AND movimento_id=?",
-            (self.user_id, movimento_id),
+        _PARSER_DB_FIELDS = (
+            "invoice_number", "invoice_date", "due_date", "supplier_name",
+            "supplier_vat", "customer_name", "customer_vat", "total_amount",
+            "taxable_total", "vat_total", "payment_terms", "warnings",
+            "products", "fields_view",
         )
-        percorsi = [row[0] for row in cursor.fetchall() if row and row[0]]
-
-        cursor.execute("DELETE FROM fatture WHERE user_id=? AND movimento_id=?", (self.user_id, movimento_id))
-        fatture_eliminate = max(cursor.rowcount, 0)
-        return fatture_eliminate, percorsi
-
-    def elimina_file_fatture(self, percorsi):
-        file_eliminati = 0
-        file_non_trovati = 0
-        errori = []
-
-        for percorso in sorted(set(p for p in percorsi if p)):
-            file_path = resolve_fattura_path(percorso)
-            try:
-                if file_path.exists():
-                    file_path.unlink()
-                    file_eliminati += 1
-                else:
-                    file_non_trovati += 1
-            except Exception as exc:
-                errori.append(f"{file_path} ({exc})")
-
-        return file_eliminati, file_non_trovati, errori
+        if not isinstance(parser_data, dict): return (None,) * len(_PARSER_DB_FIELDS)
+        return tuple(parser_data.get(field_name) for field_name in _PARSER_DB_FIELDS)

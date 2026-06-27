@@ -1,5 +1,3 @@
-import sqlite3
-
 from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError
 from PySide6.QtCore import Qt, Signal
@@ -14,18 +12,16 @@ from PySide6.QtWidgets import (
 )
 
 from app_utils import is_blank
-from database import get_conn
-
+from models import Utente  # Importiamo il modello Peewee
 
 ph = PasswordHasher()
-
 
 class LoginWindow(QWidget):
     authenticated = Signal(int, str)
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Login Gestionale (Qt)")
+        self.setWindowTitle("Login Gestionale (Cloud)")
         self.setMinimumWidth(360)
         self._build_ui()
 
@@ -44,6 +40,7 @@ class LoginWindow(QWidget):
         self.input_user.returnPressed.connect(self._on_enter_pressed)
         main_layout.addWidget(self.input_user)
 
+        # CORRETTO: il nome è self.input_password
         self.input_password = QLineEdit(self)
         self.input_password.setPlaceholderText("Password")
         self.input_password.setEchoMode(QLineEdit.Password)
@@ -72,7 +69,7 @@ class LoginWindow(QWidget):
 
     def register(self):
         user = self.input_user.text().strip()
-        pwd = self.input_password.text()
+        pwd = self.input_password.text() # CORRETTO: self.input_password
 
         if is_blank(user) or is_blank(pwd):
             QMessageBox.warning(self, "Errore", "Inserisci Username e Password")
@@ -80,42 +77,40 @@ class LoginWindow(QWidget):
 
         try:
             pwd_hash = ph.hash(pwd)
-            with get_conn() as conn:
-                c = conn.cursor()
-                c.execute("INSERT INTO utenti (username, password_hash) VALUES (?, ?)", (user, pwd_hash))
+            # PEEWEE ORM: Salva l'utente nel cloud
+            Utente.create(username=user, password_hash=pwd_hash)
+            
             QMessageBox.information(self, "Successo", "Registrazione completata. Ora puoi accedere.")
             self.clear_password()
-        except sqlite3.IntegrityError:
-            QMessageBox.critical(self, "Errore", "Nome utente gia esistente.")
-        except sqlite3.Error as exc:
-            QMessageBox.critical(self, "Errore DB", f"Errore database: {exc}")
+        except Exception as exc:
+            QMessageBox.critical(self, "Errore", f"Impossibile registrare l'utente: {exc}")
 
     def login(self):
         user = self.input_user.text().strip()
-        pwd = self.input_password.text()
+        pwd = self.input_password.text() # CORRETTO: self.input_password
 
         if is_blank(user) or is_blank(pwd):
             QMessageBox.warning(self, "Errore", "Inserisci Username e Password")
             return
 
         try:
-            with get_conn() as conn:
-                c = conn.cursor()
-                c.execute("SELECT id, password_hash FROM utenti WHERE username=?", (user,))
-                row = c.fetchone()
+            # PEEWEE ORM: Recupera l'utente dal cloud
+            utente = Utente.get_or_none(Utente.username == user)
 
-            if not row:
+            if not utente:
                 QMessageBox.critical(self, "Accesso Negato", "Username o Password errati.")
                 return
 
-            user_id, stored_hash = row[0], row[1]
             try:
-                ph.verify(stored_hash, pwd)
+                ph.verify(utente.password_hash, pwd)
             except VerifyMismatchError:
                 QMessageBox.critical(self, "Accesso Negato", "Username o Password errati.")
                 return
 
             self.clear_password()
-            self.authenticated.emit(int(user_id), user)
-        except sqlite3.Error as exc:
-            QMessageBox.critical(self, "Errore DB", f"Errore database: {exc}")
+            self.authenticated.emit(int(utente.id), user)
+        except Exception as exc:
+            print(f"DEBUG ERROR: {exc}")
+            import traceback
+            traceback.print_exc()
+            QMessageBox.critical(self, "Errore", f"Errore durante il login: {exc}")

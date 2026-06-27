@@ -1,7 +1,6 @@
-import sqlite3
+import csv
 from datetime import datetime
 import pyqtgraph as pg
-import csv
 
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QFont, QColor
@@ -10,7 +9,9 @@ from PySide6.QtWidgets import (
     QGridLayout, QSizePolicy, QTableWidget, QHeaderView, QTableWidgetItem, 
     QAbstractItemView, QMessageBox, QFileDialog
 )
-from database import get_conn
+
+from models import Movimento
+from peewee import fn
 
 class DashboardPage(QWidget):
     # Segnale che avviserà il MainWindow di cambiare tab quando premiamo un'Azione Rapida
@@ -37,435 +38,250 @@ class DashboardPage(QWidget):
     def _build_ui(self):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(15, 15, 15, 15)
-        layout.setSpacing(15)
+        layout.setSpacing(20)
 
-        # ==========================================
-        # 1. HEADER (Titolo)
-        # ==========================================
-        header_layout = QVBoxLayout()
-        header_layout.setSpacing(2)
-        titolo = QLabel("Cruscotto Aziendale")
+        # --- HEADER ---
+        header_layout = QHBoxLayout()
+        titolo = QLabel("📊 Cruscotto Aziendale")
         titolo.setStyleSheet("font-size: 24px; font-weight: bold; color: #2c3e50;")
-        sottotitolo = QLabel("Panoramica finanziaria e azioni rapide per la gestione quotidiana.")
-        sottotitolo.setStyleSheet("font-size: 13px; color: #7f8c8d;")
         header_layout.addWidget(titolo)
-        header_layout.addWidget(sottotitolo)
+        
+        btn_esporta = QPushButton("📥 Esporta tutto in Excel (CSV)")
+        btn_esporta.setStyleSheet("background-color: #27ae60; color: white; font-weight: bold; padding: 8px; border-radius: 5px;")
+        btn_esporta.clicked.connect(self.esporta_csv)
+        header_layout.addStretch()
+        header_layout.addWidget(btn_esporta)
+        
         layout.addLayout(header_layout)
 
-        # ==========================================
-        # 2. SEZIONE AZIONI RAPIDE
-        # ==========================================
-        azioni_frame = QFrame()
-        # QSizePolicy.Fixed in verticale garantisce che i bottoni non rubino spazio al grafico
-        azioni_frame.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        azioni_frame.setStyleSheet("background-color: #f8f9fa; border: 1px solid #e1e8ed; border-radius: 8px;")
-        azioni_layout = QVBoxLayout(azioni_frame)
-        azioni_layout.setContentsMargins(15, 10, 15, 15)
+        # --- KPI CARDS (Valori Finanziari) ---
+        kpi_layout = QHBoxLayout()
+        kpi_layout.setSpacing(15)
 
-        lbl_azioni = QLabel("⚡ Azioni Rapide")
-        lbl_azioni.setStyleSheet("font-size: 14px; font-weight: bold; color: #34495e; border: none;")
-        azioni_layout.addWidget(lbl_azioni)
+        self.val_entrate = self._crea_card(kpi_layout, "Entrate Totali", "€ 0,00", "#27ae60")
+        self.val_uscite = self._crea_card(kpi_layout, "Uscite Totali", "€ 0,00", "#e74c3c")
+        
+        # Card dell'utile un po' più grande
+        card_utile = QFrame()
+        card_utile.setStyleSheet("background-color: white; border-radius: 10px; border: 1px solid #ddd; border-bottom: 4px solid #3498db;")
+        l_utile = QVBoxLayout(card_utile)
+        l_utile.setContentsMargins(20, 20, 20, 20)
+        titolo_utile = QLabel("UTILE NETTO")
+        titolo_utile.setStyleSheet("font-size: 12px; font-weight: bold; color: #7f8c8d;")
+        self.val_utile = QLabel("€ 0,00")
+        self.val_utile.setStyleSheet("font-size: 26px; font-weight: bold; color: #2c3e50;")
+        
+        self.val_diff_utile = QLabel("Rispetto al mese scorso: -")
+        self.val_diff_utile.setStyleSheet("font-size: 11px; color: #7f8c8d; margin-top: 5px;")
+        
+        l_utile.addWidget(titolo_utile)
+        l_utile.addWidget(self.val_utile)
+        l_utile.addWidget(self.val_diff_utile)
+        kpi_layout.addWidget(card_utile)
 
-        grid_azioni = QHBoxLayout()
-        grid_azioni.setSpacing(10)
+        layout.addLayout(kpi_layout)
 
-        # Creazione dei bottoni (Testi brevi su una singola riga per evitare tagli verticali)
-        btn_mappa = self._crea_bottone_azione("📍 Campi", "#27ae60")
-        btn_mappa.clicked.connect(lambda: self.richiesta_navigazione.emit("agricoltura"))
+        # --- SEZIONE CENTRALE (Grafico + Scadenze) ---
+        middle_layout = QHBoxLayout()
+        middle_layout.setSpacing(15)
 
-        btn_spesa = self._crea_bottone_azione("💶 Fatture", "#e74c3c")
-        btn_spesa.clicked.connect(lambda: self.richiesta_navigazione.emit("fatture"))
-
-        btn_macchinari = self._crea_bottone_azione("🚜 Mezzi", "#f39c12")
-        btn_macchinari.clicked.connect(lambda: self.richiesta_navigazione.emit("macchinari"))
-
-        btn_animali = self._crea_bottone_azione("🐄 Stalla", "#8e44ad")
-        btn_animali.clicked.connect(lambda: self.richiesta_navigazione.emit("zootecnia"))
-
-        btn_esporta = self._crea_bottone_azione("📤 Esporta (Excel)", "#34495e")
-        btn_esporta.clicked.connect(self._esporta_commercialista_csv)
-
-        grid_azioni.addWidget(btn_mappa)
-        grid_azioni.addWidget(btn_spesa)
-        grid_azioni.addWidget(btn_macchinari)
-        grid_azioni.addWidget(btn_animali)
-        grid_azioni.addWidget(btn_esporta)
-
-        azioni_layout.addLayout(grid_azioni)
-        layout.addWidget(azioni_frame)
-
-        # ==========================================
-        # 3. SEZIONE STATO ECONOMICO
-        # ==========================================
-        # Contenitore elastico per la zona finanziaria
-        finanza_container = QWidget()
-        finanza_layout = QHBoxLayout(finanza_container)
-        finanza_layout.setContentsMargins(0, 0, 0, 0)
-        finanza_layout.setSpacing(15)
-
-        # --- PANNELLO KPI (A Sinistra) ---
-        kpi_frame = QFrame()
-        kpi_frame.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        kpi_frame.setStyleSheet("background-color: white; border: 1px solid #e1e8ed; border-radius: 8px;")
-        kpi_vbox = QVBoxLayout(kpi_frame)
-        kpi_vbox.setContentsMargins(15, 15, 15, 15)
-        kpi_vbox.setSpacing(10)
-
-        lbl_finanza = QLabel("📊 Bilancio Totale")
-        lbl_finanza.setStyleSheet("font-size: 14px; font-weight: bold; color: #34495e; border: none;")
-        kpi_vbox.addWidget(lbl_finanza)
-
-        # Contenitori modificabili dinamicamente
-        self.lbl_ricavi = self._crea_kpi_label("Ricavi Totali", "0.00 €", "#28a745")
-        self.lbl_spese = self._crea_kpi_label("Spese Totali", "0.00 €", "#dc3545")
-        self.lbl_utile = self._crea_kpi_label("Utile Netto", "0.00 €", "#007bff", font_size="22px")
-
-        kpi_vbox.addWidget(self.lbl_ricavi)
-        kpi_vbox.addWidget(self.lbl_spese)
-        kpi_vbox.addWidget(self.lbl_utile)
-        kpi_vbox.addStretch()
-
-        finanza_layout.addWidget(kpi_frame, 30) # Prende il 30% dello spazio orizzontale
-
-        # --- GRAFICO RIPARTIZIONE SPESE (A Destra) ---
+        # --- GRAFICO ---
         grafico_frame = QFrame()
-        grafico_frame.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        grafico_frame.setStyleSheet("background-color: white; border: 1px solid #e1e8ed; border-radius: 8px; padding: 10px;")
+        grafico_frame.setStyleSheet("background-color: white; border-radius: 10px; border: 1px solid #ddd;")
         grafico_vbox = QVBoxLayout(grafico_frame)
-
-        lbl_grafico = QLabel("📉 Entrate e Uscite")
-        lbl_grafico.setStyleSheet("font-size: 14px; font-weight: bold; color: #7f8c8d; border: none;")
-        grafico_vbox.addWidget(lbl_grafico)
+        
+        titolo_grafico = QLabel("Costi e Ricavi per Mese (Ultimi 6 mesi)")
+        titolo_grafico.setStyleSheet("font-weight: bold; font-size: 14px; color: #2c3e50; margin-bottom: 10px;")
+        grafico_vbox.addWidget(titolo_grafico)
 
         self.plot_spese = pg.PlotWidget()
         self.plot_spese.setBackground('w')
         self.plot_spese.showGrid(x=False, y=True, alpha=0.3)
         self.plot_spese.setMouseEnabled(x=False, y=False)
-        self.plot_spese.setMenuEnabled(False)
         self.plot_spese.hideButtons()
-        self.legend = self.plot_spese.addLegend(offset=(-10, 10))
-        
         self.plot_spese.getPlotItem().getAxis('bottom').setHeight(50)
 
         font_assi = QFont()
-        font_assi.setPointSize(9) # Impostiamo un point-size esplicito > 0
+        font_assi.setPointSize(9)
         self.plot_spese.getPlotItem().getAxis('bottom').setTickFont(font_assi)
         self.plot_spese.getPlotItem().getAxis('left').setTickFont(font_assi)
-        
+
         grafico_vbox.addWidget(self.plot_spese)
+        middle_layout.addWidget(grafico_frame, stretch=2)
 
-
-        # ==========================================
-        # NUOVO ASSEGNO DEGLI SPAZI (20% KPI, 45% Grafico, 35% Scadenze)
-        # ==========================================
-        finanza_layout.addWidget(kpi_frame, 20) 
-        finanza_layout.addWidget(grafico_frame, 45)
-
-        # --- PANNELLO SCADENZIARIO (A Destra) ---
-        self.scadenze_frame = QFrame()
-        self.scadenze_frame.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        self.scadenze_frame.setStyleSheet("background-color: white; border: 1px solid #e1e8ed; border-radius: 8px; padding: 5px;")
-        scadenze_vbox = QVBoxLayout(self.scadenze_frame)
-        scadenze_vbox.setContentsMargins(10, 10, 10, 10)
+        # --- SCADENZE (Da Pagare) ---
+        scadenze_frame = QFrame()
+        scadenze_frame.setStyleSheet("background-color: white; border-radius: 10px; border: 1px solid #ddd;")
+        scadenze_vbox = QVBoxLayout(scadenze_frame)
         
-        lbl_scadenze = QLabel("🚨 Da Pagare")
-        lbl_scadenze.setStyleSheet("font-size: 14px; font-weight: bold; color: #c0392b; border: none;")
-        scadenze_vbox.addWidget(lbl_scadenze)
-        
-        # Creazione della tabella delle scadenze
-        self.table_scadenze = QTableWidget()
-        self.table_scadenze.setColumnCount(4)
-        self.table_scadenze.setHorizontalHeaderLabels(["Data", "Descrizione", "Importo", ""])
+        titolo_scadenze = QLabel("🚨 Scadenze e Fatture Da Pagare")
+        titolo_scadenze.setStyleSheet("font-weight: bold; font-size: 14px; color: #e74c3c; margin-bottom: 10px;")
+        scadenze_vbox.addWidget(titolo_scadenze)
+
+        self.table_scadenze = QTableWidget(0, 3)
+        self.table_scadenze.setHorizontalHeaderLabels(["Scadenza", "Descrizione", "Importo"])
         self.table_scadenze.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
         self.table_scadenze.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
         self.table_scadenze.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
-        self.table_scadenze.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeToContents)
-        self.table_scadenze.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        self.table_scadenze.setSelectionBehavior(QAbstractItemView.SelectRows)
-        self.table_scadenze.setSelectionMode(QAbstractItemView.SingleSelection)
         self.table_scadenze.verticalHeader().setVisible(False)
-        self.table_scadenze.setStyleSheet("""
-            QTableWidget { border: none; }
-            QHeaderView::section { font-weight: bold; border: none; border-bottom: 1px solid #ddd; background-color: white; }
-        """)
-        
+        self.table_scadenze.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.table_scadenze.setSelectionMode(QAbstractItemView.NoSelection)
+        self.table_scadenze.setStyleSheet("border: none;")
         scadenze_vbox.addWidget(self.table_scadenze)
         
-        # Aggiungiamo il pannello scadenze al contenitore orizzontale
-        finanza_layout.addWidget(self.scadenze_frame, 35)
+        middle_layout.addWidget(scadenze_frame, stretch=1)
+        layout.addLayout(middle_layout)
 
-        # Stretch=1 indica al contenitore finanziario di espandersi verticalmente prendendosi tutto lo spazio rimasto
-        layout.addWidget(finanza_container, 1)
+        # --- AZIONI RAPIDE ---
+        azioni_layout = QHBoxLayout()
+        azioni_layout.setSpacing(10)
+        
+        lbl_azioni = QLabel("Azioni Rapide:")
+        lbl_azioni.setStyleSheet("font-weight: bold; color: #7f8c8d;")
+        azioni_layout.addWidget(lbl_azioni)
+        
+        btn_nuova_fattura = QPushButton("➕ Registra Nuova Fattura")
+        btn_nuova_fattura.setStyleSheet("background-color: #f39c12; color: white; font-weight: bold; padding: 8px; border-radius: 5px;")
+        btn_nuova_fattura.clicked.connect(lambda: self.richiesta_navigazione.emit("Fatture"))
+        
+        btn_nuovo_latte = QPushButton("🥛 Produzione Latte")
+        btn_nuovo_latte.setStyleSheet("background-color: #3498db; color: white; font-weight: bold; padding: 8px; border-radius: 5px;")
+        btn_nuovo_latte.clicked.connect(lambda: self.richiesta_navigazione.emit("Stalla"))
+        
+        azioni_layout.addWidget(btn_nuova_fattura)
+        azioni_layout.addWidget(btn_nuovo_latte)
+        azioni_layout.addStretch()
+        
+        layout.addLayout(azioni_layout)
 
-    # --- FUNZIONI DI SUPPORTO GRAFICO ---
-    def _crea_bottone_azione(self, testo, colore):
-        btn = QPushButton(testo)
-        btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        btn.setMinimumHeight(60) # Altezza ideale per testi a singola riga
-        btn.setCursor(Qt.PointingHandCursor)
-        btn.setStyleSheet(f"""
-            QPushButton {{
-                background-color: white;
-                color: {colore};
-                border: 2px solid {colore};
-                border-radius: 8px;
-                font-size: 15px;
-                font-weight: bold;
-                padding: 5px;
-            }}
-            QPushButton:hover {{
-                background-color: {colore};
-                color: white;
-            }}
-        """)
-        return btn
+    def _crea_card(self, layout, titolo, val_iniziale, colore_bordo):
+        frame = QFrame()
+        frame.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        frame.setStyleSheet(f"background-color: white; border-radius: 10px; border: 1px solid #ddd; border-bottom: 4px solid {colore_bordo};")
+        vbox = QVBoxLayout(frame)
+        vbox.setContentsMargins(20, 20, 20, 20)
+        
+        lbl_titolo = QLabel(titolo.upper())
+        lbl_titolo.setStyleSheet("font-size: 12px; font-weight: bold; color: #7f8c8d;")
+        
+        lbl_valore = QLabel(val_iniziale)
+        lbl_valore.setStyleSheet("font-size: 22px; font-weight: bold; color: #2c3e50;")
+        
+        vbox.addWidget(lbl_titolo)
+        vbox.addWidget(lbl_valore)
+        layout.addWidget(frame)
+        return lbl_valore
 
-    def _crea_kpi_label(self, titolo, valore, colore, font_size="18px"):
-        container = QFrame()
-        container.setStyleSheet(f"border-left: 5px solid {colore}; background-color: #f8f9fa; padding: 8px; border-radius: 5px;")
-        lay = QVBoxLayout(container)
-        lay.setContentsMargins(10, 5, 10, 5)
-
-        lbl_tit = QLabel(titolo)
-        lbl_tit.setStyleSheet("color: #7f8c8d; font-size: 12px; font-weight: bold; border: none; background: transparent;")
-
-        lbl_val = QLabel(valore)
-        lbl_val.setStyleSheet(f"color: {colore}; font-size: {font_size}; font-weight: 900; border: none; background: transparent;")
-
-        lay.addWidget(lbl_tit)
-        lay.addWidget(lbl_val)
-        return container
-
-    # --- LOGICA DEI DATI ---
     def _carica_dati_finanziari(self):
         try:
-            with get_conn() as conn:
-                c = conn.cursor()
-                
-                # Calcolo Ricavi globali dalla tabella generale 'movimenti'
-                c.execute("SELECT SUM(importo) FROM movimenti WHERE user_id=? AND tipo='ENTRATA'", (self.user_id,))
-                ricavi = float(c.fetchone()[0] or 0.0)
+            # 1. ORM: Calcola Entrate e Uscite totali 
+            entrate = Movimento.select(fn.SUM(Movimento.importo)).where((Movimento.tipo == 'ENTRATA') & (Movimento.user == self.user_id)).scalar() or 0.0
+            uscite = Movimento.select(fn.SUM(Movimento.importo)).where((Movimento.tipo == 'USCITA') & (Movimento.user == self.user_id)).scalar() or 0.0
+            utile = entrate - uscite
+            
+            # 2. ORM: Calcolo Mese Corrente vs Mese Precedente
+            now = datetime.now()
+            mese_corrente = now.strftime("%Y-%m")
+            if now.month == 1:
+                mese_prec = f"{now.year - 1}-12"
+            else:
+                mese_prec = f"{now.year}-{now.month - 1:02d}"
 
-                # Calcolo Spese globali dalla tabella generale 'movimenti'
-                c.execute("SELECT SUM(importo) FROM movimenti WHERE user_id=? AND tipo='USCITA'", (self.user_id,))
-                spese = float(c.fetchone()[0] or 0.0)
-
-                # Classifica bilancio per categoria (calcola sia entrate che uscite per ogni categoria)
-                c.execute("""
-                    SELECT 
-                        COALESCE(NULLIF(TRIM(categoria), ''), 'Non categorizzato') as cat, 
-                        SUM(CASE WHEN tipo='ENTRATA' THEN importo ELSE 0 END) as tot_entrate,
-                        SUM(CASE WHEN tipo='USCITA' THEN importo ELSE 0 END) as tot_uscite
-                    FROM movimenti 
-                    WHERE user_id=?
-                    GROUP BY cat 
-                    ORDER BY (SUM(CASE WHEN tipo='ENTRATA' THEN importo ELSE 0 END) + SUM(CASE WHEN tipo='USCITA' THEN importo ELSE 0 END)) DESC
-                """, (self.user_id,))
-                dati_categorie = c.fetchall()
-
+            # Entrate/Uscite Mese Corrente (Gestione sicura date formato YYYY-MM-DD)
+            ent_corrente = Movimento.select(fn.SUM(Movimento.importo)).where(
+                (Movimento.tipo == 'ENTRATA') & (Movimento.user == self.user_id) & 
+                (Movimento.data_op >= f"{mese_corrente}-01") & (Movimento.data_op <= f"{mese_corrente}-31")
+            ).scalar() or 0.0
+            usc_corrente = Movimento.select(fn.SUM(Movimento.importo)).where(
+                (Movimento.tipo == 'USCITA') & (Movimento.user == self.user_id) & 
+                (Movimento.data_op >= f"{mese_corrente}-01") & (Movimento.data_op <= f"{mese_corrente}-31")
+            ).scalar() or 0.0
+            utile_corrente = ent_corrente - usc_corrente
+            
+            # Entrate/Uscite Mese Precedente
+            ent_prec = Movimento.select(fn.SUM(Movimento.importo)).where(
+                (Movimento.tipo == 'ENTRATA') & (Movimento.user == self.user_id) & 
+                (Movimento.data_op >= f"{mese_prec}-01") & (Movimento.data_op <= f"{mese_prec}-31")
+            ).scalar() or 0.0
+            usc_prec = Movimento.select(fn.SUM(Movimento.importo)).where(
+                (Movimento.tipo == 'USCITA') & (Movimento.user == self.user_id) & 
+                (Movimento.data_op >= f"{mese_prec}-01") & (Movimento.data_op <= f"{mese_prec}-31")
+            ).scalar() or 0.0
+            utile_prec = ent_prec - usc_prec
+            
+            # Calcolo differenza e aggiornamento UI
+            differenza_utile = utile_corrente - utile_prec
+            segno_diff = "+" if differenza_utile >= 0 else ""
+            colore_diff = "#27ae60" if differenza_utile >= 0 else "#e74c3c"
+            
+            self.val_entrate.setText(f"€ {entrate:,.2f}")
+            self.val_uscite.setText(f"€ {uscite:,.2f}")
+            
+            colore_utile = "#27ae60" if utile >= 0 else "#e74c3c"
+            self.val_utile.setText(f"€ {utile:,.2f}")
+            self.val_utile.setStyleSheet(f"font-size: 26px; font-weight: bold; color: {colore_utile};")
+            
+            self.val_diff_utile.setText(f"Rispetto al mese scorso: <span style='color:{colore_diff}; font-weight:bold;'>{segno_diff}€ {differenza_utile:,.2f}</span>")
+            
         except Exception as e:
-            print("Errore caricamento dati dashboard:", e)
-            return
+            print(f"Errore caricamento dati finanziari: {e}")
 
-        utile = ricavi - spese
-
-        # 1. Aggiornamento Testi KPI
-        self.lbl_ricavi.findChildren(QLabel)[1].setText(f"{ricavi:,.2f} €")
-        self.lbl_spese.findChildren(QLabel)[1].setText(f"{spese:,.2f} €")
-        self.lbl_utile.findChildren(QLabel)[1].setText(f"{utile:,.2f} €")
-        
-        # Colore dinamico per l'utile
-        if utile < 0:
-            self.lbl_utile.setStyleSheet("border-left: 5px solid #dc3545; background-color: #f8f9fa; padding: 8px; border-radius: 5px;")
-            self.lbl_utile.findChildren(QLabel)[1].setStyleSheet("color: #dc3545; font-size: 22px; font-weight: 900; border: none; background: transparent;")
-        else:
-            self.lbl_utile.setStyleSheet("border-left: 5px solid #007bff; background-color: #f8f9fa; padding: 8px; border-radius: 5px;")
-            self.lbl_utile.findChildren(QLabel)[1].setStyleSheet("color: #007bff; font-size: 22px; font-weight: 900; border: none; background: transparent;")
-
-        # 2. Aggiornamento Grafico a Barre Doppie
-        self.plot_spese.clear()
-        if not dati_categorie:
-            self.plot_spese.setTitle("Nessun movimento registrato.", color='#7f8c8d', size="11pt")
-            return
-
-        self.plot_spese.setTitle("")
-        
-        # Abbreviazioni per far entrare i testi sotto le barre
-        abbreviazioni = {
-            "Sementi/Piantine": "Sementi",
-            "Concimi/Fertilizzanti": "Concimi",
-            "Fitofarmaci": "Fito",
-            "Gasolio/Energia": "Energia",
-            "Lavorazioni Conto Terzi": "Terzisti",
-            "Manodopera": "Lavoro",
-            "Assicurazioni (Risarcimenti)": "Assicuraz.",
-            "Irrigazione": "Acqua",
-            "Non categorizzato": "Varie"
-        }
-        
-        x_labels = []
-        y_entrate = []
-        y_uscite = []
-        
-        # Prepariamo le liste separate per entrate e uscite
-        for row in dati_categorie:
-            cat_nome = str(row[0])
-            x_labels.append(abbreviazioni.get(cat_nome, cat_nome))
-            y_entrate.append(float(row[1]))
-            y_uscite.append(float(row[2]))
-
-        # Creiamo le posizioni sfalsate sull'asse X (larghezza barra = 0.35)
-        # Offset di -0.2 per le entrate e +0.2 per le uscite
-        x_pos_entrate = [i - 0.2 for i in range(len(x_labels))]
-        x_pos_uscite = [i + 0.2 for i in range(len(x_labels))]
-        
-        # Posizioniamo le etichette di testo esattamente al centro (su i)
-        ticks = [list(zip(range(len(x_labels)), x_labels))]
-        ax = self.plot_spese.getAxis('bottom')
-        ax.setTicks(ticks)
-
-        bar_width = 0.35
-        
-        # Creazione delle due serie di barre
-        bar_chart_entrate = pg.BarGraphItem(x=x_pos_entrate, height=y_entrate, width=bar_width, brush='#28a745', pen='w', name="Entrate")
-        bar_chart_uscite = pg.BarGraphItem(x=x_pos_uscite, height=y_uscite, width=bar_width, brush='#dc3545', pen='w', name="Uscite")
-
-        self.plot_spese.addItem(bar_chart_entrate)
-        self.plot_spese.addItem(bar_chart_uscite)
-
-        # Regolazione dinamica della vista
-        margine_destro = max(5.5, len(x_labels) - 0.5)
-        self.plot_spese.setXRange(-0.5, margine_destro, padding=0)
-        
-        max_y = max(max(y_entrate + [0]), max(y_uscite + [0]))
-        self.plot_spese.setYRange(0, max_y * 1.2 if max_y > 0 else 100, padding=0)
-    
     def _carica_fatture_da_pagare(self):
         try:
-            with get_conn() as conn:
-                c = conn.cursor()
-                # Cerchiamo tutti i movimenti da pagare ordinandoli per scadenza (o per data operazione)
-                c.execute("""
-                    SELECT id, data_op, descrizione, importo, iva_importo, parser_due_date, tipo
-                    FROM movimenti
-                    WHERE user_id=? AND stato_pagamento='DA PAGARE'
-                    ORDER BY COALESCE(NULLIF(TRIM(parser_due_date), ''), data_op) ASC
-                """, (self.user_id,))
-                righe = c.fetchall()
-        except Exception as e:
-            print("Errore caricamento scadenze:", e)
-            return
-
-        self.table_scadenze.clearSpans()
-        self.table_scadenze.setRowCount(0)
-        
-        # Se non c'è nulla da pagare, mostriamo un messaggio di rassicurazione
-        if not righe:
-            self.table_scadenze.setRowCount(1)
-            item_ok = QTableWidgetItem("🎉 Tutto in regola! Nessun sospeso.")
-            item_ok.setTextAlignment(Qt.AlignCenter)
-            item_ok.setForeground(QColor("#7f8c8d"))
-            self.table_scadenze.setSpan(0, 0, 1, 4)
-            self.table_scadenze.setItem(0, 0, item_ok)
-            return
+            # PEEWEE ORM
+            da_pagare = list(Movimento.select().where(
+                (Movimento.user == self.user_id) & (Movimento.stato_pagamento == 'DA PAGARE')
+            ).order_by(Movimento.data_op.asc()).dicts())
             
-        self.table_scadenze.setRowCount(len(righe))
-        
-        for idx, riga in enumerate(righe):
-            mov_id = riga[0]
-            data_op = riga[1]
-            descrizione = str(riga[2] or "Senza descrizione").strip()
-            importo = float(riga[3] or 0.0)
-            iva = float(riga[4] or 0.0)
-            due_date = str(riga[5] or "").strip()
-            tipo = str(riga[6] or "").strip()
-            
-            totale = importo + iva
-            data_mostrata = due_date if due_date else data_op
-            
-            # Formattazione grafica in base al fatto che noi dobbiamo pagare (Rosso) o incassare (Verde)
-            if tipo == "USCITA":
-                colore_testo = "#c0392b"
-                icona = "📉 "
-            else:
-                colore_testo = "#27ae60"
-                icona = "📈 "
+            self.table_scadenze.setRowCount(0)
+            for r_idx, mov in enumerate(da_pagare):
+                self.table_scadenze.insertRow(r_idx)
                 
-            item_data = QTableWidgetItem(data_mostrata)
-            item_desc = QTableWidgetItem(icona + descrizione)
-            item_imp = QTableWidgetItem(f"{totale:,.2f} €")
-            item_imp.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
-            
-            for item in (item_data, item_desc, item_imp):
-                item.setForeground(QColor(colore_testo))
-            
-            self.table_scadenze.setItem(idx, 0, item_data)
-            self.table_scadenze.setItem(idx, 1, item_desc)
-            self.table_scadenze.setItem(idx, 2, item_imp)
-            
-            # Creiamo dinamicamente il bottone per ogni riga
-            btn_paga = QPushButton("Saldato ✔")
-            btn_paga.setStyleSheet("background-color: #27ae60; color: white; border-radius: 4px; font-weight: bold; padding: 4px 8px;")
-            btn_paga.setCursor(Qt.PointingHandCursor)
-            
-            # Utilizziamo una closure per intrappolare il valore di 'mov_id' in questo ciclo
-            btn_paga.clicked.connect(lambda checked=False, m_id=mov_id: self._segna_come_pagato(m_id))
-            
-            widget_btn = QWidget()
-            layout_btn = QHBoxLayout(widget_btn)
-            layout_btn.setContentsMargins(5, 2, 5, 2)
-            layout_btn.addWidget(btn_paga)
-            
-            self.table_scadenze.setCellWidget(idx, 3, widget_btn)
+                try: data_fmt = datetime.strptime(mov['data_op'], "%Y-%m-%d").strftime("%d/%m/%Y")
+                except: data_fmt = mov['data_op']
+                
+                item_data = QTableWidgetItem(data_fmt)
+                item_data.setForeground(QColor("#e74c3c"))
+                self.table_scadenze.setItem(r_idx, 0, item_data)
+                
+                self.table_scadenze.setItem(r_idx, 1, QTableWidgetItem(mov['descrizione'] or ""))
+                
+                item_imp = QTableWidgetItem(f"€ {mov['importo']:.2f}")
+                item_imp.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                item_imp.setForeground(QColor("#e74c3c"))
+                self.table_scadenze.setItem(r_idx, 2, item_imp)
+                
+        except Exception as e:
+            print(f"Errore caricamento fatture da pagare: {e}")
 
-    def _segna_come_pagato(self, movimento_id):
-        risposta = QMessageBox.question(
-            self, "Conferma Pagamento", 
-            "Vuoi segnare questo movimento come SALDATO?", 
-            QMessageBox.Yes | QMessageBox.No
-        )
-        
-        if risposta == QMessageBox.Yes:
-            try:
-                with get_conn() as conn:
-                    c = conn.cursor()
-                    c.execute("UPDATE movimenti SET stato_pagamento='PAGATO' WHERE id=? AND user_id=?", (movimento_id, self.user_id))
-            except Exception as e:
-                QMessageBox.critical(self, "Errore", f"Impossibile aggiornare lo stato: {e}")
-                return
-            
-            # Ricarichiamo la tabella: la fattura scomparirà automaticamente dalle pendenze!
-            self._carica_fatture_da_pagare()
-    
-    def _esporta_commercialista_csv(self):
-        percorso, _ = QFileDialog.getSaveFileName(
-            self, "Esporta Movimenti per Commercialista", "movimenti_agricoli.csv", "CSV Excel (*.csv)"
-        )
+    def esporta_csv(self):
+        percorso, _ = QFileDialog.getSaveFileName(self, "Esporta Movimenti", "", "CSV Files (*.csv)")
         if not percorso:
             return
             
         try:
-            with get_conn() as conn:
-                c = conn.cursor()
-                c.execute("""
-                    SELECT data_op, tipo, categoria, descrizione, importo, iva_importo, 
-                           stato_pagamento, parser_supplier_name, parser_invoice_number
-                    FROM movimenti 
-                    WHERE user_id=? 
-                    ORDER BY data_op ASC
-                """, (self.user_id,))
-                righe = c.fetchall()
+            # PEEWEE ORM: Preleviamo tutti i dati per l'export in 1 riga
+            movimenti = list(Movimento.select().where(Movimento.user == self.user_id).order_by(Movimento.data_op.desc()).dicts())
                 
             # Usiamo utf-8-sig per garantire che Excel legga correttamente accenti e valute
             with open(percorso, 'w', newline='', encoding='utf-8-sig') as f:
                 writer = csv.writer(f, delimiter=';') # Il punto e virgola divide le colonne per l'Excel italiano
                 writer.writerow(["Data", "Tipo", "Categoria", "Descrizione", "Fornitore/Cliente", "Num. Fattura", "Imponibile", "IVA", "Totale", "Stato"])
                 
-                for r in righe:
-                    data, tipo, cat, desc, imp, iva, stato, fornitore, num_fat = r
-                    imp_val = float(imp or 0)
-                    iva_val = float(iva or 0)
+                for mov in movimenti:
+                    data = mov['data_op']
+                    tipo = mov['tipo']
+                    cat = mov['categoria'] or ""
+                    desc = mov['descrizione'] or ""
+                    
+                    # Logica del COALESCE tradotta in Python
+                    fornitore = mov['parser_supplier_name'] or mov['parser_customer_name'] or ""
+                    num_fat = mov['parser_invoice_number'] or ""
+                    
+                    imp_val = float(mov['importo'] or 0)
+                    iva_val = float(mov['iva_importo'] or 0)
                     tot_val = imp_val + iva_val
+                    stato = mov['stato_pagamento'] or ""
                     
                     # Convertiamo i numeri in formato italiano (virgola invece del punto)
                     writer.writerow([

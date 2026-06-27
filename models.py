@@ -2,23 +2,35 @@ import os
 from pathlib import Path
 from peewee import *
 
-APP_NAME = "Gestionale"
-DB_NAME = "gestionale.db"
-DATA_ROOT = Path(os.getenv("APPDATA", str(Path.home()))) / APP_NAME
-DB_PATH = DATA_ROOT / DB_NAME
 
-# Connessione al database SQLite con Foreign Keys attive (1 riga)
-db = SqliteDatabase(str(DB_PATH), pragmas={'foreign_keys': 1})
+
+APP_DATA = os.getenv('APPDATA') or os.path.expanduser('~')
+DATA_ROOT = Path(APP_DATA) / "GestionaleAgricolo"
+
+# ==========================================
+# CONNESSIONE DATABASE SUPABASE (CLOUD)
+# ==========================================
+
+db = PostgresqlDatabase(
+    'postgres',                                      # Nome del database
+    user='postgres.ovanwcqqagfacicwsgwx',            # Il tuo User esatto
+    password='hP7PmsiqnAfy3lB6',                    # Inserisci qui la tua password
+    host='aws-1-eu-central-1.pooler.supabase.com',   # Il tuo Host esatto
+    port=6543,                                       # La porta del Pooler
+    autorollback=True
+)
 
 class BaseModel(Model):
     class Meta:
         database = db
 
+# ... Lascia invariato tutto il resto del file models.py (class Utente, Movimento, ecc.) ...
+
 # --- AUTENTICAZIONE E PROFILI ---
 
 class Utente(BaseModel):
     username = CharField(unique=True)
-    password_hash = CharField()
+    password_hash = TextField()
     class Meta:
         table_name = 'utenti'
 

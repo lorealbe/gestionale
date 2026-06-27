@@ -1,5 +1,4 @@
 import re
-import sqlite3
 from datetime import datetime
 from pathlib import Path
 
@@ -28,9 +27,9 @@ from PySide6.QtWidgets import (
     QSplitter
 )
 
+from models import db, ProduzioneLatte, ProduzioneCarne, Movimento, Fattura
 from app_utils import format_eur, format_number, is_blank, parse_decimal, TabellaIsolata
 from database import (
-    get_conn,
     get_movimento_animali_entry_ids,
     list_azienda_animali_entries,
     remove_azienda_animale_capi,
@@ -377,7 +376,7 @@ class ZootecniaCarnePage(ZootecniaParserSupport, QWidget):
     def _carica_gruppi_carne_attivi(self):
         try:
             entries = list_azienda_animali_entries(self.user_id)
-        except sqlite3.Error:
+        except Exception:
             return []
 
         gruppi_attivi = []
@@ -385,17 +384,12 @@ class ZootecniaCarnePage(ZootecniaParserSupport, QWidget):
             entry_id = int(entry.get("id", 0) or 0)
             capi = int(entry.get("capi", 0) or 0)
             finalita = (entry.get("finalita") or "").strip().upper()
-            if entry_id <= 0 or capi <= 0 or finalita != "CARNE":
-                continue
+            if entry_id <= 0 or capi <= 0 or finalita != "CARNE": continue
             gruppi_attivi.append(entry)
 
-        gruppi_attivi.sort(
-            key=lambda item: (
-                (item.get("group_name") or "").strip().lower(),
-                int(item.get("id", 0) or 0),
-            )
-        )
+        gruppi_attivi.sort(key=lambda item: ((item.get("group_name") or "").strip().lower(), int(item.get("id", 0) or 0)))
         return gruppi_attivi
+
 
     def get_gruppi_carne_selezionati_ids(self):
         selected = []
@@ -704,8 +698,7 @@ class ZootecniaCarnePage(ZootecniaParserSupport, QWidget):
     def prepara_modifica_produzione_carne(self, show_errors=False):
         produzione_id = self._selected_produzione_id()
         if produzione_id is None:
-            if show_errors:
-                QMessageBox.warning(self, "Attenzione", "Seleziona prima una produzione carne da modificare.")
+            if show_errors: QMessageBox.warning(self, "Attenzione", "Seleziona prima una produzione carne da modificare.")
             return
 
         row = self.table_produzione.currentRow()
@@ -721,63 +714,33 @@ class ZootecniaCarnePage(ZootecniaParserSupport, QWidget):
         self.input_prezzo.setText(prezzo_value or "0,00")
         self.combo_unita_prezzo.setCurrentText(self._UNITA_PREZZO[0])
 
-        linked_group_ids = []
-        movimento_id = 0
-
         try:
-            with get_conn() as conn:
-                c = conn.cursor()
-                c.execute(
-                    "SELECT movimento_id FROM produzione_carne WHERE id=? AND user_id=?",
-                    (self.produzione_carne_in_modifica_id, self.user_id),
-                )
-                row_mov = c.fetchone()
-
-            movimento_id = int((row_mov[0] if row_mov else 0) or 0)
-            if movimento_id > 0:
-                linked_group_ids = get_movimento_animali_entry_ids(self.user_id, movimento_id)
-        except (sqlite3.Error, ValueError):
+            prod = ProduzioneCarne.get_by_id(self.produzione_carne_in_modifica_id)
+            movimento_id = prod.movimento.id if prod.movimento else 0
+            linked_group_ids = get_movimento_animali_entry_ids(self.user_id, movimento_id) if movimento_id > 0 else []
+        except Exception:
             linked_group_ids = []
             movimento_id = 0
 
         self.imposta_gruppi_carne_selezionati(linked_group_ids)
         self.check_rimuovi_capi.setChecked(False)
         self.input_capi_da_rimuovere.clear()
-
         self.button_salva.setText("Aggiorna Produzione")
         self.button_annulla.setEnabled(True)
-        self.label_modifica_stato.setText(
-            f"Modifica produzione carne ID {self.produzione_carne_in_modifica_id} attiva."
-        )
+        self.label_modifica_stato.setText(f"Modifica produzione carne ID {self.produzione_carne_in_modifica_id} attiva.")
         self._on_toggle_rimozione_capi_carne()
         self._carica_fattura_collegata_produzione_carne(movimento_id)
 
+
     def _carica_fattura_collegata_produzione_carne(self, movimento_id: int):
         self.rimuovi_fattura_carne()
-
-        movimento_id_value = int(movimento_id or 0)
-        if movimento_id_value <= 0:
-            return
-
+        mov_id_val = int(movimento_id or 0)
+        if mov_id_val <= 0: return
         try:
-            with get_conn() as conn:
-                c = conn.cursor()
-                c.execute(
-                    """
-                    SELECT nome_originale
-                    FROM fatture
-                    WHERE user_id=? AND movimento_id=?
-                    ORDER BY data_caricamento DESC, id DESC
-                    LIMIT 1
-                """,
-                    (self.user_id, movimento_id_value),
-                )
-                row = c.fetchone()
-        except sqlite3.Error:
-            row = None
+            fatt = Fattura.select().where((Fattura.user == self.user_id) & (Fattura.movimento == mov_id_val)).order_by(Fattura.data_caricamento.desc()).first()
+            if fatt and fatt.nome_originale: self.label_nome_fattura.setText(str(fatt.nome_originale))
+        except Exception: pass
 
-        if row and row[0]:
-            self.label_nome_fattura.setText(str(row[0]))
 
     def annulla_modifica_produzione_carne(self, reset_fields=False):
         self.produzione_carne_in_modifica_id = None
@@ -801,380 +764,136 @@ class ZootecniaCarnePage(ZootecniaParserSupport, QWidget):
         self.aggiorna_lista_gruppi_carne()
 
     def salva_produzione_carne(self):
-        try:
-            data_db = self._parse_data_iso()
-        except ValueError as exc:
-            QMessageBox.critical(self, "Errore", str(exc))
-            return
+        try: data_db = self._parse_data_iso()
+        except ValueError as exc: return QMessageBox.critical(self, "Errore", str(exc))
 
-        if is_blank(self.input_quantita.text()):
-            QMessageBox.critical(self, "Errore", "Inserisci la quantita venduta.")
-            return
-
+        if is_blank(self.input_quantita.text()): return QMessageBox.critical(self, "Errore", "Inserisci la quantita venduta.")
         kg_val = self._parse_quantita_kg_carne(self.input_quantita.text().strip(), self.combo_unita_quantita.currentText())
-        if kg_val is None or kg_val <= 0:
-            QMessageBox.critical(self, "Errore", "Quantita non valida.")
-            return
-
+        if kg_val is None or kg_val <= 0: return QMessageBox.critical(self, "Errore", "Quantita non valida.")
         prezzo_kg_val = self._parse_prezzo_kg_carne(self.input_prezzo.text().strip(), self.combo_unita_prezzo.currentText())
-        if prezzo_kg_val is None:
-            QMessageBox.critical(self, "Errore", "Prezzo non valido.")
-            return
+        if prezzo_kg_val is None: return QMessageBox.critical(self, "Errore", "Prezzo non valido.")
 
         gruppi_info = self._valida_gruppi_carne_selezionati()
-        if gruppi_info is None:
-            return
-
-        gruppi_ids = list(gruppi_info.get("entry_ids") or [])
-        gruppi_text = ", ".join(gruppi_info.get("group_names") or [])
+        if gruppi_info is None: return
+        gruppi_ids = gruppi_info["entry_ids"]
 
         rimozione_info = self._valida_rimozione_capi_carne(gruppi_info)
-        if rimozione_info is None:
-            return
+        if rimozione_info is None: return
         rimozione_attiva = bool(rimozione_info.get("attiva"))
         capi_da_rimuovere = int(rimozione_info.get("totale") or 0)
 
         quintali_val = kg_val / self.KG_PER_QUINTALE
-        importo_entrata = kg_val * prezzo_kg_val
-        descrizione_mov = (
-            f"Produzione carne: {format_number(kg_val, 2)} Kg "
-            f"({format_number(quintali_val, 2)} q) x {format_eur(prezzo_kg_val, 4)}/Kg"
-        )
-        if gruppi_ids:
-            descrizione_mov += f" | Gruppi: {gruppi_text}"
-        if rimozione_attiva and capi_da_rimuovere > 0:
-            descrizione_mov += f" | Capi rimossi: {format_number(capi_da_rimuovere, 0)}"
+        importo_movimento = kg_val * prezzo_kg_val
+        iva_importo_movimento = 0.0
+        descrizione_mov = f"Produzione carne: {format_number(kg_val, 2)} Kg ({format_number(quintali_val, 2)} q) x {format_eur(prezzo_kg_val, 4)}/Kg"
+        if gruppi_ids: descrizione_mov += f" | Gruppi: {', '.join(gruppi_info['group_names'])}"
+        if rimozione_attiva and capi_da_rimuovere > 0: descrizione_mov += f" | Capi rimossi: {format_number(capi_da_rimuovere, 0)}"
 
         parser_data = self.pending_parser_carne_data if isinstance(self.pending_parser_carne_data, dict) else None
         parser_values = self._estrai_valori_parser_db(parser_data)
+        parser_dict = dict(zip(self._PARSER_DB_FIELDS, parser_values)) if parser_values else {}
 
-        importo_movimento = importo_entrata
-        iva_importo_movimento = 0.0
         if parser_data is not None:
             parser_vat = parse_decimal(parser_data.get("vat_total"), allow_zero=True, allow_negative=False)
-            parser_taxable = parse_decimal(parser_data.get("taxable_total"), allow_zero=True, allow_negative=False)
             parser_total = parse_decimal(parser_data.get("total_amount"), allow_zero=False, allow_negative=False)
-
-            if parser_taxable is not None and parser_vat is not None:
-                importo_movimento = max(parser_taxable, 0.0)
-                iva_importo_movimento = max(parser_vat, 0.0)
-            elif parser_total is not None and parser_vat is not None and parser_total >= parser_vat:
+            if parser_vat is not None and parser_total is not None and parser_total >= parser_vat:
                 iva_importo_movimento = max(parser_vat, 0.0)
                 importo_movimento = max(parser_total - iva_importo_movimento, 0.0)
-            elif parser_vat is not None and parser_vat > 0 and importo_entrata >= parser_vat:
-                iva_importo_movimento = parser_vat
-                importo_movimento = max(importo_entrata - iva_importo_movimento, 0.0)
 
         rimozioni_effettuate = []
         try:
-            with get_conn() as conn:
-                c = conn.cursor()
-                movimento_id = None
-                produzione_id = None
-
-                def _insert_movimento_carne(target_cursor):
-                    if parser_data is not None:
-                        target_cursor.execute(
-                            """
-                            INSERT INTO movimenti (
-                                user_id, data_op, tipo, categoria, descrizione, importo, iva_importo,
-                                parser_invoice_number, parser_invoice_date, parser_due_date,
-                                parser_supplier_name, parser_supplier_vat,
-                                parser_customer_name, parser_customer_vat,
-                                parser_total_amount, parser_taxable_total, parser_vat_total,
-                                parser_payment_terms, parser_warnings, parser_products, parser_fields_view
-                            )
-                            VALUES (?, ?, 'ENTRATA', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        """,
-                            (
-                                self.user_id,
-                                data_db,
-                                "Carne",
-                                descrizione_mov,
-                                importo_movimento,
-                                iva_importo_movimento,
-                                *parser_values,
-                            ),
-                        )
-                    else:
-                        target_cursor.execute(
-                            """
-                            INSERT INTO movimenti (user_id, data_op, tipo, categoria, descrizione, importo, iva_importo)
-                            VALUES (?, ?, 'ENTRATA', ?, ?, ?, ?)
-                        """,
-                            (
-                                self.user_id,
-                                data_db,
-                                "Carne",
-                                descrizione_mov,
-                                importo_movimento,
-                                iva_importo_movimento,
-                            ),
-                        )
-                    return int(target_cursor.lastrowid or 0)
-
+            with db.atomic(): # TRANSAZIONE PEEWEE
                 if self.produzione_carne_in_modifica_id is None:
-                    movimento_id = _insert_movimento_carne(c)
-
-                    c.execute(
-                        """
-                        INSERT INTO produzione_carne (user_id, data_op, kg, prezzo_kg, movimento_id)
-                        VALUES (?, ?, ?, ?, ?)
-                    """,
-                        (self.user_id, data_db, kg_val, prezzo_kg_val, movimento_id),
+                    mov = Movimento.create(
+                        user=self.user_id, data_op=data_db, tipo='ENTRATA', categoria='Carne',
+                        descrizione=descrizione_mov, importo=importo_movimento, iva_importo=iva_importo_movimento,
+                        stato_pagamento='PAGATO', **{f"parser_{k}": v for k, v in parser_dict.items()}
                     )
-                    produzione_id = int(c.lastrowid or 0)
+                    prod = ProduzioneCarne.create(user=self.user_id, data_op=data_db, kg=kg_val, prezzo_kg=prezzo_kg_val, movimento=mov.id)
+                    produzione_id = prod.id
+                    movimento_id = mov.id
                     msg_ok = "Produzione carne salvata"
                 else:
                     produzione_id = int(self.produzione_carne_in_modifica_id)
-
-                    c.execute(
-                        "SELECT movimento_id FROM produzione_carne WHERE id=? AND user_id=?",
-                        (produzione_id, self.user_id),
-                    )
-                    row = c.fetchone()
-                    if not row:
-                        QMessageBox.critical(self, "Errore", "Produzione carne non trovata o non modificabile.")
-                        return
-                    movimento_id = int((row[0] if row else 0) or 0)
-
-                    c.execute(
-                        """
-                        UPDATE produzione_carne
-                        SET data_op=?, kg=?, prezzo_kg=?
-                        WHERE id=? AND user_id=?
-                    """,
-                        (data_db, kg_val, prezzo_kg_val, produzione_id, self.user_id),
-                    )
-                    if c.rowcount == 0:
-                        QMessageBox.critical(self, "Errore", "Produzione carne non trovata o non modificabile.")
-                        return
-
+                    prod = ProduzioneCarne.get_by_id(produzione_id)
+                    movimento_id = prod.movimento.id if prod.movimento else 0
+                    
+                    ProduzioneCarne.update(data_op=data_db, kg=kg_val, prezzo_kg=prezzo_kg_val).where(ProduzioneCarne.id == produzione_id).execute()
                     if movimento_id > 0:
-                        if parser_data is None:
-                            c.execute(
-                                "SELECT importo, iva_importo FROM movimenti WHERE id=? AND user_id=?",
-                                (movimento_id, self.user_id),
-                            )
-                            row_prev = c.fetchone()
-                            if row_prev:
-                                prev_importo = float((row_prev[0] or 0) if row_prev[0] is not None else 0)
-                                prev_iva = float((row_prev[1] or 0) if row_prev[1] is not None else 0)
-                                prev_totale = max(prev_importo + prev_iva, 0.0)
-                                if prev_totale > 0 and prev_iva > 0 and importo_entrata > 0:
-                                    iva_importo_movimento = importo_entrata * (prev_iva / prev_totale)
-                                    importo_movimento = max(importo_entrata - iva_importo_movimento, 0.0)
-
-                        if parser_data is not None:
-                            c.execute(
-                                """
-                                UPDATE movimenti
-                                SET data_op=?, tipo='ENTRATA', categoria=?, descrizione=?, importo=?, iva_importo=?,
-                                    parser_invoice_number=?, parser_invoice_date=?, parser_due_date=?,
-                                    parser_supplier_name=?, parser_supplier_vat=?,
-                                    parser_customer_name=?, parser_customer_vat=?,
-                                    parser_total_amount=?, parser_taxable_total=?, parser_vat_total=?,
-                                    parser_payment_terms=?, parser_warnings=?, parser_products=?, parser_fields_view=?
-                                WHERE id=? AND user_id=?
-                            """,
-                                (
-                                    data_db,
-                                    "Carne",
-                                    descrizione_mov,
-                                    importo_movimento,
-                                    iva_importo_movimento,
-                                    *parser_values,
-                                    movimento_id,
-                                    self.user_id,
-                                ),
-                            )
-                        else:
-                            c.execute(
-                                """
-                                UPDATE movimenti
-                                SET data_op=?, tipo='ENTRATA', categoria=?, descrizione=?, importo=?, iva_importo=?
-                                WHERE id=? AND user_id=?
-                            """,
-                                (
-                                    data_db,
-                                    "Carne",
-                                    descrizione_mov,
-                                    importo_movimento,
-                                    iva_importo_movimento,
-                                    movimento_id,
-                                    self.user_id,
-                                ),
-                            )
-                        if c.rowcount == 0:
-                            movimento_id = 0
-
-                    if movimento_id <= 0:
-                        movimento_id = _insert_movimento_carne(c)
-                        c.execute(
-                            "UPDATE produzione_carne SET movimento_id=? WHERE id=? AND user_id=?",
-                            (movimento_id, produzione_id, self.user_id),
-                        )
-
+                        Movimento.update(data_op=data_db, descrizione=descrizione_mov, importo=importo_movimento, iva_importo=iva_importo_movimento, **{f"parser_{k}": v for k, v in parser_dict.items()}).where(Movimento.id == movimento_id).execute()
+                    else:
+                        mov = Movimento.create(user=self.user_id, data_op=data_db, tipo='ENTRATA', categoria='Carne', descrizione=descrizione_mov, importo=importo_movimento, iva_importo=iva_importo_movimento, stato_pagamento='PAGATO', **{f"parser_{k}": v for k, v in parser_dict.items()})
+                        movimento_id = mov.id
+                        ProduzioneCarne.update(movimento=movimento_id).where(ProduzioneCarne.id == produzione_id).execute()
                     msg_ok = "Produzione carne aggiornata"
 
-                if movimento_id is not None:
-                    set_movimento_animali_links(self.user_id, movimento_id, gruppi_ids, cursor=c)
+                if movimento_id > 0: set_movimento_animali_links(self.user_id, movimento_id, gruppi_ids)
 
                 if self.produzione_carne_in_modifica_id is None and rimozione_attiva:
                     piano_rimozione = rimozione_info.get("piano") or {}
                     entries_by_id = gruppi_info.get("entries_by_id") or {}
-
                     for entry_id in gruppi_ids:
                         capi_rimossi = int(piano_rimozione.get(entry_id) or 0)
-                        if capi_rimossi <= 0:
-                            continue
+                        if capi_rimossi <= 0: continue
+                        remove_azienda_animale_capi(self.user_id, entry_id, capi_rimossi)
+                        rimozioni_effettuate.append(f"{(entries_by_id.get(entry_id, {}).get('group_name') or '').strip() or f'Gruppo {entry_id}'}: -{format_number(capi_rimossi, 0)} capi")
 
-                        remove_azienda_animale_capi(
-                            self.user_id,
-                            entry_id,
-                            capi_rimossi,
-                            cursor=c,
-                        )
+                if self.pending_fattura_carne_id is not None and movimento_id > 0:
+                    Fattura.update(movimento=movimento_id, produzione=produzione_id).where(Fattura.id == self.pending_fattura_carne_id).execute()
 
-                        entry = entries_by_id.get(entry_id, {})
-                        group_name = (entry.get("group_name") or "").strip() or f"Gruppo {entry_id}"
-                        rimozioni_effettuate.append(f"{group_name}: -{format_number(capi_rimossi, 0)} capi")
-
-                if self.pending_fattura_carne_id is not None and movimento_id is not None:
-                    c.execute(
-                        """
-                        UPDATE fatture
-                        SET movimento_id=?, produzione_id=NULL
-                        WHERE id=? AND user_id=?
-                    """,
-                        (movimento_id, self.pending_fattura_carne_id, self.user_id),
-                    )
-
-        except ValueError as exc:
-            QMessageBox.critical(self, "Errore", str(exc))
-            return
-        except sqlite3.Error as exc:
-            QMessageBox.critical(self, "Errore DB", f"Errore database: {exc}")
-            return
+        except Exception as exc: return QMessageBox.critical(self, "Errore DB", f"Errore database: {exc}")
 
         self.annulla_modifica_produzione_carne(reset_fields=True)
         self.rimuovi_fattura_carne()
         self.carica_produzioni_carne(show_errors=False)
         self.produzione_changed.emit()
 
-        msg_successo = f"{msg_ok}! Entrata automatica: {format_eur(importo_entrata)}"
-        if rimozioni_effettuate:
-            msg_successo += "\nCapi rimossi dai gruppi da carne: " + ", ".join(rimozioni_effettuate)
-
+        msg_successo = f"{msg_ok}! Entrata: {format_eur(kg_val * prezzo_kg_val)}"
+        if rimozioni_effettuate: msg_successo += "\nCapi rimossi: " + ", ".join(rimozioni_effettuate)
         QMessageBox.information(self, "Successo", msg_successo)
+
 
     def carica_produzioni_carne(self, show_errors=True):
         self.table_produzione.setRowCount(0)
-
         try:
-            with get_conn() as conn:
-                c = conn.cursor()
-                c.execute(
-                    """
-                    SELECT id, data_op, kg, prezzo_kg, movimento_id
-                    FROM produzione_carne
-                    WHERE user_id=?
-                    ORDER BY data_op DESC, id DESC
-                """,
-                    (self.user_id,),
-                )
-                rows = c.fetchall()
-        except sqlite3.Error as exc:
-            if show_errors:
-                QMessageBox.critical(self, "Errore DB", f"Errore database: {exc}")
+            rows = list(ProduzioneCarne.select().where(ProduzioneCarne.user == self.user_id).order_by(ProduzioneCarne.data_op.desc(), ProduzioneCarne.id.desc()).dicts())
+        except Exception as exc:
+            if show_errors: QMessageBox.critical(self, "Errore DB", f"Errore database: {exc}")
             return
 
-        for row_index, (prod_id, data_op, kg, prezzo_kg, _movimento_id) in enumerate(rows):
-            kg_value = float(kg or 0)
-            prezzo_value = float(prezzo_kg or 0)
-            totale = kg_value * prezzo_value
-            self._append_row(
-                row_index,
-                [
-                    str(int(prod_id or 0)),
-                    self._format_data_table(str(data_op or "")),
-                    format_number(kg_value, 2),
-                    format_number(prezzo_value, 4),
-                    format_number(totale, 2),
-                ],
-                right_align_indexes=[2, 3, 4],
-            )
+        for row_index, row in enumerate(rows):
+            kg_value = float(row['kg'] or 0)
+            prezzo_value = float(row['prezzo_kg'] or 0)
+            self._append_row(row_index, [str(row['id']), self._format_data_table(str(row['data_op'] or "")), format_number(kg_value, 2), format_number(prezzo_value, 4), format_number(kg_value * prezzo_value, 2)], right_align_indexes=[2, 3, 4])
+
 
     def elimina_produzione_carne_selezionata(self):
         produzione_id = self._selected_produzione_id()
-        if produzione_id is None:
-            QMessageBox.warning(self, "Attenzione", "Seleziona prima una riga di produzione carne da eliminare.")
-            return
+        if produzione_id is None: return QMessageBox.warning(self, "Attenzione", "Seleziona prima una riga di produzione carne da eliminare.")
 
         row = self.table_produzione.currentRow()
-        data_value = self.table_produzione.item(row, 1).text() if self.table_produzione.item(row, 1) else ""
-        kg_value = self.table_produzione.item(row, 2).text() if self.table_produzione.item(row, 2) else ""
-
-        conferma = QMessageBox.question(
-            self,
-            "Conferma eliminazione",
-            f"Vuoi eliminare la produzione carne selezionata?\n\nData: {data_value} - Kg: {kg_value}",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No,
-        )
-        if conferma != QMessageBox.Yes:
-            return
+        if QMessageBox.question(self, "Conferma eliminazione", f"Vuoi eliminare la produzione selezionata?\n\nData: {self.table_produzione.item(row, 1).text()}", QMessageBox.Yes | QMessageBox.No) != QMessageBox.Yes: return
 
         era_in_modifica = self.produzione_carne_in_modifica_id == produzione_id
-        fatture_eliminate = 0
-        percorsi_fatture = []
-
         try:
-            with get_conn() as conn:
-                c = conn.cursor()
-
-                c.execute("SELECT movimento_id FROM produzione_carne WHERE id=? AND user_id=?", (produzione_id, self.user_id))
-                row = c.fetchone()
-                if not row:
-                    QMessageBox.critical(self, "Errore", "Produzione carne non trovata o non eliminabile.")
-                    return
-
-                movimento_id = int((row[0] if row else 0) or 0)
-
-                c.execute("DELETE FROM produzione_carne WHERE id=? AND user_id=?", (produzione_id, self.user_id))
-                if c.rowcount == 0:
-                    QMessageBox.critical(self, "Errore", "Produzione carne non trovata o non eliminabile.")
-                    return
-
-                if movimento_id > 0:
-                    fatture_eliminate, percorsi_fatture = self.elimina_fatture_collegate_db(c, movimento_id)
-                    c.execute("DELETE FROM movimenti WHERE id=? AND user_id=?", (movimento_id, self.user_id))
-        except sqlite3.Error as exc:
-            QMessageBox.critical(self, "Errore DB", f"Errore database: {exc}")
-            return
-
-        file_eliminati, file_non_trovati, file_errori = self.elimina_file_fatture(percorsi_fatture)
+            with db.atomic():
+                prod = ProduzioneCarne.get_or_none((ProduzioneCarne.id == produzione_id) & (ProduzioneCarne.user == self.user_id))
+                if not prod: return QMessageBox.critical(self, "Errore", "Produzione non trovata.")
+                mov_id = prod.movimento.id if prod.movimento else None
+                prod.delete_instance()
+                
+                if mov_id:
+                    for f in Fattura.select().where(Fattura.movimento == mov_id):
+                        try: Path(f.percorso_file).unlink(missing_ok=True)
+                        except Exception: pass
+                    Movimento.delete().where(Movimento.id == mov_id).execute()
+        except Exception as exc: return QMessageBox.critical(self, "Errore DB", f"Errore: {exc}")
 
         self.carica_produzioni_carne(show_errors=False)
-        if era_in_modifica:
-            self.annulla_modifica_produzione_carne(reset_fields=True)
+        if era_in_modifica: self.annulla_modifica_produzione_carne(reset_fields=True)
         self.produzione_changed.emit()
+        QMessageBox.information(self, "Successo", "Produzione eliminata dal database!")
 
-        msg_ok = "Produzione carne eliminata dal database!"
-        if fatture_eliminate > 0:
-            msg_ok += f" Fatture collegate eliminate: {fatture_eliminate}."
-            msg_ok += f" File fattura eliminati: {file_eliminati}."
-            if file_non_trovati > 0:
-                msg_ok += f" File non trovati: {file_non_trovati}."
-
-        if file_errori:
-            QMessageBox.warning(
-                self,
-                "Eliminazione completata con avvisi",
-                msg_ok + "\n\nAlcuni file non sono stati eliminati:\n" + "\n".join(file_errori[:3]),
-            )
-        else:
-            QMessageBox.information(self, "Successo", msg_ok)
 
     def seleziona_fattura_carne(self):
         file_path, _ = QFileDialog.getOpenFileName(self, "Seleziona fattura PDF (Carne)", "", "PDF Files (*.pdf)")
