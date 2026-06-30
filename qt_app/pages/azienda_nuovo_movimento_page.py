@@ -114,64 +114,6 @@ class CheckableComboBox(QComboBox):
         self._update_text()
 
 
-class _InvoiceParserWorker(QObject):
-    success = Signal(object)
-    error = Signal(str)
-    progress = Signal(str)
-    finished = Signal()
-
-    def __init__(self, parse_fn, file_path: str):
-        super().__init__()
-        self._parse_fn = parse_fn
-        self._file_path = str(file_path)
-
-    @Slot()
-    def run(self):
-        try:
-            try:
-                result = self._parse_fn(self._file_path, progress_cb=self.progress.emit)
-            except TypeError:
-                result = self._parse_fn(self._file_path)
-            self.success.emit(result)
-        except Exception as exc:
-            self.error.emit(str(exc))
-        finally:
-            self.finished.emit()
-
-
-class _InvoiceParserCallbackProxy(QObject):
-    def __init__(self, on_success=None, on_error=None, on_done=None, on_progress=None, release_cb=None, parent=None):
-        super().__init__(parent)
-        self._on_success = on_success if callable(on_success) else None
-        self._on_error = on_error if callable(on_error) else None
-        self._on_done = on_done if callable(on_done) else None
-        self._on_progress = on_progress if callable(on_progress) else None
-        self._release_cb = release_cb
-
-    @Slot(object)
-    def handle_success(self, payload):
-        if self._on_success is not None:
-            self._on_success(payload)
-
-    @Slot(str)
-    def handle_error(self, message):
-        if self._on_error is not None:
-            self._on_error(message)
-
-    @Slot(str)
-    def handle_progress(self, message):
-        if self._on_progress is not None:
-            self._on_progress(message)
-
-    @Slot()
-    def handle_finished(self):
-        try:
-            if self._on_done is not None:
-                self._on_done()
-        finally:
-            if callable(self._release_cb):
-                self._release_cb(self)
-
 
 class AziendaNuovoMovimentoPage(QWidget):
     movimento_saved = Signal(int)
@@ -214,7 +156,7 @@ class AziendaNuovoMovimentoPage(QWidget):
         header_layout = QVBoxLayout()
         titolo = QLabel("➕ Registra Movimento e Importa Fattura")
         titolo.setStyleSheet("font-size: 24px; font-weight: bold; color: #2c3e50;")
-        sottotitolo = QLabel("Carica un file PDF/XML per compilare automaticamente i campi oppure procedi manualmente.")
+        sottotitolo = QLabel("Carica un file XML per compilare automaticamente i campi oppure procedi manualmente.")
         sottotitolo.setStyleSheet("font-size: 14px; color: #7f8c8d;")
         header_layout.addWidget(titolo)
         header_layout.addWidget(sottotitolo)
@@ -303,11 +245,11 @@ class AziendaNuovoMovimentoPage(QWidget):
         self.label_nome_fattura = QLabel("Nessuna fattura caricata")
         self.label_nome_fattura.setStyleSheet("color: #e67e22; font-weight: bold;")
         
-        self.button_importa_fattura = QPushButton("📥 Importa Fattura PDF/XML")
+        self.button_importa_fattura = QPushButton("📥 Importa Fattura XML")
         self.button_importa_fattura.setStyleSheet(STYLE_BTN_INFO)
         self.button_importa_fattura.clicked.connect(self.importa_fattura_pdf)
         
-        self.button_rimuovi_fattura = QPushButton("Rimuovi PDF/XML")
+        self.button_rimuovi_fattura = QPushButton("Rimuovi XML")
         self.button_rimuovi_fattura.setStyleSheet(STYLE_BTN_SECONDARIO)
         self.button_rimuovi_fattura.clicked.connect(self.rimuovi_fattura_movimento)
 
@@ -981,9 +923,9 @@ class AziendaNuovoMovimentoPage(QWidget):
         )
         return fattura.id, str(dest)
 
-    def importa_fattura_pdf(self):
+    def importa_fattura_xml(self):
         if self.movimento_in_modifica_id is not None: self.annulla_modifica()
-        file_paths, _ = QFileDialog.getOpenFileNames(self, "Seleziona Fatture", "", "Fatture (*.pdf *.xml *.p7m);;PDF (*.pdf);;XML (*.xml *.p7m)")
+        file_paths, _ = QFileDialog.getOpenFileNames(self, "Seleziona Fatture Elettroniche", "", "Fatture XML (*.xml *.p7m)")
         if not file_paths: return
 
         self.fatture_queue.extend(file_paths)
@@ -1001,66 +943,38 @@ class AziendaNuovoMovimentoPage(QWidget):
             self._processa_prossima_fattura_in_coda()
             return
 
-        pending_id = int(fattura_id or 0)
-        self.pending_fattura_movimento_id = pending_id if pending_id > 0 else None
+        self.pending_fattura_movimento_id = int(fattura_id or 0)
         self.pending_fattura_movimento_path = percorso_archiviato
-        self.pending_parser_movimento_data = None
         
         testo_label = Path(percorso_archiviato).name
         if rimanenti > 0: testo_label += f"  ( + altre {rimanenti} in coda )"
         self.label_nome_fattura.setText(testo_label)
         
-        self._aggiorna_tabella_prodotti_fattura_movimento(None)
-        
-        is_xml = file_path.lower().endswith(('.xml', '.p7m'))
-        if is_xml:
-            self._set_parser_feedback(True, "Lettura File XML in corso...")
-            try:
-                risultato_xml = self._parse_xml_fattura(percorso_archiviato)
-                dati = {
-                    "data": self._normalizza_data_fattura(risultato_xml.get("invoice_date")) or datetime.now().strftime("%d/%m/%Y"),
-                    "tipo": "USCITA", "categoria": "Fattura", "descrizione": risultato_xml.get("supplier_name", "Fornitore XML"),
-                    "importo": format_number(risultato_xml.get("taxable_total", 0.0), 2), "iva": format_number(risultato_xml.get("vat_total", 0.0), 2),
-                    "parser_data": risultato_xml
-                }
-                
-                prodotti_testo = []
-                for riga in risultato_xml.get("line_items", []): prodotti_testo.append(f"{riga['description']} | {riga['quantity']} | {riga['line_total']}")
-                dati["parser_data"]["products"] = "\n".join(prodotti_testo)
-                dati["parser_data"]["products_rows"] = risultato_xml.get("line_items", [])
-
-                self._applica_dati_parser_al_form(dati)
-                self.pending_parser_movimento_data = dati["parser_data"]
-                self._aggiorna_tabella_prodotti_fattura_movimento(self.pending_parser_movimento_data)
-                
-                if is_blank(self.input_importo.text()): QMessageBox.warning(self, "Attenzione", "Importo non trovato automaticamente. Verificalo manualmente.")
-                self._set_parser_feedback(False)
-            except Exception as exc:
-                self._set_parser_feedback(False)
-                QMessageBox.warning(self, "Errore XML", f"Impossibile analizzare il file XML: {exc}")
-        else:
-            self._set_parser_feedback(True, f"Analisi AI di {Path(file_path).name} in corso...")
+        try:
+            # USIAMO LA NUOVA FUNZIONE CENTRALIZZATA!
+            risultato_xml = self.parse_xml_fattura_standard(percorso_archiviato)
+            dati = {
+                "data": self._normalizza_data_fattura(risultato_xml.get("invoice_date")) or datetime.now().strftime("%d/%m/%Y"),
+                "tipo": "USCITA", "categoria": "Fattura", "descrizione": risultato_xml.get("supplier_name", "Fornitore XML"),
+                "importo": format_number(risultato_xml.get("taxable_total", 0.0), 2), "iva": format_number(risultato_xml.get("vat_total", 0.0), 2),
+                "parser_data": risultato_xml
+            }
             
-            def _on_success(risultato):
-                try: dati = self.analizza_fattura_con_parser_fatture(percorso_archiviato, file_path, risultato=risultato,)
-                except Exception as exc:
-                    QMessageBox.warning(self, "Analisi non completata", f"Fattura salvata, ma analisi non disponibile: {exc}")
-                    return
-                self._applica_dati_parser_al_form(dati)
-                self.pending_parser_movimento_data = dati.get("parser_data")
-                self._aggiorna_tabella_prodotti_fattura_movimento(self.pending_parser_movimento_data)
-                if is_blank(self.input_importo.text()): QMessageBox.warning(self, "Attenzione", "Importo non trovato automaticamente. Verificalo manualmente.")
+            prodotti_testo = []
+            for riga in risultato_xml.get("line_items", []): prodotti_testo.append(f"{riga['description']} | {riga['quantity']} | {riga['line_total']}")
+            dati["parser_data"]["products"] = "\n".join(prodotti_testo)
+            dati["parser_data"]["products_rows"] = risultato_xml.get("line_items", [])
 
-            def _on_error(message): QMessageBox.warning(self, "Analisi non completata", f"Fattura salvata, ma analisi non disponibile: {message}")
-            def _on_progress(message): self._set_parser_feedback(True, f"Analisi fattura: {message}")
-            def _on_done():
-                self._set_parser_feedback(False)
-                if self.pending_parser_movimento_data is None: self.label_prodotti_stato.setText("Analisi non completata.")
+            self._applica_dati_parser_al_form(dati)
+            self.pending_parser_movimento_data = dati["parser_data"]
+            self._aggiorna_tabella_prodotti_fattura_movimento(self.pending_parser_movimento_data)
+            
+            if is_blank(self.input_importo.text()): QMessageBox.warning(self, "Attenzione", "Importo non trovato automaticamente. Verificalo manualmente.")
+            
+        except Exception as exc:
+            QMessageBox.warning(self, "Errore XML", f"Impossibile analizzare il file XML: {exc}")
 
-            try: self.avvia_parser_fattura_async(percorso_archiviato, on_success=_on_success, on_error=_on_error, on_done=_on_done, on_progress=_on_progress)
-            except Exception as exc:
-                self._set_parser_feedback(False)
-                QMessageBox.warning(self, "Errore", f"Il parser AI non si è avviato: {exc}")
+
 
     def rimuovi_fattura_movimento(self, skip_queue_prompt=False):
         self.pending_fattura_movimento_id = None
@@ -1326,62 +1240,3 @@ class AziendaNuovoMovimentoPage(QWidget):
         self.table_prodotti.setRowHeight(0, 50)
         self._adatta_altezza_tabella()
     
-    def _parse_xml_fattura(self, file_path):
-        with open(file_path, 'rb') as f: content = f.read()
-        xml_string = b""
-        start_idx = content.find(b'<?xml')
-        if start_idx == -1: start_idx = content.find(b'<FatturaElettronica')
-        if start_idx == -1: start_idx = content.find(b'<p:FatturaElettronica')
-        
-        if start_idx != -1:
-            end_idx = content.rfind(b'</FatturaElettronica>')
-            if end_idx == -1: end_idx = content.rfind(b'</p:FatturaElettronica>')
-            
-            if end_idx != -1:
-                end_tag = content[end_idx:].split(b'>')[0] + b'>'
-                xml_string = content[start_idx:end_idx + len(end_tag)]
-            else: xml_string = content[start_idx:]
-        else: xml_string = content
-
-        xml_string = re.sub(b' xmlns="[^"]+"', b'', xml_string, count=1)
-        xml_string = re.sub(b'<[a-zA-Z0-9]+:', b'<', xml_string)
-        xml_string = re.sub(b'</[a-zA-Z0-9]+:', b'</', xml_string)
-        
-        try: root = ET.fromstring(xml_string)
-        except Exception as e: raise ValueError(f"Formato file XML/P7M danneggiato o non standard: {e}")
-
-        supplier_name = "-"
-        cedente = root.find('.//CedentePrestatore/DatiAnagrafici/Anagrafica/Denominazione')
-        if cedente is not None and cedente.text: supplier_name = cedente.text
-        else:
-            nome = root.find('.//CedentePrestatore/DatiAnagrafici/Anagrafica/Nome')
-            cognome = root.find('.//CedentePrestatore/DatiAnagrafici/Anagrafica/Cognome')
-            if nome is not None and cognome is not None: supplier_name = f"{nome.text} {cognome.text}"
-
-        invoice_number = root.findtext('.//DatiGeneraliDocumento/Numero', "")
-        invoice_date = root.findtext('.//DatiGeneraliDocumento/Data', "")
-        
-        taxable_total, vat_total = 0.0, 0.0
-        for riepilogo in root.findall('.//DatiRiepilogo'):
-            imp = riepilogo.find('ImponibileImporto')
-            iva = riepilogo.find('Imposta')
-            if imp is not None: taxable_total += float(imp.text)
-            if iva is not None: vat_total += float(iva.text)
-            
-        products_rows = []
-        for dettaglio in root.findall('.//DettaglioLinee'):
-            products_rows.append({
-                "description": dettaglio.findtext('Descrizione', "Prodotto da XML"),
-                "quantity": dettaglio.findtext('Quantita', "1"),
-                "price": dettaglio.findtext('PrezzoUnitario', dettaglio.findtext('PrezzoTotale', "0")),
-                "unit_price": dettaglio.findtext('PrezzoUnitario', dettaglio.findtext('PrezzoTotale', "0")),
-                "line_total": dettaglio.findtext('PrezzoTotale', "0"),
-                "vat_rate": dettaglio.findtext('AliquotaIVA', "0"),
-                "category": "Da categorizzare",
-                "cost_type": "Variabili"
-            })
-
-        return {
-            "invoice_number": invoice_number, "invoice_date": invoice_date, "supplier_name": supplier_name, 
-            "taxable_total": taxable_total, "vat_total": vat_total, "total_amount": taxable_total + vat_total, "line_items": products_rows
-        }

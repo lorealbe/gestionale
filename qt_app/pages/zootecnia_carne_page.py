@@ -942,9 +942,8 @@ class ZootecniaCarnePage(ZootecniaParserSupport, QWidget):
 
 
     def seleziona_fattura_carne(self):
-        file_path, _ = QFileDialog.getOpenFileName(self, "Seleziona fattura PDF (Carne)", "", "PDF Files (*.pdf)")
-        if not file_path:
-            return
+        file_path, _ = QFileDialog.getOpenFileName(self, "Seleziona fattura XML (Carne)", "", "Fatture XML (*.xml *.p7m)")
+        if not file_path: return
 
         try:
             fattura_id, percorso_archiviato = self.archivia_fattura_caricata(file_path, "CARNE")
@@ -954,66 +953,30 @@ class ZootecniaCarnePage(ZootecniaParserSupport, QWidget):
 
         self.pending_fattura_carne_id = fattura_id
         self.pending_fattura_carne_path = percorso_archiviato
-        self.pending_parser_carne_data = None
         self.label_nome_fattura.setText(Path(percorso_archiviato).name)
-        self._set_parser_feedback_carne(True, "Analisi fattura in corso...")
 
-        def _on_success(risultato):
-            try:
-                dati_carne = self.analizza_fattura_carne_con_parser_fatture(
-                    percorso_archiviato,
-                    file_path,
-                    risultato=risultato,
-                )
-            except Exception as exc:
-                QMessageBox.warning(
-                    self,
-                    "Analisi non completata",
-                    f"Fattura salvata correttamente, ma analisi automatica non disponibile: {exc}",
-                )
-                return
-
+        try:
+            # Lettura immediata dell'XML
+            risultato = self.parse_xml_fattura_standard(percorso_archiviato)
+            
+            dati_carne = self.analizza_fattura_carne_con_parser_fatture(
+                percorso_archiviato, file_path, risultato=risultato,
+            )
+            
             self._applica_dati_parser_al_form_carne(dati_carne)
             self.pending_parser_carne_data = dati_carne.get("parser_data")
 
             iva_label = format_number(dati_carne.get("iva_percent", 0.0), 2)
             QMessageBox.information(
-                self,
-                "Importazione completata",
-                "Valori produzione carne impostati da fattura:\n"
+                self, "Importazione completata",
+                "Valori produzione carne impostati da fattura XML:\n"
                 f"- Quantita: {self.input_quantita.text()} {self.combo_unita_quantita.currentText()}\n"
                 f"- Prezzo: {self.input_prezzo.text()} {self.combo_unita_prezzo.currentText()}\n"
                 f"- Aliquota IVA applicata: {iva_label}%",
             )
-
-        def _on_error(message):
-            QMessageBox.warning(
-                self,
-                "Analisi non completata",
-                f"Fattura salvata correttamente, ma analisi automatica non disponibile: {message}",
-            )
-
-        def _on_progress(message):
-            self._set_parser_feedback_carne(True, f"Analisi fattura: {message}")
-
-        def _on_done():
-            self._set_parser_feedback_carne(False)
-
-        try:
-            self.avvia_parser_fattura_async(
-                percorso_archiviato,
-                on_success=_on_success,
-                on_error=_on_error,
-                on_done=_on_done,
-                on_progress=_on_progress,
-            )
         except Exception as exc:
-            self._set_parser_feedback_carne(False)
-            QMessageBox.warning(
-                self,
-                "Analisi non avviata",
-                f"Fattura salvata correttamente, ma il parser non si e avviato: {exc}",
-            )
+            QMessageBox.warning(self, "Errore Lettura XML", f"Fattura salvata ma errore nella lettura dati: {exc}")
+
 
     def rimuovi_fattura_carne(self):
         self.pending_fattura_carne_id = None

@@ -6,6 +6,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
+import xml.etree.ElementTree as ET
 
 from PySide6.QtCore import QObject, Signal, Slot, QRunnable, QThreadPool
 
@@ -271,3 +272,64 @@ class ZootecniaParserSupport:
         )
         if not isinstance(parser_data, dict): return (None,) * len(_PARSER_DB_FIELDS)
         return tuple(parser_data.get(field_name) for field_name in _PARSER_DB_FIELDS)
+
+    def parse_xml_fattura_standard(self, file_path):
+        """Metodo unificato per leggere i dati da XML e P7M in tutto il gestionale."""
+        with open(file_path, 'rb') as f: content = f.read()
+        xml_string = b""
+        start_idx = content.find(b'<?xml')
+        if start_idx == -1: start_idx = content.find(b'<FatturaElettronica')
+        if start_idx == -1: start_idx = content.find(b'<p:FatturaElettronica')
+        
+        if start_idx != -1:
+            end_idx = content.rfind(b'</FatturaElettronica>')
+            if end_idx == -1: end_idx = content.rfind(b'</p:FatturaElettronica>')
+            
+            if end_idx != -1:
+                end_tag = content[end_idx:].split(b'>')[0] + b'>'
+                xml_string = content[start_idx:end_idx + len(end_tag)]
+            else: xml_string = content[start_idx:]
+        else: xml_string = content
+
+        xml_string = re.sub(b' xmlns="[^"]+"', b'', xml_string, count=1)
+        xml_string = re.sub(b'<[a-zA-Z0-9]+:', b'<', xml_string)
+        xml_string = re.sub(b'</[a-zA-Z0-9]+:', b'</', xml_string)
+        
+        try: root = ET.fromstring(xml_string)
+        except Exception as e: raise ValueError(f"Formato file XML/P7M danneggiato o non standard: {e}")
+
+        supplier_name = "-"
+        cedente = root.find('.//CedentePrestatore/DatiAnagrafici/Anagrafica/Denominazione')
+        if cedente is not None and cedente.text: supplier_name = cedente.text
+        else:
+            nome = root.find('.//CedentePrestatore/DatiAnagrafici/Anagrafica/Nome')
+            cognome = root.find('.//CedentePrestatore/DatiAnagrafici/Anagrafica/Cognome')
+            if nome is not None and cognome is not None: supplier_name = f"{nome.text} {cognome.text}"
+
+        invoice_number = root.findtext('.//DatiGeneraliDocumento/Numero', "")
+        invoice_date = root.findtext('.//DatiGeneraliDocumento/Data', "")
+        
+        taxable_total, vat_total = 0.0, 0.0
+        for riepilogo in root.findall('.//DatiRiepilogo'):
+            imp = riepilogo.find('ImponibileImporto')
+            iva = riepilogo.find('Imposta')
+            if imp is not None: taxable_total += float(imp.text)
+            if iva is not None: vat_total += float(iva.text)
+            
+        products_rows = []
+        for dettaglio in root.findall('.//DettaglioLinee'):
+            products_rows.append({
+                "description": dettaglio.findtext('Descrizione', "Prodotto da XML"),
+                "quantity": dettaglio.findtext('Quantita', "1"),
+                "price": dettaglio.findtext('PrezzoUnitario', dettaglio.findtext('PrezzoTotale', "0")),
+                "unit_price": dettaglio.findtext('PrezzoUnitario', dettaglio.findtext('PrezzoTotale', "0")),
+                "line_total": dettaglio.findtext('PrezzoTotale', "0"),
+                "vat_rate": dettaglio.findtext('AliquotaIVA', "0"),
+                "category": "Da categorizzare",
+                "cost_type": "Variabili"
+            })
+
+        return {
+            "invoice_number": invoice_number, "invoice_date": invoice_date, "supplier_name": supplier_name, 
+            "taxable_total": taxable_total, "vat_total": vat_total, "total_amount": taxable_total + vat_total, "line_items": products_rows
+        }
