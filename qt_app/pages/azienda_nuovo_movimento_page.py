@@ -247,7 +247,7 @@ class AziendaNuovoMovimentoPage(QWidget):
         
         self.button_importa_fattura = QPushButton("📥 Importa Fattura XML")
         self.button_importa_fattura.setStyleSheet(STYLE_BTN_INFO)
-        self.button_importa_fattura.clicked.connect(self.importa_fattura_pdf)
+        self.button_importa_fattura.clicked.connect(self.importa_fattura_xml)
         
         self.button_rimuovi_fattura = QPushButton("Rimuovi XML")
         self.button_rimuovi_fattura.setStyleSheet(STYLE_BTN_SECONDARIO)
@@ -1111,11 +1111,22 @@ class AziendaNuovoMovimentoPage(QWidget):
 
         categoria_value = self.combo_categoria.currentText().strip()
         descrizione_value = self.input_descrizione.text().strip()
+
+        # 1. Inizializziamo sempre i dati (vitale per le spese inserite a mano senza XML)
+        if not isinstance(self.pending_parser_movimento_data, dict):
+            self.pending_parser_movimento_data = {"products_rows": []}
+        
+        parser_data = self.pending_parser_movimento_data
+
+        # 2. SINCRONIZZIAMO la tabella visiva PRIMA di estrarre i gruppi
+        self._sincronizza_products_parser_da_form(parser_data, [])
+        
+        # 3. ORA possiamo estrarre i gruppi in modo affidabile, perché sono stati letti!
         selected_gruppi_ids = self._get_selected_group_entry_ids_from_table()
         
-        parser_data = self.pending_parser_movimento_data if isinstance(self.pending_parser_movimento_data, dict) else None
-        if parser_data is not None: self._sincronizza_products_parser_da_form(parser_data, selected_gruppi_ids)
-        
+        # Sincronizziamo di nuovo per creare i testi di riepilogo perfetti
+        self._sincronizza_products_parser_da_form(parser_data, selected_gruppi_ids)
+
         parser_values = self._estrai_valori_parser_db(parser_data)
         parser_dict = dict(zip(self._PARSER_DB_FIELDS, parser_values))
 

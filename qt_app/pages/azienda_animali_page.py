@@ -1164,8 +1164,12 @@ class GestioneCapiDialog(QDialog):
         self.table_capi.setHorizontalHeaderLabels(["ID (Marca)", "Stato", "Data Ingresso", "Media Latte", "Costi", "Ricavi"])
         self.table_capi.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
         self.table_capi.setSelectionBehavior(QTableWidget.SelectRows)
-        self.table_capi.setSelectionMode(QAbstractItemView.ExtendedSelection) # <-- ABILITA MULTISELEZIONE
+        self.table_capi.setSelectionMode(QAbstractItemView.ExtendedSelection) 
         self.table_capi.setAlternatingRowColors(True)
+        
+        # --- NUOVO: Abilita il salvataggio automatico quando modifichi l'ID ---
+        self.table_capi.itemChanged.connect(self.salva_modifica_marca)
+        
         layout.addWidget(self.table_capi)
         
         row_azioni = QHBoxLayout()
@@ -1190,7 +1194,6 @@ class GestioneCapiDialog(QDialog):
         row_sposta.addWidget(btn_sposta)
         layout.addLayout(row_sposta)
 
-
     def carica_gruppi_destinazione(self):
         gruppo_attuale = AziendaAnimaliDettaglio.get_or_none(id=self.gruppo_id)
         if not gruppo_attuale: return
@@ -1208,7 +1211,11 @@ class GestioneCapiDialog(QDialog):
             self.combo_destinazione.addItem(f"{nome} ({g.finalita})", g.id)
 
     def carica_capi(self):
+        # Blocca i segnali mentre popola la tabella per evitare finti salvataggi
+        self.table_capi.blockSignals(True)
         self.table_capi.setRowCount(0)
+        
+        from models import CapoAnimale
         capi = list(CapoAnimale.select().where(
             (CapoAnimale.gruppo == self.gruppo_id) & (CapoAnimale.user == self.user_id)
         ).order_by(CapoAnimale.stato, CapoAnimale.id.desc()))
@@ -1216,16 +1223,74 @@ class GestioneCapiDialog(QDialog):
         for row_idx, capo in enumerate(capi):
             self.table_capi.insertRow(row_idx)
             
+            # COLONNA 0: ID Marca (L'UNICA CHE L'UTENTE PUÒ MODIFICARE A MANO)
             item_marca = QTableWidgetItem(capo.marca_auricolare)
             item_marca.setData(Qt.UserRole, capo.id) 
             self.table_capi.setItem(row_idx, 0, item_marca)
-            self.table_capi.setItem(row_idx, 1, QTableWidgetItem(capo.stato))
-            self.table_capi.setItem(row_idx, 2, QTableWidgetItem(capo.data_ingresso or "-"))
             
+            # COLONNA 1: Stato (Sola Lettura)
+            item_stato = QTableWidgetItem(capo.stato)
+            item_stato.setFlags(item_stato.flags() & ~Qt.ItemIsEditable)
+            self.table_capi.setItem(row_idx, 1, item_stato)
+            
+            # COLONNA 2: Data Ingresso (Sola Lettura)
+            item_data = QTableWidgetItem(capo.data_ingresso or "-")
+            item_data.setFlags(item_data.flags() & ~Qt.ItemIsEditable)
+            self.table_capi.setItem(row_idx, 2, item_data)
+            
+            # --- VALORI ECONOMICI E PRODUTTIVI ---
+            media_latte = getattr(capo, 'media_litri_latte', 0.0) or 0.0
+            costi = getattr(capo, 'costi_accumulati', 0.0) or 0.0
+            ricavi = getattr(capo, 'ricavi_accumulati', 0.0) or 0.0
+            
+            # COLONNA 3: Media Latte (Sola Lettura)
+            item_latte = QTableWidgetItem(f"{media_latte:.2f} L/g" if media_latte > 0 else "-")
+            item_latte.setFlags(item_latte.flags() & ~Qt.ItemIsEditable)
+            self.table_capi.setItem(row_idx, 3, item_latte)
+            
+            # COLONNA 4: Costi (Sola Lettura)
+            item_costi = QTableWidgetItem(f"€ {costi:.2f}" if costi > 0 else "-")
+            item_costi.setFlags(item_costi.flags() & ~Qt.ItemIsEditable)
+            self.table_capi.setItem(row_idx, 4, item_costi)
+            
+            # COLONNA 5: Ricavi (Sola Lettura)
+            item_ricavi = QTableWidgetItem(f"€ {ricavi:.2f}" if ricavi > 0 else "-")
+            item_ricavi.setFlags(item_ricavi.flags() & ~Qt.ItemIsEditable)
+            self.table_capi.setItem(row_idx, 5, item_ricavi)
+            
+            # Colora di grigio i capi non attivi
             if capo.stato != 'ATTIVO':
                 from PySide6.QtGui import QColor
-                for col in range(3):
-                    self.table_capi.item(row_idx, col).setForeground(QColor("#7f8c8d"))
+                for col in range(6):
+                    item = self.table_capi.item(row_idx, col)
+                    if item:
+                        item.setForeground(QColor("#7f8c8d"))
+                        
+        # Riattiva i segnali terminato il caricamento
+        self.table_capi.blockSignals(False)
+
+
+    def salva_modifica_marca(self, item):
+        # Controlla se la cella modificata è quella dell'ID (colonna 0)
+        if item.column() == 0:
+            capo_id = item.data(Qt.UserRole)
+            nuova_marca = item.text().strip().upper()
+            
+            if not nuova_marca: return
+            
+            try:
+                from models import CapoAnimale
+                # Salva il nuovo nome sul database
+                CapoAnimale.update(marca_auricolare=nuova_marca).where(CapoAnimale.id == capo_id).execute()
+                
+                # Forza il testo in maiuscolo sulla tabella visivamente
+                self.table_capi.blockSignals(True)
+                item.setText(nuova_marca)
+                self.table_capi.blockSignals(False)
+            except Exception as e:
+                print(f"Errore salvataggio marca: {e}")
+
+
 
     def aggiungi_capo_singolo(self):
         marca = self.input_marca.text().strip().upper()

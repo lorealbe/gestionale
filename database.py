@@ -1028,15 +1028,22 @@ def alloca_costi_a_capi(user_id: int, gruppo_ids: list, costo_totale: float):
     """Spalma un costo (es. fattura mangime) su tutti i capi attivi dei gruppi selezionati"""
     with db.atomic():
         from models import CapoAnimale
+        
         # Prende tutti gli animali vivi che appartengono ai gruppi selezionati
         capi_attivi = list(CapoAnimale.select().where((CapoAnimale.gruppo << gruppo_ids) & (CapoAnimale.stato == 'ATTIVO')))
-        if not capi_attivi: return
+        
+        if not capi_attivi: 
+            print(f"[DEBUG COSTI] Nessun animale trovato per i gruppi selezionati: {gruppo_ids}")
+            return
         
         # Divide il costo per il numero di animali trovati
-        costo_pro_capite = costo_totale / len(capi_attivi)
+        costo_pro_capite = float(costo_totale) / len(capi_attivi)
+        print(f"[DEBUG COSTI] Distribuendo €{costo_totale} su {len(capi_attivi)} capi -> €{costo_pro_capite:.2f} per capo")
         
-        # Aggiunge il costo allo "zainetto" di ogni singolo animale
+        # Aggiunge il costo allo "zainetto" di ogni singolo animale con aggiornamento forzato
         for capo in capi_attivi:
-            costo_attuale = getattr(capo, 'costi_accumulati', 0.0) or 0.0
-            capo.costi_accumulati = costo_attuale + costo_pro_capite
-            capo.save()
+            costo_attuale = float(getattr(capo, 'costi_accumulati', 0.0) or 0.0)
+            nuovo_costo = costo_attuale + costo_pro_capite
+            
+            # Esecuzione DIRETTA dell'aggiornamento
+            CapoAnimale.update(costi_accumulati=nuovo_costo).where(CapoAnimale.id == capo.id).execute()
