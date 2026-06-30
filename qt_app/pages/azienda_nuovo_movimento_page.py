@@ -462,7 +462,8 @@ class AziendaNuovoMovimentoPage(QWidget):
                 combo_gruppi = CheckableComboBox(self)
                 for entry in entries:
                     entry_id = int(entry.get("id", 0) or 0)
-                    if entry_id > 0:
+                    tipo_db = (entry.get("tipo_animale") or "").strip().upper()
+                    if entry_id > 0 and tipo_db != 'ARCHIVIO':
                         label = self._label_gruppo_animale_movimento(entry)
                         combo_gruppi.addItem(label, data=entry_id)
                 
@@ -572,7 +573,8 @@ class AziendaNuovoMovimentoPage(QWidget):
         for entry in entries:
             entry_id = int(entry.get("id", 0) or 0)
             capi = int(entry.get("capi", 0) or 0)
-            if entry_id > 0 and capi > 0:
+            tipo_db = (entry.get("tipo_animale") or "").strip().upper()
+            if entry_id > 0 and capi > 0 and tipo_db != 'ARCHIVIO':
                 opzioni.append((entry_id, self._label_gruppo_animale_movimento(entry)))
 
         labels_by_id = {entry_id: label for entry_id, label in opzioni}
@@ -1251,3 +1253,79 @@ class AziendaNuovoMovimentoPage(QWidget):
         self.table_prodotti.setRowHeight(0, 50)
         self._adatta_altezza_tabella()
     
+
+    def parse_xml_fattura_standard(self, file_path):
+        """Motore nativo per leggere file XML e P7M in modo istantaneo."""
+        with open(file_path, 'rb') as f:
+            content = f.read()
+            
+        xml_string = b""
+        start_idx = content.find(b'<?xml')
+        if start_idx == -1: start_idx = content.find(b'<FatturaElettronica')
+        if start_idx == -1: start_idx = content.find(b'<p:FatturaElettronica')
+        
+        if start_idx != -1:
+            end_idx = content.rfind(b'</FatturaElettronica>')
+            if end_idx == -1: end_idx = content.rfind(b'</p:FatturaElettronica>')
+            
+            if end_idx != -1:
+                end_tag = content[end_idx:].split(b'>')[0] + b'>'
+                xml_string = content[start_idx:end_idx + len(end_tag)]
+            else:
+                xml_string = content[start_idx:]
+        else:
+            xml_string = content
+
+        # Pulizia per semplificare la ricerca
+        xml_string = re.sub(b' xmlns="[^"]+"', b'', xml_string, count=1)
+        xml_string = re.sub(b'<[a-zA-Z0-9]+:', b'<', xml_string)
+        xml_string = re.sub(b'</[a-zA-Z0-9]+:', b'</', xml_string)
+        
+        try:
+            root = ET.fromstring(xml_string)
+        except Exception as e:
+            raise ValueError(f"Formato file XML/P7M danneggiato o non standard: {e}")
+
+        # Estrazione Fornitore
+        supplier_name = "-"
+        cedente = root.find('.//CedentePrestatore/DatiAnagrafici/Anagrafica/Denominazione')
+        if cedente is not None and cedente.text:
+            supplier_name = cedente.text
+        else:
+            nome = root.find('.//CedentePrestatore/DatiAnagrafici/Anagrafica/Nome')
+            cognome = root.find('.//CedentePrestatore/DatiAnagrafici/Anagrafica/Cognome')
+            if nome is not None and cognome is not None:
+                supplier_name = f"{nome.text} {cognome.text}"
+
+        # Estrazione Dati Generali
+        invoice_number = root.findtext('.//DatiGeneraliDocumento/Numero', "")
+        invoice_date = root.findtext('.//DatiGeneraliDocumento/Data', "")
+        
+        taxable_total, vat_total = 0.0, 0.0
+        for riepilogo in root.findall('.//DatiRiepilogo'):
+            imp = riepilogo.find('ImponibileImporto')
+            iva = riepilogo.find('Imposta')
+            if imp is not None: taxable_total += float(imp.text)
+            if iva is not None: vat_total += float(iva.text)
+            
+        # Estrazione Righe Prodotti
+        products_rows = []
+        for dettaglio in root.findall('.//DettaglioLinee'):
+            desc = dettaglio.findtext('Descrizione', "Prodotto da XML")
+            qta = dettaglio.findtext('Quantita', "1")
+            totale = dettaglio.findtext('PrezzoTotale', "0")
+            prezzo = dettaglio.findtext('PrezzoUnitario', totale)
+            iva = dettaglio.findtext('AliquotaIVA', "0")
+            
+            products_rows.append({
+                "description": desc, "quantity": qta, "price": prezzo,
+                "unit_price": prezzo, "line_total": totale, "vat_rate": iva,
+                "category": "Da categorizzare", "cost_type": "Variabili"
+            })
+
+        return {
+            "invoice_number": invoice_number, "invoice_date": invoice_date,
+            "supplier_name": supplier_name, "taxable_total": taxable_total,
+            "vat_total": vat_total, "total_amount": taxable_total + vat_total,
+            "line_items": products_rows
+        }

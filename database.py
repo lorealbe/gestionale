@@ -1038,7 +1038,6 @@ def alloca_costi_a_capi(user_id: int, gruppo_ids: list, costo_totale: float):
         
         # Divide il costo per il numero di animali trovati
         costo_pro_capite = float(costo_totale) / len(capi_attivi)
-        print(f"[DEBUG COSTI] Distribuendo €{costo_totale} su {len(capi_attivi)} capi -> €{costo_pro_capite:.2f} per capo")
         
         # Aggiunge il costo allo "zainetto" di ogni singolo animale con aggiornamento forzato
         for capo in capi_attivi:
