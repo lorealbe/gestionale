@@ -201,6 +201,34 @@ class ProduzioneCarne(BaseModel):
     class Meta:
         table_name = 'produzione_carne'
 
+class CapoAnimale(BaseModel):
+    user = ForeignKeyField(Utente, column_name='user_id', on_delete='CASCADE')
+    gruppo = ForeignKeyField(AziendaAnimaliDettaglio, column_name='gruppo_id', on_delete='CASCADE', backref='capi_singoli')
+    
+    marca_auricolare = CharField(index=True) 
+    nome = CharField(null=True)
+    sesso = CharField(null=True)
+    
+    # STATI: 'ATTIVO', 'VENDUTO_VIVO', 'VENDUTO_CARNE', 'DECEDUTO'
+    stato = CharField(default='ATTIVO') 
+    
+    data_ingresso = CharField(null=True)
+    data_uscita = CharField(null=True)
+    note = TextField(default='')
+
+    costi_accumulati = FloatField(default=0.0)
+    ricavi_accumulati = FloatField(default=0.0)
+    
+    # LATTE (Media mobile)
+    media_litri_latte = FloatField(default=0.0)
+    giorni_produzione_latte = IntegerField(default=0)
+    
+    # CARNE (Totale)
+    kg_carne_prodotti = FloatField(default=0.0)
+
+    class Meta:
+        table_name = 'capi_animali'
+
 # --- FILE E FATTURE ALLEGATE ---
 
 class Fattura(BaseModel):
@@ -304,7 +332,7 @@ def init_tables():
         AziendaAnimaliDettaglio, AziendaAnimaliStorico, AziendaAnimaliNasciteMedia,
         Movimento, MovimentiAnimaliLink, ProduzioneLatte, ProduzioneLatteGruppi,
         ProduzioneCarne, Fattura, CampoAgricolo, StoricoColtura,
-        EconomiaColtura, RegistroMeteo, Macchinario, ManutenzioneMacchinario
+        EconomiaColtura, RegistroMeteo, Macchinario, ManutenzioneMacchinario, CapoAnimale
     ]
     DATA_ROOT.mkdir(parents=True, exist_ok=True)
     db.create_tables(modelli, safe=True)

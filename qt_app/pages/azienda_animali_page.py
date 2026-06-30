@@ -1,7 +1,6 @@
-
 from datetime import datetime
 
-from PySide6.QtCore import QDate, Qt
+from PySide6.QtCore import QDate, Qt, QTimer
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -12,6 +11,8 @@ from PySide6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QHeaderView,
+    QListWidget,
+    QListWidgetItem,
     QLabel,
     QLineEdit,
     QMessageBox,
@@ -21,9 +22,13 @@ from PySide6.QtWidgets import (
     QTableWidgetItem,
     QVBoxLayout,
     QWidget,
+    QDialog,          
+    QFileDialog,
+    QSizePolicy
 )
 
 from app_utils import format_number, TabellaIsolata
+from models import db, CapoAnimale, AziendaAnimaliDettaglio
 from database import (
     add_azienda_animale_entry,
     delete_azienda_animale_entry,
@@ -35,6 +40,7 @@ from database import (
     set_azienda_animale_group_name,
     set_azienda_animale_riproduzione,
     split_azienda_animale_group,
+    sposta_capo_animale
 )
 
 
@@ -60,7 +66,21 @@ class AziendaAnimaliPage(QWidget):
         self._merge_candidates_by_label = {}
 
         self._build_ui()
+        self._assicura_gruppi_archivio()
         self.carica_report_animali(show_errors=False)
+
+
+    def _assicura_gruppi_archivio(self):
+        with db.atomic():
+            venduti = AziendaAnimaliDettaglio.get_or_none((AziendaAnimaliDettaglio.user == self.user_id) & (AziendaAnimaliDettaglio.tipo_animale == 'ARCHIVIO') & (AziendaAnimaliDettaglio.finalita == 'VENDUTI'))
+            if not venduti:
+                venduti = AziendaAnimaliDettaglio.create(user=self.user_id, tipo_animale='ARCHIVIO', finalita='VENDUTI', group_name='Archivio Capi Venduti', capi=0, created_at=datetime.now().isoformat(), updated_at=datetime.now().isoformat())
+            self.archivio_venduti_id = venduti.id
+            
+            deceduti = AziendaAnimaliDettaglio.get_or_none((AziendaAnimaliDettaglio.user == self.user_id) & (AziendaAnimaliDettaglio.tipo_animale == 'ARCHIVIO') & (AziendaAnimaliDettaglio.finalita == 'DECEDUTI'))
+            if not deceduti:
+                deceduti = AziendaAnimaliDettaglio.create(user=self.user_id, tipo_animale='ARCHIVIO', finalita='DECEDUTI', group_name='Archivio Capi Deceduti', capi=0, created_at=datetime.now().isoformat(), updated_at=datetime.now().isoformat())
+            self.archivio_deceduti_id = deceduti.id
 
     def _build_ui(self):
         main_layout = QVBoxLayout(self)
@@ -89,10 +109,10 @@ class AziendaAnimaliPage(QWidget):
 
         self.check_add_riproduzione = QCheckBox("Destinato alla riproduzione", self)
 
-        self.spin_add_capi = QSpinBox(self)
-        self.spin_add_capi.setMinimum(1)
-        self.spin_add_capi.setMaximum(1_000_000_000)
-        self.spin_add_capi.setValue(1)
+        self.spin_capi_nuovo_gruppo = QSpinBox(self)
+        self.spin_capi_nuovo_gruppo.setMinimum(1)
+        self.spin_capi_nuovo_gruppo.setMaximum(1_000_000_000)
+        self.spin_capi_nuovo_gruppo.setValue(1)
 
         add_layout.addWidget(QLabel("Nome gruppo:"), 0, 0)
         add_layout.addWidget(self.input_add_group_name, 0, 1)
@@ -105,7 +125,7 @@ class AziendaAnimaliPage(QWidget):
         add_layout.addWidget(self.input_add_altro, 1, 3)
 
         add_layout.addWidget(QLabel("Numero capi:"), 2, 0)
-        add_layout.addWidget(self.spin_add_capi, 2, 1)
+        add_layout.addWidget(self.spin_capi_nuovo_gruppo, 2, 1)
         add_layout.addWidget(self.check_add_riproduzione, 2, 2, 1, 2)
 
         add_buttons = QHBoxLayout()
@@ -124,6 +144,7 @@ class AziendaAnimaliPage(QWidget):
 
         main_layout.addWidget(frame_add)
 
+        # TABELLA GRUPPI
         self.table_animali = TabellaIsolata(0, 6, self)
         self.table_animali.setHorizontalHeaderLabels(["ID", "Gruppo", "Tipo", "Destinazione", "Riproduzione", "Capi"])
         self.table_animali.setEditTriggers(QAbstractItemView.NoEditTriggers)
@@ -133,6 +154,12 @@ class AziendaAnimaliPage(QWidget):
         self.table_animali.verticalHeader().setVisible(False)
         self.table_animali.itemSelectionChanged.connect(self._on_selection_changed)
 
+        # SOVRASCRITTURA TABELLA ISOLATA PER IMPEDIRE LO STRETCH E LO SPAZIO BIANCO
+        self.table_animali.setMinimumHeight(0)
+        self.table_animali.verticalHeader().setSectionResizeMode(QHeaderView.Fixed)
+        self.table_animali.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.table_animali.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+
         header = self.table_animali.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
         header.setSectionResizeMode(1, QHeaderView.Stretch)
@@ -141,7 +168,7 @@ class AziendaAnimaliPage(QWidget):
         header.setSectionResizeMode(4, QHeaderView.ResizeToContents)
         header.setSectionResizeMode(5, QHeaderView.ResizeToContents)
 
-        main_layout.addWidget(self.table_animali, 1)
+        main_layout.addWidget(self.table_animali)
 
         self.label_selected = QLabel("Seleziona un gruppo per modifiche.")
         self.label_selected.setStyleSheet("font-weight: 600;")
@@ -149,6 +176,14 @@ class AziendaAnimaliPage(QWidget):
 
         actions_layout = QHBoxLayout()
         actions_layout.setSpacing(10)
+
+        
+        # BOTTONE GESTIONE CAPI
+        self.btn_gestisci_singoli = QPushButton("🐄 Gestisci singoli capi")
+        self.btn_gestisci_singoli.setStyleSheet("background-color: #8e44ad; color: white; font-weight: bold; padding: 8px; border-radius: 5px;")
+        self.btn_gestisci_singoli.clicked.connect(self.apri_gestione_singoli)
+        self.btn_gestisci_singoli.setEnabled(False)
+        main_layout.addWidget(self.btn_gestisci_singoli)
 
         self.group_modifica = QGroupBox("Modifica gruppo selezionato", self)
         modifica_layout = QGridLayout(self.group_modifica)
@@ -279,8 +314,51 @@ class AziendaAnimaliPage(QWidget):
         self.label_stato.setStyleSheet("color: #1f5f3f;")
         main_layout.addWidget(self.label_stato)
 
+
+        # SPINTA VERSO L'ALTO
+        main_layout.addStretch()
+
         self._on_add_tipo_changed()
         self._set_selection_controls_enabled(False)
+
+    # ----------------------------------------------------
+    # METODI PER L'ALTEZZA DINAMICA DELLA TABELLA
+    # ----------------------------------------------------
+    def _adatta_altezza_tabella(self):
+        def _resize():
+            try:
+                header_h = self.table_animali.horizontalHeader().height()
+                if header_h < 20: 
+                    header_h = 32
+                
+                rows_h = 0
+                for i in range(self.table_animali.rowCount()):
+                    h = self.table_animali.rowHeight(i)
+                    rows_h += h if h > 0 else 35
+                    
+                self.table_animali.setFixedHeight(header_h + rows_h + 2)
+            except Exception:
+                pass
+        
+        # Usando il timer aspettiamo 10ms in modo che Qt abbia disegnato la UI per calcolare perfettamente
+        QTimer.singleShot(10, _resize)
+
+    def _mostra_riga_vuota_tabella(self):
+        self.table_animali.clearSpans()
+        self.table_animali.setRowCount(1)
+        item_empty = QTableWidgetItem("Nessun gruppo presente attualmente.")
+        item_empty.setTextAlignment(Qt.AlignCenter)
+        
+        from PySide6.QtGui import QColor
+        item_empty.setForeground(QColor("#7f8c8d"))
+        item_empty.setFlags(Qt.ItemIsEnabled)
+        self.table_animali.setItem(0, 0, item_empty)
+        self.table_animali.setSpan(0, 0, 1, self.table_animali.columnCount())
+        
+        # Imponiamo che l'altezza di questa riga sia compatta e non si espanda
+        self.table_animali.setRowHeight(0, 45)
+        self._adatta_altezza_tabella()
+
 
     def _set_selection_controls_enabled(self, enabled: bool):
         self.group_modifica.setEnabled(enabled)
@@ -309,7 +387,7 @@ class AziendaAnimaliPage(QWidget):
         self.combo_add_finalita.setCurrentText(self.PURPOSE_OPTIONS[0])
         self.input_add_altro.clear()
         self.check_add_riproduzione.setChecked(False)
-        self.spin_add_capi.setValue(1)
+        self.spin_capi_nuovo_gruppo.setValue(1)
         self._on_add_tipo_changed()
 
     def _format_tipo_animale_report(self, tipo_animale, altro_label):
@@ -413,13 +491,26 @@ class AziendaAnimaliPage(QWidget):
         if not entry:
             self.label_selected.setText("Seleziona un gruppo per modifiche.")
             self._set_selection_controls_enabled(False)
+            self.btn_gestisci_singoli.setEnabled(False)
             self._merge_candidates_by_label = {}
             self.combo_merge_target.clear()
             return
 
         group_name = (entry.get("group_name") or "").strip() or f"Gruppo {int(entry.get('id', 0) or 0)}"
+        tipo_db = (entry.get("tipo_animale") or "").strip().upper()
+        
+        # --- PROTEZIONE ARCHIVI ---
+        if tipo_db == 'ARCHIVIO':
+            self.label_selected.setText(f"Archivio Selezionato: {group_name} (Sola lettura)")
+            self._set_selection_controls_enabled(False)
+            self.btn_gestisci_singoli.setEnabled(True)
+            self._merge_candidates_by_label = {}
+            self.combo_merge_target.clear()
+            return
+        
         self.label_selected.setText(f"Selezionato: {group_name}")
         self._set_selection_controls_enabled(True)
+        self.btn_gestisci_singoli.setEnabled(True)
 
         capi = int(entry.get("capi", 0) or 0)
         self.spin_remove_capi.setMaximum(max(capi, 1))
@@ -470,9 +561,20 @@ class AziendaAnimaliPage(QWidget):
 
         self._entries_by_id = {int(entry.get("id", 0) or 0): entry for entry in entries}
 
+        self.table_animali.clearSpans()
         self.table_animali.setRowCount(0)
-
         totale_capi = 0
+
+        # Se non ci sono dati, chiamiamo la riga vuota
+        if not entries:
+            self._mostra_riga_vuota_tabella()
+            self.label_totale.setText("Totale capi registrati: 0")
+            self.label_selected.setText("Nessun gruppo registrato.")
+            self._set_selection_controls_enabled(False)
+            if hasattr(self, 'btn_gestisci_singoli'):
+                self.btn_gestisci_singoli.setEnabled(False)
+            return
+
         for row_index, entry in enumerate(entries):
             entry_id = int(entry.get("id", 0) or 0)
             group_name = (entry.get("group_name") or "").strip() or f"Gruppo {entry_id}"
@@ -494,18 +596,18 @@ class AziendaAnimaliPage(QWidget):
                 ],
                 right_align_indexes=[5],
             )
+            # Forza l'altezza della riga per mantenerla compatta
+            self.table_animali.setRowHeight(row_index, 35)
+
+        self._adatta_altezza_tabella()
 
         self.label_totale.setText(f"Totale capi registrati: {format_number(totale_capi, 0)}")
-
-        if self.table_animali.rowCount() <= 0:
-            self.label_selected.setText("Nessun gruppo registrato.")
-            self._set_selection_controls_enabled(False)
-            return
 
         self.table_animali.selectRow(0)
         self._on_selection_changed()
 
     def aggiungi_animale(self):
+        import uuid # <--- Aggiunto per le stringhe univoche
         group_name = self.input_add_group_name.text().strip()
         if not group_name:
             QMessageBox.critical(self, "Errore", "Inserisci un nome gruppo.")
@@ -517,7 +619,7 @@ class AziendaAnimaliPage(QWidget):
             QMessageBox.critical(self, "Errore", "Seleziona un tipo animale valido.")
             return
 
-        capi = int(self.spin_add_capi.value() or 0)
+        capi = int(self.spin_capi_nuovo_gruppo.value() or 0)
         if capi <= 0:
             QMessageBox.critical(self, "Errore", "Numero capi non valido.")
             return
@@ -536,7 +638,7 @@ class AziendaAnimaliPage(QWidget):
             return
 
         try:
-            add_azienda_animale_entry(
+            nuovo_gruppo_id = add_azienda_animale_entry(
                 user_id=self.user_id,
                 tipo_animale=tipo_db,
                 capi=capi,
@@ -545,13 +647,26 @@ class AziendaAnimaliPage(QWidget):
                 group_name=group_name,
                 riproduzione=bool(self.check_add_riproduzione.isChecked()),
             )
+            
+            # --- AUTO TAGGING: Generazione dei singoli capi ---
+            from models import CapoAnimale, db
+            with db.atomic():
+                now_date = datetime.now().strftime("%Y-%m-%d")
+                capi_da_inserire = [{
+                    'user': self.user_id, 'gruppo': nuovo_gruppo_id, 
+                    'marca_auricolare': f"AUTO-{nuovo_gruppo_id}-{i+1}", 
+                    'data_ingresso': now_date
+                } for i in range(capi)]
+                CapoAnimale.insert_many(capi_da_inserire).execute()
+                
         except (Exception, ValueError) as exc:
             QMessageBox.critical(self, "Errore", str(exc))
             return
 
-        self.label_stato.setText("Animale registrato correttamente.")
+        self.label_stato.setText("Animale registrato correttamente e singoli capi auto-generati.")
         self.carica_report_animali(show_errors=False)
         self._reset_add_form()
+
 
     def rimuovi_capi_selezionati(self):
         entry = self._selected_entry()
@@ -562,8 +677,19 @@ class AziendaAnimaliPage(QWidget):
         entry_id = int(entry.get("id", 0) or 0)
         capi_da_rimuovere = int(self.spin_remove_capi.value() or 0)
 
+        # --- Finestra di selezione capi da eliminare ---
+        dialog = SelezioneCapiDaRimuovereDialog(self.user_id, entry_id, capi_da_rimuovere, self)
+        if dialog.exec() != QDialog.Accepted:
+            return # L'utente ha annullato
+            
+        capi_selezionati = dialog.capi_selezionati_ids
+
         try:
-            categoria_azzerata = remove_azienda_animale_capi(self.user_id, entry_id, capi_da_rimuovere)
+            with db.atomic():
+                # ELIMINAZIONE FISICA DEI CAPI SELEZIONATI
+                CapoAnimale.delete().where(CapoAnimale.id << capi_selezionati).execute()
+                # Riduciamo il contatore del gruppo
+                categoria_azzerata = remove_azienda_animale_capi(self.user_id, entry_id, capi_da_rimuovere)
         except (Exception, ValueError) as exc:
             QMessageBox.critical(self, "Errore", str(exc))
             return
@@ -572,12 +698,13 @@ class AziendaAnimaliPage(QWidget):
             self.label_stato.setText("Rimozione completata: categoria azzerata e rimossa.")
         else:
             self.label_stato.setText(
-                f"Rimozione completata: rimossi {format_number(capi_da_rimuovere, 0)} capi dal gruppo selezionato."
+                f"Rimozione completata: eliminati {format_number(capi_da_rimuovere, 0)} capi e i loro dati."
             )
 
         self.carica_report_animali(show_errors=False)
 
     def aggiungi_capi_selezionati(self):
+        import uuid # <--- Aggiunto per le stringhe univoche
         entry = self._selected_entry()
         if not entry:
             QMessageBox.warning(self, "Selezione richiesta", "Seleziona una categoria dal report animali.")
@@ -590,19 +717,24 @@ class AziendaAnimaliPage(QWidget):
 
         try:
             categoria_rimossa = set_azienda_animale_capi(self.user_id, entry_id, nuovo_capi)
+            
+            # --- AUTO TAGGING DEI NUOVI CAPI ---
+            from models import CapoAnimale, db
+            with db.atomic():
+                now_date = datetime.now().strftime("%Y-%m-%d")
+                capi_da_inserire = [{
+                    'user': self.user_id, 'gruppo': entry_id, 
+                    'marca_auricolare': f"AUTO-ADD-{uuid.uuid4().hex[:5].upper()}", 
+                    'data_ingresso': now_date
+                } for i in range(capi_da_aggiungere)]
+                CapoAnimale.insert_many(capi_da_inserire).execute()
+                
         except (Exception, ValueError) as exc:
             QMessageBox.critical(self, "Errore", str(exc))
             return
 
         group_name = (entry.get("group_name") or "").strip() or f"Gruppo {entry_id}"
-        if categoria_rimossa:
-            self.label_stato.setText(f"Categoria rimossa: {group_name} (nuovo valore 0).")
-        else:
-            self.label_stato.setText(
-                f"Aggiunta completata: {group_name} +{format_number(capi_da_aggiungere, 0)} capi "
-                f"(totale {format_number(nuovo_capi, 0)})."
-            )
-
+        self.label_stato.setText(f"Aggiunta completata: +{format_number(capi_da_aggiungere, 0)} capi (auto-generati).")
         self.carica_report_animali(show_errors=False)
 
     def rinomina_gruppo_selezionato(self):
@@ -694,17 +826,93 @@ class AziendaAnimaliPage(QWidget):
 
         entry_id = int(entry.get("id", 0) or 0)
         group_name = (entry.get("group_name") or "").strip() or f"Gruppo {entry_id}"
+        capi_attivi = int(entry.get("capi", 0) or 0)
 
-        conferma = QMessageBox.question(
-            self,
-            "Conferma rimozione",
-            f"Vuoi rimuovere tutta la categoria '{group_name}'?",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No,
-        )
-        if conferma != QMessageBox.Yes:
-            return
+        # SE IL GRUPPO CONTIENE ANIMALI
+        if capi_attivi > 0:
+            scelta = QMessageBox.question(
+                self,
+                "Gruppo non vuoto",
+                f"Il gruppo '{group_name}' contiene ancora {capi_attivi} capi attivi.\n"
+                "Vuoi spostare questi capi in un altro gruppo prima di eliminare?",
+                QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel,
+                QMessageBox.Yes
+            )
+            
+            if scelta == QMessageBox.Cancel:
+                return
+                
+            if scelta == QMessageBox.Yes:
+                # Cerca gruppi compatibili per lo spostamento
+                tipo_animale = entry.get("tipo_animale", "")
+                gruppi_compatibili = list(AziendaAnimaliDettaglio.select().where(
+                    (AziendaAnimaliDettaglio.user == self.user_id) &
+                    (AziendaAnimaliDettaglio.tipo_animale == tipo_animale) &
+                    (AziendaAnimaliDettaglio.id != entry_id)
+                ))
+                
+                if not gruppi_compatibili:
+                    QMessageBox.warning(self, "Nessun gruppo", "Non ci sono altri gruppi compatibili per questo tipo di animale.\nCrea prima un nuovo gruppo o procedi con l'eliminazione definitiva.")
+                    return
+                
+                # Finestra di dialogo rapida per la scelta del gruppo di destinazione
+                dialog = QDialog(self)
+                dialog.setWindowTitle("Seleziona gruppo di destinazione")
+                layout = QVBoxLayout(dialog)
+                layout.addWidget(QLabel("Seleziona in quale gruppo salvare i capi prima di eliminare:"))
+                combo = QComboBox()
+                for g in gruppi_compatibili:
+                    nome = g.group_name or f"Gruppo {g.id}"
+                    combo.addItem(f"{nome} ({g.finalita})", g.id)
+                layout.addWidget(combo)
+                
+                btn_box = QHBoxLayout()
+                btn_ok = QPushButton("Sposta ed Elimina Gruppo")
+                btn_ok.setStyleSheet("background-color: #e67e22; color: white; font-weight: bold; padding: 5px;")
+                btn_ok.clicked.connect(dialog.accept)
+                btn_annulla = QPushButton("Annulla")
+                btn_annulla.clicked.connect(dialog.reject)
+                btn_box.addWidget(btn_ok)
+                btn_box.addWidget(btn_annulla)
+                layout.addLayout(btn_box)
+                
+                if dialog.exec() == QDialog.Accepted:
+                    dest_id = combo.currentData()
+                    # Sposta tutti i capi attivi uno ad uno salvando i loro dati
+                    capi_da_spostare = CapoAnimale.select().where((CapoAnimale.gruppo == entry_id) & (CapoAnimale.stato == 'ATTIVO'))
+                    for capo in capi_da_spostare:
+                        sposta_capo_animale(self.user_id, capo.id, dest_id)
+                    
+                    # Ora che è vuoto, elimina il gruppo
+                    delete_azienda_animale_entry(self.user_id, entry_id)
+                    self.label_stato.setText(f"Capi messi in salvo ed eliminata categoria: {group_name}.")
+                    self.carica_report_animali(show_errors=False)
+                return
+            
+            elif scelta == QMessageBox.No:
+                # Vuole cancellare tutto senza salvare gli animali
+                conferma_finale = QMessageBox.question(
+                    self,
+                    "Conferma eliminazione definitiva",
+                    f"ATTENZIONE: Stai per eliminare IRRIMEDIABILMENTE il gruppo '{group_name}' "
+                    f"e tutti i {capi_attivi} capi al suo interno (inclusi i loro dati di latte, carne e costi).\n\nSei assolutamente sicuro di voler procedere?",
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.No
+                )
+                if conferma_finale != QMessageBox.Yes: return
+                
+        else:
+            # GRUPPO GIA' VUOTO, conferma semplice
+            conferma = QMessageBox.question(
+                self,
+                "Conferma rimozione",
+                f"Vuoi eliminare il gruppo vuoto '{group_name}'?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if conferma != QMessageBox.Yes: return
 
+        # Esecuzione eliminazione
         try:
             delete_azienda_animale_entry(self.user_id, entry_id)
         except (Exception, ValueError) as exc:
@@ -789,7 +997,7 @@ class AziendaAnimaliPage(QWidget):
 
         secondario = self._entries_by_id.get(entry_secondario_id)
         if not secondario:
-            QMessageBox.critical(self, "Errore", "Il gruppo secondario non e piu disponibile.")
+            QMessageBox.critical(self, "Errore", "Il gruppo secondario non è più disponibile.")
             return
 
         group_name_secondario = (secondario.get("group_name") or "").strip() or f"Gruppo {entry_secondario_id}"
@@ -841,3 +1049,294 @@ class AziendaAnimaliPage(QWidget):
             f"({format_number(capi_totali, 0)} capi), data unione {data_effettiva}."
         )
         self.carica_report_animali(show_errors=False)
+
+    # ----------------------------------------------------
+    # METODO APERTURA GESTIONE SINGOLI CAPI
+    # ----------------------------------------------------
+    def apri_gestione_singoli(self):
+        riga = self.table_animali.currentRow()
+        if riga < 0: 
+            return QMessageBox.warning(self, "Attenzione", "Seleziona un gruppo dalla tabella.")
+        
+        gruppo_id = int(self.table_animali.item(riga, 0).text())
+        nome_gruppo = self.table_animali.item(riga, 1).text()
+        
+        try:
+            dialog = GestioneCapiDialog(self.user_id, gruppo_id, nome_gruppo, self)
+            dialog.exec()
+            # Ricarica dopo la chiusura
+            self.carica_report_animali(show_errors=False)
+        except Exception as e:
+            import traceback
+            QMessageBox.critical(self, "Errore di Sistema", f"Impossibile aprire la finestra:\n{e}\n\n{traceback.format_exc()}")
+
+
+class SelezioneCapiDaRimuovereDialog(QDialog):
+    def __init__(self, user_id, gruppo_id, capi_da_rimuovere, parent=None):
+        super().__init__(parent)
+        self.user_id = user_id
+        self.gruppo_id = gruppo_id
+        self.capi_da_rimuovere = capi_da_rimuovere
+        self.capi_selezionati_ids = []
+        
+        self.setWindowTitle(f"Seleziona i {capi_da_rimuovere} capi da eliminare")
+        self.resize(500, 600)
+        self.setModal(True)
+        self._build_ui()
+        self.carica_capi()
+
+    def _build_ui(self):
+        layout = QVBoxLayout(self)
+        info = QLabel(
+            f"Hai indicato la rimozione di <b>{self.capi_da_rimuovere} capi</b>.<br>"
+            "Seleziona esattamente quali animali eliminare.<br><br>"
+            "<b style='color:#dc3545;'>ATTENZIONE: L'eliminazione cancellerà "
+            "irrimediabilmente tutti i dati produttivi e finanziari di questi animali!</b>"
+        )
+        info.setWordWrap(True)
+        layout.addWidget(info)
+        
+        self.list_capi = QListWidget()
+        self.list_capi.setSelectionMode(QAbstractItemView.MultiSelection)
+        self.list_capi.itemSelectionChanged.connect(self._on_selection)
+        layout.addWidget(self.list_capi)
+        
+        self.btn_conferma = QPushButton(f"Conferma Eliminazione Definitiva (0/{self.capi_da_rimuovere})")
+        self.btn_conferma.setStyleSheet("background-color: #dc3545; color: white; font-weight: bold; padding: 10px;")
+        self.btn_conferma.setEnabled(False)
+        self.btn_conferma.clicked.connect(self._conferma)
+        layout.addWidget(self.btn_conferma)
+
+    def carica_capi(self):
+        from models import CapoAnimale
+        capi = CapoAnimale.select().where((CapoAnimale.gruppo == self.gruppo_id) & (CapoAnimale.stato == 'ATTIVO'))
+        for capo in capi:
+            item = QListWidgetItem(f"ID: {capo.marca_auricolare}")
+            item.setData(Qt.UserRole, capo.id)
+            self.list_capi.addItem(item)
+
+    def _on_selection(self):
+        count = len(self.list_capi.selectedItems())
+        self.btn_conferma.setText(f"Conferma Eliminazione Definitiva ({count}/{self.capi_da_rimuovere})")
+        self.btn_conferma.setEnabled(count == self.capi_da_rimuovere)
+
+    def _conferma(self):
+        self.capi_selezionati_ids = [item.data(Qt.UserRole) for item in self.list_capi.selectedItems()]
+        self.accept()
+
+# ==========================================================
+# CLASSE DIALOGO PER GESTIONE SINGOLI CAPI (CON SPOSTAMENTO)
+# ==========================================================
+
+class GestioneCapiDialog(QDialog):
+    def __init__(self, user_id, gruppo_id, nome_gruppo, parent=None):
+        super().__init__(parent)
+        self.user_id = user_id
+        self.gruppo_id = gruppo_id
+        self.setWindowTitle(f"Gestione Capi: {nome_gruppo}")
+        self.resize(700, 550)
+        self.setModal(True)
+        
+        self._build_ui()
+        self.carica_capi()
+        self.carica_gruppi_destinazione()
+
+    def _build_ui(self):
+        layout = QVBoxLayout(self)
+        
+        row_inserimento = QHBoxLayout()
+        self.input_marca = QLineEdit(self)
+        self.input_marca.setPlaceholderText("Marca Auricolare (es. IT00123...)")
+        row_inserimento.addWidget(self.input_marca)
+        
+        btn_aggiungi = QPushButton("➕ Aggiungi Singolo")
+        btn_aggiungi.setStyleSheet("background-color: #27ae60; color: white; font-weight: bold;")
+        btn_aggiungi.clicked.connect(self.aggiungi_capo_singolo)
+        row_inserimento.addWidget(btn_aggiungi)
+        
+        btn_importa = QPushButton("📄 Importa da TXT")
+        btn_importa.setStyleSheet("background-color: #3498db; color: white; font-weight: bold;")
+        btn_importa.clicked.connect(self.importa_da_txt)
+        row_inserimento.addWidget(btn_importa)
+        layout.addLayout(row_inserimento)
+        
+        self.table_capi = QTableWidget(0, 6)
+        self.table_capi.setHorizontalHeaderLabels(["ID (Marca)", "Stato", "Data Ingresso", "Media Latte", "Costi", "Ricavi"])
+        self.table_capi.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        self.table_capi.setSelectionBehavior(QTableWidget.SelectRows)
+        self.table_capi.setSelectionMode(QAbstractItemView.ExtendedSelection) # <-- ABILITA MULTISELEZIONE
+        self.table_capi.setAlternatingRowColors(True)
+        layout.addWidget(self.table_capi)
+        
+        row_azioni = QHBoxLayout()
+        row_azioni.addWidget(QLabel("Imposta stato capo/i selezionato/i:"))
+        self.combo_stati = QComboBox()
+        self.combo_stati.addItems(['ATTIVO', 'VENDUTO_VIVO', 'VENDUTO_CARNE', 'DECEDUTO'])
+        row_azioni.addWidget(self.combo_stati)
+        
+        btn_aggiorna_stato = QPushButton("Aggiorna Stato")
+        btn_aggiorna_stato.clicked.connect(self.aggiorna_stato_capo)
+        row_azioni.addWidget(btn_aggiorna_stato)
+        layout.addLayout(row_azioni)
+        
+        row_sposta = QHBoxLayout()
+        row_sposta.addWidget(QLabel("Sposta capo/i in:"))
+        self.combo_destinazione = QComboBox()
+        row_sposta.addWidget(self.combo_destinazione, stretch=1)
+        
+        btn_sposta = QPushButton("➡️ Sposta")
+        btn_sposta.setStyleSheet("background-color: #e67e22; color: white; font-weight: bold;")
+        btn_sposta.clicked.connect(self.esegui_spostamento)
+        row_sposta.addWidget(btn_sposta)
+        layout.addLayout(row_sposta)
+
+
+    def carica_gruppi_destinazione(self):
+        gruppo_attuale = AziendaAnimaliDettaglio.get_or_none(id=self.gruppo_id)
+        if not gruppo_attuale: return
+        
+        # Carica solo i gruppi dello STESSO TIPO animale ed escludi quello corrente
+        gruppi = list(AziendaAnimaliDettaglio.select().where(
+            (AziendaAnimaliDettaglio.user == self.user_id) &
+            (AziendaAnimaliDettaglio.tipo_animale == gruppo_attuale.tipo_animale) &
+            (AziendaAnimaliDettaglio.id != self.gruppo_id)
+        ).order_by(AziendaAnimaliDettaglio.group_name))
+        
+        self.combo_destinazione.clear()
+        for g in gruppi:
+            nome = g.group_name or f"Gruppo {g.id}"
+            self.combo_destinazione.addItem(f"{nome} ({g.finalita})", g.id)
+
+    def carica_capi(self):
+        self.table_capi.setRowCount(0)
+        capi = list(CapoAnimale.select().where(
+            (CapoAnimale.gruppo == self.gruppo_id) & (CapoAnimale.user == self.user_id)
+        ).order_by(CapoAnimale.stato, CapoAnimale.id.desc()))
+        
+        for row_idx, capo in enumerate(capi):
+            self.table_capi.insertRow(row_idx)
+            
+            item_marca = QTableWidgetItem(capo.marca_auricolare)
+            item_marca.setData(Qt.UserRole, capo.id) 
+            self.table_capi.setItem(row_idx, 0, item_marca)
+            self.table_capi.setItem(row_idx, 1, QTableWidgetItem(capo.stato))
+            self.table_capi.setItem(row_idx, 2, QTableWidgetItem(capo.data_ingresso or "-"))
+            
+            if capo.stato != 'ATTIVO':
+                from PySide6.QtGui import QColor
+                for col in range(3):
+                    self.table_capi.item(row_idx, col).setForeground(QColor("#7f8c8d"))
+
+    def aggiungi_capo_singolo(self):
+        marca = self.input_marca.text().strip().upper()
+        if not marca: return
+        try:
+            CapoAnimale.create(
+                user=self.user_id, gruppo=self.gruppo_id, marca_auricolare=marca,
+                data_ingresso=datetime.now().strftime("%Y-%m-%d")
+            )
+            self.input_marca.clear()
+            self.carica_capi()
+        except Exception as e:
+            QMessageBox.critical(self, "Errore", f"Impossibile salvare: {e}")
+
+    def importa_da_txt(self):
+        file_path, _ = QFileDialog.getOpenFileName(self, "Seleziona file TXT", "", "Testo (*.txt)")
+        if not file_path: return
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                lines = f.readlines()
+            marche = [line.strip().upper() for line in lines if line.strip()]
+            if not marche: return QMessageBox.warning(self, "Attenzione", "Il file è vuoto.")
+            
+            data_oggi = datetime.now().strftime("%Y-%m-%d")
+            with db.atomic():
+                dati_da_inserire = [{'user': self.user_id, 'gruppo': self.gruppo_id, 'marca_auricolare': m, 'data_ingresso': data_oggi} for m in set(marche)]
+                for idx in range(0, len(dati_da_inserire), 100):
+                    CapoAnimale.insert_many(dati_da_inserire[idx:idx+100]).execute()
+            
+            QMessageBox.information(self, "Successo", f"Importati {len(dati_da_inserire)} capi con successo!")
+            self.carica_capi()
+        except Exception as e:
+            QMessageBox.critical(self, "Errore", f"Impossibile importare: {e}")
+
+    def aggiorna_stato_capo(self):
+        selected_items = self.table_capi.selectedItems()
+        if not selected_items: return QMessageBox.warning(self, "Attenzione", "Seleziona uno o più capi dalla tabella.")
+        
+        selected_rows = set(item.row() for item in selected_items)
+        nuovo_stato = self.combo_stati.currentText()
+        
+        # Capiamo in quale archivio mandarlo
+        dest_id = None
+        if nuovo_stato in ['VENDUTO_VIVO', 'VENDUTO_CARNE']:
+            dest_id = self.parent().archivio_venduti_id
+        elif nuovo_stato == 'DECEDUTO':
+            dest_id = self.parent().archivio_deceduti_id
+
+        try:
+            successi = 0
+            with db.atomic():
+                for riga in selected_rows:
+                    capo_id = self.table_capi.item(riga, 0).data(Qt.UserRole)
+                    capo = CapoAnimale.get_by_id(capo_id)
+                    
+                    if capo.stato != nuovo_stato:
+                        capo.stato = nuovo_stato
+                        capo.data_uscita = datetime.now().strftime("%Y-%m-%d") if nuovo_stato != 'ATTIVO' else None
+                        capo.save()
+                        
+                        # Magia: Se è venduto o deceduto, lo teletrasportiamo nell'archivio protetto!
+                        if dest_id and capo.gruppo_id != dest_id:
+                            from database import sposta_capo_animale
+                            sposta_capo_animale(self.user_id, capo.id, dest_id)
+                        successi += 1
+                        
+            self.carica_capi()
+            if hasattr(self.parent(), 'carica_report_animali'):
+                self.parent().carica_report_animali(show_errors=False)
+                
+            QMessageBox.information(self, "Successo", f"Stato aggiornato per {successi} capi.\nGli animali non attivi sono stati trasferiti in Archivio.")
+        except Exception as e:
+            QMessageBox.critical(self, "Errore", f"Aggiornamento fallito: {e}")
+            
+
+    def esegui_spostamento(self):
+        selected_items = self.table_capi.selectedItems()
+        if not selected_items: return QMessageBox.warning(self, "Attenzione", "Seleziona uno o più capi dalla tabella da spostare.")
+        
+        selected_rows = set(item.row() for item in selected_items)
+        destinazione_id = self.combo_destinazione.currentData()
+        if not destinazione_id:
+            return QMessageBox.warning(self, "Attenzione", "Non ci sono altri gruppi compatibili in cui spostare i capi.")
+            
+        conferma = QMessageBox.question(self, "Conferma Spostamento", f"Vuoi spostare i {len(selected_rows)} capi selezionati nel gruppo di destinazione?", QMessageBox.Yes | QMessageBox.No)
+        if conferma != QMessageBox.Yes: return
+        
+        try:
+            successi = 0
+            for riga in selected_rows:
+                capo_id = self.table_capi.item(riga, 0).data(Qt.UserRole)
+                successo = sposta_capo_animale(self.user_id, capo_id, destinazione_id)
+                if successo: successi += 1
+                
+            QMessageBox.information(self, "Successo", f"{successi} animali spostati correttamente!")
+            self.carica_capi() 
+            
+            # --- NUOVO: CONTROLLO GRUPPO VUOTO DOPO LO SPOSTAMENTO ---
+            from models import CapoAnimale
+            rimasti = CapoAnimale.select().where((CapoAnimale.gruppo == self.gruppo_id) & (CapoAnimale.stato == 'ATTIVO')).count()
+            if rimasti == 0:
+                chiedi_elimina = QMessageBox.question(
+                    self, 
+                    "Gruppo vuoto", 
+                    "Hai spostato tutti i capi e questo gruppo è ora vuoto.\nVuoi eliminarlo definitivamente per mantenere ordine?", 
+                    QMessageBox.Yes | QMessageBox.No
+                )
+                if chiedi_elimina == QMessageBox.Yes:
+                    from database import delete_azienda_animale_entry
+                    delete_azienda_animale_entry(self.user_id, self.gruppo_id)
+                    self.accept() # Chiude automaticamente la finestra
+
+        except Exception as e:
+            QMessageBox.critical(self, "Errore", f"Spostamento fallito: {e}")

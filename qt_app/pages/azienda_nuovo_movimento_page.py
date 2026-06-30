@@ -497,7 +497,8 @@ class AziendaNuovoMovimentoPage(QWidget):
                     if not testo_gruppi or testo_gruppi in ("-", "Tutti i gruppi"):
                         for entry in entries:
                             entry_id = int(entry.get("id", 0) or 0)
-                            if entry_id > 0: matched_ids.append(entry_id)
+                            tipo_db = (entry.get("tipo_animale") or "").strip().upper()
+                            if entry_id > 0 and tipo_db != 'ARCHIVIO': matched_ids.append(entry_id)
                     else:
                         for entry in entries:
                             label = self._label_gruppo_animale_movimento(entry)
@@ -1238,6 +1239,11 @@ class AziendaNuovoMovimentoPage(QWidget):
 
                 if movimento_id > 0:
                     set_movimento_animali_links(self.user_id, movimento_id, selected_gruppi_ids)
+                    
+                    # --- NUOVA LOGICA: ALLOCAZIONE COSTI SUI SINGOLI CAPI ---
+                    if tipo_value == 'USCITA' and selected_gruppi_ids:
+                        from database import alloca_costi_a_capi
+                        alloca_costi_a_capi(self.user_id, selected_gruppi_ids, importo_val)
 
                 if self.pending_fattura_movimento_id is not None and movimento_id > 0:
                     Fattura.update(movimento=movimento_id).where((Fattura.id == self.pending_fattura_movimento_id) & (Fattura.user == self.user_id)).execute()
@@ -1279,7 +1285,8 @@ class AziendaNuovoMovimentoPage(QWidget):
                 entries = list_azienda_animali_entries(self.user_id)
                 for entry in entries:
                     entry_id = int(entry.get("id", 0) or 0)
-                    if entry_id > 0:
+                    tipo_db = (entry.get("tipo_animale") or "").strip().upper()
+                    if entry_id > 0 and tipo_db != 'ARCHIVIO':
                         combo_gruppi.addItem(self._label_gruppo_animale_movimento(entry), data=entry_id)
             except Exception: pass
             

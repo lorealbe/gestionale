@@ -12,7 +12,7 @@ from models import (
     AziendaAnimaliNasciteMedia, Movimento, MovimentiAnimaliLink,
     ProduzioneLatte, ProduzioneLatteGruppi, ProduzioneCarne, Fattura,
     Macchinario, ManutenzioneMacchinario, CampoAgricolo, StoricoColtura,
-    EconomiaColtura, RegistroMeteo
+    EconomiaColtura, RegistroMeteo, CapoAnimale
 )
 from services.product_parser_utils import build_basic_product_storage_line, serialize_product_storage_lines
 
@@ -175,10 +175,7 @@ def list_azienda_animali_entries(user_id: int, include_merged: bool = False) -> 
     # Ordinamento pythonico (più veloce di clausole ORDER BY complesse con COALESCE)
     return sorted(entries, key=lambda x: (x['group_name'].lower(), x['tipo_animale'], x['id']))
 
-def add_azienda_animale_entry(
-    user_id: int, tipo_animale: str, capi: int, finalita: str = "", 
-    altro_label: str = "", group_name: str = "", riproduzione: bool = False, cursor=None
-):
+def add_azienda_animale_entry( user_id: int, tipo_animale: str, capi: int, finalita: str = "", altro_label: str = "", group_name: str = "", riproduzione: bool = False, cursor=None ):
     tipo = _normalize_tipo_animale(tipo_animale)
     if tipo not in ANIMAL_TYPE_OPTIONS: raise ValueError("Tipo animale non valido.")
     
@@ -188,28 +185,19 @@ def add_azienda_animale_entry(
     finalita_norm = _normalize_finalita_animale(finalita)
     altro_clean = (altro_label or "").strip()
     group_name_clean = (group_name or "").strip() or _default_group_name(tipo, finalita_norm, altro_clean)
-    now_text = datetime.now().isoformat(timespec="seconds")
+    now = datetime.now().isoformat(timespec="seconds")
     
-    with db.atomic(): # Garantisce che salvataggio e log avvengano assieme
-        entry, created = AziendaAnimaliDettaglio.get_or_create(
-            user=user_id, tipo_animale=tipo, finalita=finalita_norm, altro_label=altro_clean, group_name=group_name_clean,
-            defaults={'capi': capi_value, 'riproduzione': _to_bool_int(riproduzione), 'created_at': now_text, 'updated_at': now_text}
+    with db.atomic():
+        # 1. Crea il gruppo fisico
+        gruppo = AziendaAnimaliDettaglio.create(
+            user=user_id, tipo_animale=tipo_animale, capi=capi, finalita=finalita,
+            altro_label=altro_label, group_name=group_name, riproduzione=riproduzione,
+            created_at=now, updated_at=now
         )
-        
-        capi_prima = 0 if created else entry.capi
-        if not created:
-            entry.capi += capi_value
-            entry.riproduzione = entry.riproduzione or _to_bool_int(riproduzione)
-            entry.updated_at = now_text
-            entry.save()
-            
-        note = "Creato nuovo gruppo." if created else "Aggiunti capi al gruppo."
-        _log_azienda_animali_storico(
-            None, user_id=user_id, event_type="AGGIUNTA_CAPI", event_time=now_text,
-            gruppo_entry_id=entry.id, gruppo_nome=group_name_clean, tipo_animale=tipo,
-            finalita=finalita_norm, capi_prima=capi_prima, capi_variazione=capi_value,
-            capi_dopo=entry.capi, note=note
-        )
+
+        _log_azienda_animali_storico(None, user_id, "NUOVO_GRUPPO", now, gruppo.id, group_name, tipo_animale, finalita, 0, capi, capi, None, None)
+        return gruppo.id
+
 
 def remove_azienda_animale_capi(user_id: int, entry_id: int, capi_da_rimuovere: int, cursor=None) -> bool:
     entry_id_value = _to_non_negative_int(entry_id)
@@ -252,18 +240,33 @@ def remove_azienda_animale_capi(user_id: int, entry_id: int, capi_da_rimuovere: 
         return False
 
 def set_azienda_animale_capi(user_id: int, entry_id: int, nuovo_capi: int) -> bool:
-    # Metodo ultra-efficiente: usiamo la logica già scritta per aggiungere o rimuovere la differenza
-    entry = AziendaAnimaliDettaglio.get_or_none(id=_to_non_negative_int(entry_id), user=user_id)
-    if not entry: raise ValueError("Categoria animale non trovata.")
-    
-    nuovo_capi_value = _to_non_negative_int(nuovo_capi)
-    if nuovo_capi_value == entry.capi: return False
-    
-    if nuovo_capi_value > entry.capi:
-        add_azienda_animale_entry(user_id, entry.tipo_animale, nuovo_capi_value - entry.capi, entry.finalita, entry.altro_label, entry.group_name, entry.riproduzione)
-        return False
-    else:
-        return remove_azienda_animale_capi(user_id, entry.id, entry.capi - nuovo_capi_value)
+    now = datetime.now().isoformat(timespec="seconds")
+    with db.atomic():
+        entry = AziendaAnimaliDettaglio.get_or_none(id=_to_non_negative_int(entry_id), user=user_id)
+        if not entry: raise ValueError("Categoria animale non trovata.")
+        
+        nuovo_capi_value = _to_non_negative_int(nuovo_capi)
+        if nuovo_capi_value == entry.capi: return False
+        
+        if nuovo_capi_value > entry.capi:
+            # Aggiunta di nuovi capi a un gruppo già ESISTENTE
+            capi_aggiunti = nuovo_capi_value - entry.capi
+            capi_prima = entry.capi
+            
+            entry.capi = nuovo_capi_value
+            entry.updated_at = now
+            entry.save()
+            
+            _log_azienda_animali_storico(
+                None, user_id=user_id, event_type="AGGIUNTA_CAPI", event_time=now,
+                gruppo_entry_id=entry.id, gruppo_nome=entry.group_name, tipo_animale=entry.tipo_animale,
+                finalita=entry.finalita, capi_prima=capi_prima, capi_variazione=capi_aggiunti,
+                capi_dopo=nuovo_capi_value, note="Aggiunti capi al gruppo esistente."
+            )
+            return False
+        else:
+            # Rimozione capi
+            return remove_azienda_animale_capi(user_id, entry.id, entry.capi - nuovo_capi_value)
     
 def set_azienda_animale_finalita(user_id: int, entry_id: int, nuova_finalita: str) -> bool:
     finalita_norm = _normalize_finalita_animale(nuova_finalita)
@@ -969,3 +972,71 @@ def update_manutenzione_macchinario_entry(
         )
 
         return int(c.rowcount or 0) > 0
+    
+def sposta_capo_animale(user_id: int, capo_id: int, nuovo_gruppo_id: int) -> bool:
+    now = datetime.now().isoformat(timespec="seconds")
+    with db.atomic():
+        # 1. Recupera il singolo animale
+        capo = CapoAnimale.get_or_none(id=capo_id, user=user_id)
+        if not capo: 
+            raise ValueError("Capo animale non trovato.")
+        
+        vecchio_gruppo_id = capo.gruppo_id
+        if vecchio_gruppo_id == nuovo_gruppo_id:
+            return False # Stesso gruppo, nessuna azione necessaria
+            
+        # 2. Recupera i due gruppi (Origine e Destinazione)
+        gruppo_old = AziendaAnimaliDettaglio.get_or_none(id=vecchio_gruppo_id, user=user_id)
+        gruppo_new = AziendaAnimaliDettaglio.get_or_none(id=nuovo_gruppo_id, user=user_id)
+        
+        if not gruppo_old or not gruppo_new:
+            raise ValueError("Gruppo di origine o destinazione non valido.")
+            
+        # 3. Sposta fisicamente l'animale
+        capo.gruppo = gruppo_new.id
+        capo.save()
+        
+        # 4. Aggiorna i contatori dei due gruppi
+        gruppo_old.capi -= 1
+        gruppo_old.updated_at = now
+        gruppo_old.save()
+        
+        gruppo_new.capi += 1
+        gruppo_new.updated_at = now
+        gruppo_new.save()
+        
+        # 5. Registra la tracciabilità perfetta nello Storico Eventi
+        _log_azienda_animali_storico(
+            None, user_id, "SPOSTAMENTO_USCITA", now, 
+            gruppo_old.id, gruppo_old.group_name, gruppo_old.tipo_animale, gruppo_old.finalita, 
+            gruppo_old.capi + 1, -1, gruppo_old.capi, 
+            gruppo_new.id, gruppo_new.group_name, 
+            note=f"Spostato capo {capo.marca_auricolare} verso {gruppo_new.group_name}"
+        )
+        
+        _log_azienda_animali_storico(
+            None, user_id, "SPOSTAMENTO_INGRESSO", now, 
+            gruppo_new.id, gruppo_new.group_name, gruppo_new.tipo_animale, gruppo_new.finalita, 
+            gruppo_new.capi - 1, 1, gruppo_new.capi, 
+            gruppo_old.id, gruppo_old.group_name, 
+            note=f"Ingresso capo {capo.marca_auricolare} proveniente da {gruppo_old.group_name}"
+        )
+        
+        return True
+
+def alloca_costi_a_capi(user_id: int, gruppo_ids: list, costo_totale: float):
+    """Spalma un costo (es. fattura mangime) su tutti i capi attivi dei gruppi selezionati"""
+    with db.atomic():
+        from models import CapoAnimale
+        # Prende tutti gli animali vivi che appartengono ai gruppi selezionati
+        capi_attivi = list(CapoAnimale.select().where((CapoAnimale.gruppo << gruppo_ids) & (CapoAnimale.stato == 'ATTIVO')))
+        if not capi_attivi: return
+        
+        # Divide il costo per il numero di animali trovati
+        costo_pro_capite = costo_totale / len(capi_attivi)
+        
+        # Aggiunge il costo allo "zainetto" di ogni singolo animale
+        for capo in capi_attivi:
+            costo_attuale = getattr(capo, 'costi_accumulati', 0.0) or 0.0
+            capo.costi_accumulati = costo_attuale + costo_pro_capite
+            capo.save()

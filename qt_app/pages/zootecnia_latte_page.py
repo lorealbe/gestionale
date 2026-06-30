@@ -45,6 +45,12 @@ class ZootecniaLattePage(ZootecniaParserSupport, QWidget):
 
     _UNITA_QTA_LATTE = ("Quintali", "Litri")
     _UNITA_PREZZO_LATTE = ("EUR/Litro", "EUR/Quintale")
+    _PARSER_DB_FIELDS = (
+        "invoice_number", "invoice_date", "due_date", "supplier_name",
+        "supplier_vat", "customer_name", "customer_vat", "total_amount",
+        "taxable_total", "vat_total", "payment_terms", "warnings",
+        "products", "fields_view",
+    )
 
     def __init__(self, user_id: int, parent=None):
         super().__init__(parent)
@@ -878,7 +884,7 @@ class ZootecniaLattePage(ZootecniaParserSupport, QWidget):
                 importo_movimento = max(parser_total - iva_importo_movimento, 0.0)
 
         try:
-            with db.atomic(): # TRANSAZIONE PEEWEE INDISTRUTTIBILE
+            with db.atomic(): 
                 if self.produzione_in_modifica_id is None:
                     mov = Movimento.create(
                         user=self.user_id, data_op=data_db, tipo='ENTRATA', categoria='Latte',
@@ -906,8 +912,36 @@ class ZootecniaLattePage(ZootecniaParserSupport, QWidget):
                 if movimento_id > 0: set_movimento_animali_links(self.user_id, movimento_id, gruppi_ids)
                 if self.pending_fattura_latte_id is not None and movimento_id > 0:
                     Fattura.update(movimento=movimento_id, produzione=produzione_id).where(Fattura.id == self.pending_fattura_latte_id).execute()
+                
                 if produzione_id is not None:
                     set_produzione_latte_group_allocations(self.user_id, produzione_id, movimento_id, quote_litri_gruppi)
+                    
+                    # --- NUOVA LOGICA: AGGIORNAMENTO MEDIA MOBILE SUI SINGOLI CAPI ---
+                    from models import CapoAnimale
+                    quote_finali = dict(quote_litri_gruppi) if quote_litri_gruppi else {}
+                    if not quote_finali:
+                        capi_attivi_totali = CapoAnimale.select().where((CapoAnimale.gruppo << gruppi_ids) & (CapoAnimale.stato == 'ATTIVO')).count()
+                        if capi_attivi_totali > 0:
+                            litri_per_capo_globale = litri_val / capi_attivi_totali
+                            for g_id in gruppi_ids:
+                                capi_gruppo = CapoAnimale.select().where((CapoAnimale.gruppo == g_id) & (CapoAnimale.stato == 'ATTIVO')).count()
+                                quote_finali[g_id] = litri_per_capo_globale * capi_gruppo
+                    
+                    for g_id, litri_g in quote_finali.items():
+                        capi_del_gruppo = list(CapoAnimale.select().where((CapoAnimale.gruppo == g_id) & (CapoAnimale.stato == 'ATTIVO')))
+                        if not capi_del_gruppo: continue
+                        
+                        media_giornaliera = litri_g / len(capi_del_gruppo)
+                        ricavo_giornaliero = (litri_g * prezzo_val) / len(capi_del_gruppo)
+                        
+                        for capo in capi_del_gruppo:
+                            vecchia_media = getattr(capo, 'media_litri_latte', 0.0) or 0.0
+                            giorni = getattr(capo, 'giorni_produzione_latte', 0) or 0
+                            capo.media_litri_latte = ((vecchia_media * giorni) + media_giornaliera) / (giorni + 1)
+                            capo.giorni_produzione_latte = giorni + 1
+                            capo.ricavi_accumulati = (getattr(capo, 'ricavi_accumulati', 0.0) or 0.0) + ricavo_giornaliero
+                            capo.save()
+
         except Exception as exc:
             return QMessageBox.critical(self, "Errore DB", f"Errore database: {exc}")
 
@@ -916,7 +950,6 @@ class ZootecniaLattePage(ZootecniaParserSupport, QWidget):
         self.carica_produzioni_latte(show_errors=False)
         self.produzione_changed.emit()
         QMessageBox.information(self, "Successo", f"{msg_ok} ({format_number(quintali_val, 2)} q)!")
-
 
     def carica_produzioni_latte(self, show_errors=True):
         self.table_produzione.setRowCount(0)

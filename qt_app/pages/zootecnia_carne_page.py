@@ -24,7 +24,8 @@ from PySide6.QtWidgets import (
     QTableWidgetItem,
     QVBoxLayout,
     QWidget,
-    QSplitter
+    QSplitter,
+    QDialog
 )
 
 from models import db, ProduzioneLatte, ProduzioneCarne, Movimento, Fattura
@@ -44,6 +45,12 @@ class ZootecniaCarnePage(ZootecniaParserSupport, QWidget):
     KG_PER_QUINTALE = 100.0
     _UNITA_QTA = ("Kg", "Quintali")
     _UNITA_PREZZO = ("EUR/Kg", "EUR/Quintale")
+    _PARSER_DB_FIELDS = (
+        "invoice_number", "invoice_date", "due_date", "supplier_name",
+        "supplier_vat", "customer_name", "customer_vat", "total_amount",
+        "taxable_total", "vat_total", "payment_terms", "warnings",
+        "products", "fields_view",
+    )
 
     def __init__(self, user_id: int, parent=None):
         super().__init__(parent)
@@ -777,17 +784,45 @@ class ZootecniaCarnePage(ZootecniaParserSupport, QWidget):
         if gruppi_info is None: return
         gruppi_ids = gruppi_info["entry_ids"]
 
-        rimozione_info = self._valida_rimozione_capi_carne(gruppi_info)
-        if rimozione_info is None: return
-        rimozione_attiva = bool(rimozione_info.get("attiva"))
-        capi_da_rimuovere = int(rimozione_info.get("totale") or 0)
+        in_modifica = self.produzione_carne_in_modifica_id is not None
+        rimozione_attiva = bool(self.check_rimuovi_capi.isChecked()) and not in_modifica
+        capi_da_rimuovere = 0
+        capi_selezionati = []
+
+        if rimozione_attiva and capi_selezionati:
+                    from models import CapoAnimale, AziendaAnimaliDettaglio
+                    from database import sposta_capo_animale # <-- IMPORT AGGIUNTO
+                    kg_pro_capite = kg_val / capi_da_rimuovere
+                    ricavo_pro_capite = importo_movimento / capi_da_rimuovere
+                    
+                    # Troviamo l'archivio
+                    archivio_venduti = AziendaAnimaliDettaglio.get_or_none((AziendaAnimaliDettaglio.user == self.user_id) & (AziendaAnimaliDettaglio.tipo_animale == 'ARCHIVIO') & (AziendaAnimaliDettaglio.finalita == 'VENDUTI'))
+                    
+                    for capo_id in capi_selezionati:
+                        capo = CapoAnimale.get_by_id(capo_id)
+                        capo.stato = 'VENDUTO_CARNE'
+                        capo.data_uscita = data_db
+                        capo.kg_carne_prodotti = kg_pro_capite
+                        capo.ricavi_accumulati = (getattr(capo, 'ricavi_accumulati', 0.0) or 0.0) + ricavo_pro_capite
+                        capo.save()
+                        
+                        # Trasferimento istantaneo in archivio
+                        if archivio_venduti:
+                            sposta_capo_animale(self.user_id, capo.id, archivio_venduti.id)
+                        else:
+                            # Fallback di sicurezza
+                            gruppo = AziendaAnimaliDettaglio.get_by_id(capo.gruppo_id)
+                            gruppo.capi -= 1
+                            gruppo.save()
+                        
+                        rimozioni_effettuate.append(capo.marca_auricolare)
 
         quintali_val = kg_val / self.KG_PER_QUINTALE
         importo_movimento = kg_val * prezzo_kg_val
         iva_importo_movimento = 0.0
         descrizione_mov = f"Produzione carne: {format_number(kg_val, 2)} Kg ({format_number(quintali_val, 2)} q) x {format_eur(prezzo_kg_val, 4)}/Kg"
         if gruppi_ids: descrizione_mov += f" | Gruppi: {', '.join(gruppi_info['group_names'])}"
-        if rimozione_attiva and capi_da_rimuovere > 0: descrizione_mov += f" | Capi rimossi: {format_number(capi_da_rimuovere, 0)}"
+        if rimozione_attiva and capi_da_rimuovere > 0: descrizione_mov += f" | Capi macellati: {format_number(capi_da_rimuovere, 0)}"
 
         parser_data = self.pending_parser_carne_data if isinstance(self.pending_parser_carne_data, dict) else None
         parser_values = self._estrai_valori_parser_db(parser_data)
@@ -802,7 +837,7 @@ class ZootecniaCarnePage(ZootecniaParserSupport, QWidget):
 
         rimozioni_effettuate = []
         try:
-            with db.atomic(): # TRANSAZIONE PEEWEE
+            with db.atomic(): 
                 if self.produzione_carne_in_modifica_id is None:
                     mov = Movimento.create(
                         user=self.user_id, data_op=data_db, tipo='ENTRATA', categoria='Carne',
@@ -829,14 +864,26 @@ class ZootecniaCarnePage(ZootecniaParserSupport, QWidget):
 
                 if movimento_id > 0: set_movimento_animali_links(self.user_id, movimento_id, gruppi_ids)
 
-                if self.produzione_carne_in_modifica_id is None and rimozione_attiva:
-                    piano_rimozione = rimozione_info.get("piano") or {}
-                    entries_by_id = gruppi_info.get("entries_by_id") or {}
-                    for entry_id in gruppi_ids:
-                        capi_rimossi = int(piano_rimozione.get(entry_id) or 0)
-                        if capi_rimossi <= 0: continue
-                        remove_azienda_animale_capi(self.user_id, entry_id, capi_rimossi)
-                        rimozioni_effettuate.append(f"{(entries_by_id.get(entry_id, {}).get('group_name') or '').strip() or f'Gruppo {entry_id}'}: -{format_number(capi_rimossi, 0)} capi")
+                # --- NUOVA LOGICA: Assegna la vendita ai singoli capi scelti ---
+                if rimozione_attiva and capi_selezionati:
+                    from models import CapoAnimale, AziendaAnimaliDettaglio
+                    kg_pro_capite = kg_val / capi_da_rimuovere
+                    ricavo_pro_capite = importo_movimento / capi_da_rimuovere
+                    
+                    for capo_id in capi_selezionati:
+                        capo = CapoAnimale.get_by_id(capo_id)
+                        capo.stato = 'VENDUTO_CARNE'
+                        capo.data_uscita = data_db
+                        capo.kg_carne_prodotti = kg_pro_capite
+                        capo.ricavi_accumulati = (getattr(capo, 'ricavi_accumulati', 0.0) or 0.0) + ricavo_pro_capite
+                        capo.save()
+                        
+                        # Aggiorniamo il conteggio del suo gruppo
+                        gruppo = AziendaAnimaliDettaglio.get_by_id(capo.gruppo_id)
+                        gruppo.capi -= 1
+                        gruppo.save()
+                        
+                        rimozioni_effettuate.append(capo.marca_auricolare)
 
                 if self.pending_fattura_carne_id is not None and movimento_id > 0:
                     Fattura.update(movimento=movimento_id, produzione=produzione_id).where(Fattura.id == self.pending_fattura_carne_id).execute()
@@ -849,9 +896,8 @@ class ZootecniaCarnePage(ZootecniaParserSupport, QWidget):
         self.produzione_changed.emit()
 
         msg_successo = f"{msg_ok}! Entrata: {format_eur(kg_val * prezzo_kg_val)}"
-        if rimozioni_effettuate: msg_successo += "\nCapi rimossi: " + ", ".join(rimozioni_effettuate)
+        if rimozioni_effettuate: msg_successo += "\nCapi venduti: " + ", ".join(rimozioni_effettuate)
         QMessageBox.information(self, "Successo", msg_successo)
-
 
     def carica_produzioni_carne(self, show_errors=True):
         self.table_produzione.setRowCount(0)
@@ -1119,3 +1165,50 @@ class ZootecniaCarnePage(ZootecniaParserSupport, QWidget):
 
         candidati.sort(key=lambda data: (data[0], data[1]), reverse=True)
         return candidati[0][2]
+
+class SelezioneCapiVendutiDialog(QDialog):
+    def __init__(self, user_id, gruppi_ids, capi_da_selezionare, parent=None):
+        super().__init__(parent)
+        self.user_id = user_id
+        self.gruppi_ids = gruppi_ids
+        self.capi_da_selezionare = capi_da_selezionare
+        self.capi_selezionati_ids = []
+        
+        self.setWindowTitle(f"Seleziona i {capi_da_selezionare} capi macellati/venduti")
+        self.resize(500, 600)
+        self.setModal(True)
+        self._build_ui()
+        self.carica_capi()
+
+    def _build_ui(self):
+        layout = QVBoxLayout(self)
+        info = QLabel(f"Hai indicato la vendita di <b>{self.capi_da_selezionare} capi</b>.<br>Seleziona esattamente quali animali sono usciti dall'azienda per attribuire a loro i ricavi e la quantità di carne.")
+        layout.addWidget(info)
+        
+        self.list_capi = QListWidget()
+        self.list_capi.setSelectionMode(QAbstractItemView.MultiSelection)
+        self.list_capi.itemSelectionChanged.connect(self._on_selection)
+        layout.addWidget(self.list_capi)
+        
+        self.btn_conferma = QPushButton(f"Conferma Selezione (0/{self.capi_da_selezionare})")
+        self.btn_conferma.setStyleSheet("background-color: #28a745; color: white; font-weight: bold; padding: 10px;")
+        self.btn_conferma.setEnabled(False)
+        self.btn_conferma.clicked.connect(self._conferma)
+        layout.addWidget(self.btn_conferma)
+
+    def carica_capi(self):
+        from models import CapoAnimale
+        capi = CapoAnimale.select().where((CapoAnimale.gruppo << self.gruppi_ids) & (CapoAnimale.stato == 'ATTIVO'))
+        for capo in capi:
+            item = QListWidgetItem(f"ID: {capo.marca_auricolare}")
+            item.setData(Qt.UserRole, capo.id)
+            self.list_capi.addItem(item)
+
+    def _on_selection(self):
+        count = len(self.list_capi.selectedItems())
+        self.btn_conferma.setText(f"Conferma Selezione ({count}/{self.capi_da_selezionare})")
+        self.btn_conferma.setEnabled(count == self.capi_da_selezionare)
+
+    def _conferma(self):
+        self.capi_selezionati_ids = [item.data(Qt.UserRole) for item in self.list_capi.selectedItems()]
+        self.accept()
