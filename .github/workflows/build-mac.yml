@@ -1,0 +1,43 @@
+name: Build macOS App
+
+# Avvia la creazione quando fai un "push" o manualmente
+on:
+  push:
+    branches: [ "main", "master" ]
+  workflow_dispatch: 
+
+jobs:
+  build-mac:
+    runs-on: macos-latest # Usa l'ultimo sistema operativo Apple
+
+    steps:
+    - name: Checkout del codice
+      uses: actions/checkout@v4
+
+    - name: Configura Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11' # Compatibilità ottimale
+
+    - name: Installa le librerie
+      run: |
+        python -m pip install --upgrade pip
+        # Installa PyInstaller e le tue librerie principali
+        pip install pyinstaller PySide6 peewee pyqtgraph
+        # Se hai un file requirements.txt, de-commenta la riga sotto:
+        pip install -r requirements.txt
+
+    - name: Compila in .app
+      run: |
+        pyinstaller --windowed --noconfirm --name "Gestionale" gestionale_qt.pyw
+
+    - name: Comprimi l'App (Mantiene i permessi Mac)
+      run: |
+        cd dist
+        zip -r Gestionale-Mac.zip Gestionale.app
+
+    - name: Salva il file generato
+      uses: actions/upload-artifact@v4
+      with:
+        name: Gestionale-Mac-App
+        path: dist/Gestionale-Mac.zip

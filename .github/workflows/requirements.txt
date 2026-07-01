@@ -1,0 +1,14 @@
+# Interfaccia grafica (GUI) e Web Engine per la mappa
+PySide6>=6.5.0
+
+# Database ORM per SQLite
+peewee>=3.17.0
+
+# Grafici e report statistici
+pyqtgraph>=0.13.3
+
+# Compilatore per creare i file .exe e .app
+pyinstaller>=6.0.0
+
+# Lettore PDF (Opzionale: mantienilo solo se usi ancora la vecchia lettura dei PDF)
+PyMuPDF>=1.23.0
