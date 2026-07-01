@@ -953,14 +953,36 @@ class AziendaNuovoMovimentoPage(QWidget):
         self.label_nome_fattura.setText(testo_label)
         
         try:
-            # USIAMO LA NUOVA FUNZIONE CENTRALIZZATA!
             risultato_xml = self.parse_xml_fattura_standard(percorso_archiviato)
+            
+            # --- LOGICA INTELLIGENTE ENTRATA / USCITA ---
+            from models import AziendaInfo
+            info_azienda = AziendaInfo.get_or_none(user=self.user_id)
+            mia_piva = info_azienda.partita_iva.strip() if info_azienda and info_azienda.partita_iva else ""
+            
+            tipo_movimento = "USCITA"
+            descrizione_mov = risultato_xml.get("supplier_name", "Fornitore XML")
+            
+            # Se la mia P.IVA è quella di chi vende, allora è un'Entrata
+            if mia_piva and mia_piva == risultato_xml.get("cedente_piva"):
+                tipo_movimento = "ENTRATA"
+                descrizione_mov = risultato_xml.get("customer_name", "Cliente XML")
+                
+            # Se è una Nota di Credito (TD04), invertiamo la logica
+            if risultato_xml.get("tipo_documento") == "TD04":
+                tipo_movimento = "ENTRATA" if tipo_movimento == "USCITA" else "USCITA"
+            # --------------------------------------------
+            
             dati = {
                 "data": self._normalizza_data_fattura(risultato_xml.get("invoice_date")) or datetime.now().strftime("%d/%m/%Y"),
-                "tipo": "USCITA", "categoria": "Fattura", "descrizione": risultato_xml.get("supplier_name", "Fornitore XML"),
-                "importo": format_number(risultato_xml.get("taxable_total", 0.0), 2), "iva": format_number(risultato_xml.get("vat_total", 0.0), 2),
+                "tipo": tipo_movimento, 
+                "categoria": "Fattura", 
+                "descrizione": descrizione_mov,
+                "importo": format_number(risultato_xml.get("taxable_total", 0.0), 2),
+                "iva": format_number(risultato_xml.get("vat_total", 0.0), 2),
                 "parser_data": risultato_xml
             }
+            
             
             prodotti_testo = []
             for riga in risultato_xml.get("line_items", []): prodotti_testo.append(f"{riga['description']} | {riga['quantity']} | {riga['line_total']}")
@@ -1297,9 +1319,25 @@ class AziendaNuovoMovimentoPage(QWidget):
             if nome is not None and cognome is not None:
                 supplier_name = f"{nome.text} {cognome.text}"
 
-        # Estrazione Dati Generali
+       # Estrazione Dati Generali
         invoice_number = root.findtext('.//DatiGeneraliDocumento/Numero', "")
         invoice_date = root.findtext('.//DatiGeneraliDocumento/Data', "")
+        
+        # --- NUOVO: ESTRAZIONE P.IVA E TIPO DOCUMENTO ---
+        tipo_documento = root.findtext('.//DatiGeneraliDocumento/TipoDocumento', "TD01")
+        cedente_piva = root.findtext('.//CedentePrestatore/DatiAnagrafici/IdFiscaleIVA/IdCodice', "")
+        cessionario_piva = root.findtext('.//CessionarioCommittente/DatiAnagrafici/IdFiscaleIVA/IdCodice', "")
+        
+        customer_name = "-"
+        cessionario = root.find('.//CessionarioCommittente/DatiAnagrafici/Anagrafica/Denominazione')
+        if cessionario is not None and cessionario.text: 
+            customer_name = cessionario.text
+        else:
+            n = root.find('.//CessionarioCommittente/DatiAnagrafici/Anagrafica/Nome')
+            c = root.find('.//CessionarioCommittente/DatiAnagrafici/Anagrafica/Cognome')
+            if n is not None and c is not None: 
+                customer_name = f"{n.text} {c.text}"
+        # ------------------------------------------------
         
         taxable_total, vat_total = 0.0, 0.0
         for riepilogo in root.findall('.//DatiRiepilogo'):
@@ -1325,7 +1363,10 @@ class AziendaNuovoMovimentoPage(QWidget):
 
         return {
             "invoice_number": invoice_number, "invoice_date": invoice_date,
-            "supplier_name": supplier_name, "taxable_total": taxable_total,
+            "supplier_name": supplier_name, "customer_name": customer_name,
+            "cedente_piva": cedente_piva, "cessionario_piva": cessionario_piva,
+            "tipo_documento": tipo_documento,
+            "taxable_total": taxable_total,
             "vat_total": vat_total, "total_amount": taxable_total + vat_total,
             "line_items": products_rows
         }

@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (
 )
 
 # IMPORT PEEWEE
+from app_utils import ImpostazioniAziendaDialog
 from models import Movimento, db
 from peewee import fn
 
@@ -85,11 +86,17 @@ class DashboardPage(QWidget):
         btn_esporta = self._crea_bottone_azione("📤 Esporta (Excel)", "#34495e")
         btn_esporta.clicked.connect(self._esporta_commercialista_csv)
 
+        btn_impostazioni = self._crea_bottone_azione("👤 Profilo Azienda", "#7f8489")
+        btn_impostazioni.clicked.connect(self.apri_impostazioni)
+        # Lo aggiungi al layout in alto a destra...
+
+
         grid_azioni.addWidget(btn_mappa)
         grid_azioni.addWidget(btn_spesa)
         grid_azioni.addWidget(btn_macchinari)
         grid_azioni.addWidget(btn_animali)
         grid_azioni.addWidget(btn_esporta)
+        grid_azioni.addWidget(btn_impostazioni)
 
         azioni_layout.addLayout(grid_azioni)
         layout.addWidget(azioni_frame)
@@ -489,3 +496,8 @@ class DashboardPage(QWidget):
             QMessageBox.information(self, "Successo", f"Dati esportati correttamente in:\n{percorso}")
         except Exception as e:
             QMessageBox.critical(self, "Errore", f"Impossibile esportare i dati: {e}")
+        
+        
+    def apri_impostazioni(self):
+        dialog = ImpostazioniAziendaDialog(self.user_id, self)
+        dialog.exec()

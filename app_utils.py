@@ -43,3 +43,52 @@ class TabellaIsolata(QTableWidget):
         super().wheelEvent(event)
         self.setSizeAdjustPolicy(QAbstractScrollArea.AdjustToContents)
         event.accept()  # Blocca la propagazione dello scroll alla QScrollArea genitore
+    
+from PySide6.QtWidgets import QDialog, QVBoxLayout, QFormLayout, QLineEdit, QPushButton, QMessageBox
+from models import AziendaInfo, db
+
+class ImpostazioniAziendaDialog(QDialog):
+    def __init__(self, user_id, parent=None):
+        super().__init__(parent)
+        self.user_id = user_id
+        self.setWindowTitle("Impostazioni Azienda")
+        self.resize(400, 250)
+        self._build_ui()
+        self.carica_dati()
+
+    def _build_ui(self):
+        layout = QVBoxLayout(self)
+        form = QFormLayout()
+        
+        self.input_ragione_sociale = QLineEdit()
+        self.input_partita_iva = QLineEdit()
+        self.input_indirizzo = QLineEdit()
+        
+        form.addRow("Ragione Sociale:", self.input_ragione_sociale)
+        form.addRow("Partita IVA:", self.input_partita_iva)
+        form.addRow("Indirizzo Sede:", self.input_indirizzo)
+        
+        layout.addLayout(form)
+        
+        btn_salva = QPushButton("💾 Salva Impostazioni")
+        btn_salva.setStyleSheet("background-color: #2c3e50; color: white; font-weight: bold; padding: 8px;")
+        btn_salva.clicked.connect(self.salva_dati)
+        layout.addWidget(btn_salva)
+
+    def carica_dati(self):
+        info = AziendaInfo.get_or_none(user=self.user_id)
+        if info:
+            self.input_ragione_sociale.setText(info.ragione_sociale or "")
+            self.input_partita_iva.setText(info.partita_iva or "")
+            self.input_indirizzo.setText(info.indirizzo or "")
+
+    def salva_dati(self):
+        with db.atomic():
+            info, created = AziendaInfo.get_or_create(user=self.user_id)
+            info.ragione_sociale = self.input_ragione_sociale.text().strip()
+            info.partita_iva = self.input_partita_iva.text().strip()
+            info.indirizzo = self.input_indirizzo.text().strip()
+            info.save()
+            
+        QMessageBox.information(self, "Successo", "Dati aziendali salvati correttamente!")
+        self.accept()

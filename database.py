@@ -1,6 +1,6 @@
 import os
 import re
-import json
+import sys
 import shutil
 from datetime import datetime
 from pathlib import Path
@@ -20,11 +20,21 @@ APP_NAME = "Gestionale"
 DB_NAME = "gestionale.db"
 LITRI_PER_QUINTALE = 100.0
 
-DATA_ROOT = Path(os.getenv("APPDATA", str(Path.home()))) / APP_NAME
+if sys.platform == "darwin":
+    # Su Mac salva in: /Users/NomeUtente/Library/Application Support/Gestionale
+    DATA_ROOT = Path.home() / "Library" / "Application Support" / APP_NAME
+elif sys.platform == "win32":
+    # Su Windows salva in: C:\Users\NomeUtente\AppData\Roaming\Gestionale
+    DATA_ROOT = Path(os.getenv("APPDATA", str(Path.home()))) / APP_NAME
+else:
+    # Su Linux salva in: /home/NomeUtente/.gestionale
+    DATA_ROOT = Path.home() / f".{APP_NAME.lower()}"
+
 DB_PATH = DATA_ROOT / DB_NAME
 FATTURE_ROOT = DATA_ROOT / "fatture_caricate"
 
 LEGACY_ROOT = Path(__file__).resolve().parent
+
 LEGACY_DB_PATH = LEGACY_ROOT / DB_NAME
 LEGACY_FATTURE_ROOT = LEGACY_ROOT / "fatture_caricate"
 

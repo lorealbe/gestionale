@@ -846,14 +846,14 @@ class AgricolturaPage(QWidget):
                 for s in storico:
                     utile = eco_storico[s['id']]['ric'] - eco_storico[s['id']]['spe']
                     utile_coltura[s['coltura']] += utile
-                    ha_coltura[s['coltura']] += campi[s['campo_id']]['area_ettari']
+                    ha_coltura[s['coltura']] += campi[s['campo']]['area_ettari']
                 
                 dati = sorted([(c, u / ha_coltura[c]) for c, u in utile_coltura.items() if ha_coltura[c] > 0], key=lambda x: x[1], reverse=True)[:10]
                 titolo_grafico = "Redditività Globale per Ettaro (Euro / ha)"
         else:
             nome_campo = campi[campo_id]['nome']
             area = campi[campo_id]['area_ettari']
-            storico_campo = [s for s in storico if s['campo_id'] == campo_id]
+            storico_campo = [s for s in storico if s['campo'] == campo_id]
             storico_campo.sort(key=lambda x: x['data_raccolto'])
             
             if not is_finanziaria:
@@ -1069,8 +1069,19 @@ class AgricolturaPage(QWidget):
         
         d_sem = self.input_data_semina.date().toString("yyyy-MM-dd")
         now_text = datetime.now().isoformat(timespec="seconds")
-        StoricoColtura.create(user=self.user_id, campo=campo_id, coltura=coltura, data_semina=d_sem, created_at=now_text, updated_at=now_text)
+        
+        from models import db
+        try:
+            with db.atomic():
+                StoricoColtura.create(user=self.user_id, campo=campo_id, coltura=coltura, data_semina=d_sem, created_at=now_text, updated_at=now_text)
+        except Exception:
+            # Se Supabase ha chiuso la connessione per inattività, forziamo la riapertura
+            db.close()
+            with db.atomic():
+                StoricoColtura.create(user=self.user_id, campo=campo_id, coltura=coltura, data_semina=d_sem, created_at=now_text, updated_at=now_text)
+                
         self._carica_storico_colture()
+
 
     def _apri_gestione_economica(self):
         riga = self.table_colture.currentRow()
@@ -1192,7 +1203,7 @@ class AgricolturaPage(QWidget):
         
         active_crops = {}
         for s in storico_attivo:
-            if s['campo_id'] not in active_crops: active_crops[s['campo_id']] = s['coltura']
+            if s['campo'] not in active_crops: active_crops[s['campo']] = s['coltura']
 
         campi_dati = []
         for c in campi:
