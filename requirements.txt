@@ -10,5 +10,3 @@ pyqtgraph>=0.13.3
 # Compilatore per creare i file .exe e .app
 pyinstaller>=6.0.0
 
-# Lettore PDF (Opzionale: mantienilo solo se usi ancora la vecchia lettura dei PDF)
-PyMuPDF>=1.23.0
